@@ -92,9 +92,10 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 ## Roadmap
 
 - **v5.0 (this release)** — data foundation: expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper for report refs.
-- **v5.1** — weekly report: generated from work records and artifacts, with a reference sidebar; every fact is backed by a reference and shown as a snapshot taken at generation time, so later task edits never rewrite an old report.
-- **v5.2** — in-task AI collaboration (preview → confirm → undo) and monthly reports.
-- Deferred: kanban board, three-state status, project views, recycle-bin UI, paragraph-level polishing.
+- **v5.1** — in-task AI collaboration: structured actions with preview → confirm → undo; organize progress, turn a pasted result into a work record; AI suggestions are always visually separated from confirmed facts.
+- **v5.2** — weekly report: generated from work records and artifacts, with a reference sidebar; every fact is backed by a reference stored as a snapshot taken at generation time, so later task edits never rewrite an old report.
+- **v5.3** — monthly report, project views, recycle-bin UI, paragraph-level polishing.
+- Decided against: kanban board and a three-state status model.
 
 ## License
 
