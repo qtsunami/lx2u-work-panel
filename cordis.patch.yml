@@ -1,0 +1,7 @@
+- insert:
+    - id: work-panel
+      name: '@local/work-panel'
+      config:
+        # DeepSeek-V4.1-Flash
+        provider: deepseek-account
+        model: deepseek-flash
