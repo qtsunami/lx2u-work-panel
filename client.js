@@ -27,12 +27,11 @@ window.__ModuleLoader__.load({
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
+        // Migration path: legacy tasks (binary status, no v2 fields) are
+        // upgraded in place on read, so no separate migration step is needed.
         return parsed
           .filter((t) => t && typeof t.id === 'string' && typeof t.title === 'string')
-          .map((t) => {
-            const done = t.status === 'done';
-            return { ...t, status: done ? 'done' : 'todo', progress: done ? 100 : 0 };
-          });
+          .map(withV2Fields);
       } catch { return []; }
     }
     function saveTasks(tasks) { try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch { /* ignore */ } }
@@ -56,6 +55,140 @@ window.__ModuleLoader__.load({
       return 'light';
     }
     function saveTheme(theme) { try { window.localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ } }
+
+    // ---- v2: work records, artifacts, report snapshots ---------------------
+    // Work records and artifacts live in their own append-only stores so a
+    // report can later be assembled from "what happened when", not from the
+    // mutable current state of a task.
+    const LOGS_KEY = '@local/work-panel:logs:v1';
+    const ARTIFACTS_KEY = '@local/work-panel:artifacts:v1';
+
+    const LOG_KINDS = { progress: '推进', issue: '问题', decision: '决策', ai: 'AI 协作', note: '记录' };
+    const LOG_KIND_ORDER = ['progress', 'issue', 'decision', 'ai'];
+
+    function lid() { return 'l-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9); }
+    function aid() { return 'a-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9); }
+    function str(value) { return typeof value === 'string' ? value : ''; }
+
+    /**
+     * Fills the v2 task fields (idempotent). Used by migration and by every
+     * insert so the detail panel never renders an uncontrolled input.
+     */
+    function withV2Fields(task) {
+      const done = task.status === 'done';
+      const stamp = str(task.updatedAt) || str(task.createdAt) || new Date().toISOString();
+      return {
+        ...task,
+        status: done ? 'done' : 'todo',
+        progress: done ? 100 : 0,
+        description: str(task.description),
+        project: str(task.project),
+        expected: str(task.expected),
+        nextStep: str(task.nextStep),
+        blockedReason: str(task.blockedReason),
+        completedAt: done ? str(task.completedAt) || stamp : null,
+        deletedAt: task.deletedAt || null,
+        createdAt: str(task.createdAt) || stamp,
+        updatedAt: str(task.updatedAt) || stamp,
+      };
+    }
+
+    function newTask(fields) {
+      const iso = new Date().toISOString();
+      return withV2Fields({
+        id: uid(), title: '', description: '', status: 'todo', urgency: 'medium', progress: 0,
+        deadline: '', createdAt: iso, updatedAt: iso, ...fields,
+      });
+    }
+
+    function loadLogs() {
+      try {
+        const raw = window.localStorage.getItem(LOGS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((l) => l && typeof l.id === 'string' && typeof l.taskId === 'string' && typeof l.text === 'string');
+      } catch { return []; }
+    }
+    function saveLogs(logs) { try { window.localStorage.setItem(LOGS_KEY, JSON.stringify(logs)); } catch { /* ignore */ } }
+
+    function loadArtifacts() {
+      try {
+        const raw = window.localStorage.getItem(ARTIFACTS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((a) => a && typeof a.id === 'string' && typeof a.taskId === 'string');
+      } catch { return []; }
+    }
+    function saveArtifacts(artifacts) { try { window.localStorage.setItem(ARTIFACTS_KEY, JSON.stringify(artifacts)); } catch { /* ignore */ } }
+
+    /** Records of one task, oldest first. */
+    function logsOf(logs, taskId) {
+      return logs.filter((l) => l.taskId === taskId).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    }
+    function latestLog(logs, taskId) {
+      const list = logsOf(logs, taskId);
+      return list.length ? list[list.length - 1] : null;
+    }
+    function artifactsOf(artifacts, taskId) {
+      return artifacts.filter((a) => a.taskId === taskId).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    }
+
+    /** Links typed one-per-line / comma separated; only http(s) is rendered as a link. */
+    function parseLinks(raw) {
+      if (typeof raw !== 'string') return [];
+      return raw.split(/[\s,，;；、\n]+/).map((s) => s.trim()).filter(Boolean);
+    }
+    function safeHref(url) {
+      const text = String(url || '').trim();
+      return /^https?:\/\//i.test(text) ? text : '';
+    }
+
+    /** One immutable work record. Records are appended, never edited. */
+    function makeLogEntry(taskId, text, kind, source, at) {
+      return {
+        id: lid(), taskId,
+        at: at || new Date().toISOString(),
+        kind: LOG_KINDS[kind] ? kind : 'note',
+        text: String(text || '').trim(),
+        source: source || 'manual',
+      };
+    }
+
+    /**
+     * One artifact reference. Deliberately carries no status field: attaching
+     * an artifact can never complete the task.
+     */
+    function makeArtifact(taskId, summary, links, at) {
+      return {
+        id: aid(), taskId,
+        summary: String(summary || '').trim(),
+        links: parseLinks(links),
+        at: at || new Date().toISOString(),
+        source: 'manual',
+        claimedIn: [],
+      };
+    }
+
+    /**
+     * Immutable snapshot of one task at report-generation time.
+     * Frozen decision: report refs keep BOTH the id (to jump back) and this
+     * snapshot (so a later task edit never rewrites an old report).
+     */
+    function takeTaskSnapshot(task, logs) {
+      return {
+        title: str(task.title),
+        status: task.status,
+        completedAt: task.completedAt || null,
+        deadline: str(task.deadline),
+        urgency: task.urgency || 'medium',
+        expected: str(task.expected),
+        nextStep: str(task.nextStep),
+        blockedReason: str(task.blockedReason),
+        recent: logsOf(logs || [], task.id).slice(-5).map((l) => ({ at: l.at, kind: l.kind, text: l.text })),
+      };
+    }
 
     // ---- deadline helpers -------------------------------------------------
     function makeDT(y, mo, d, hh, mm) { return y + '-' + pad2(mo) + '-' + pad2(d) + 'T' + pad2(hh) + ':' + pad2(mm); }
@@ -223,15 +356,12 @@ window.__ModuleLoader__.load({
       const title = typeof raw.title === 'string' ? raw.title.trim() : '';
       if (!title) return null;
       const done = raw.status === 'done';
-      const iso = new Date().toISOString();
-      return {
-        id: uid(), title, description: '',
+      return newTask({
+        title,
         status: done ? 'done' : 'todo',
         urgency: URGENCY[raw.urgency] ? raw.urgency : 'medium',
-        progress: done ? 100 : 0,
         deadline: normalizeDeadline(raw.deadline),
-        createdAt: iso, updatedAt: iso,
-      };
+      });
     }
 
     function buildConfirmation(task) {
@@ -800,6 +930,9 @@ window.__ModuleLoader__.load({
       .wp-row-time { flex-shrink: 0; margin-top: 2px; font-size: 12px; color: var(--wp-text-secondary); white-space: nowrap; }
       .wp-row-time.wp-overdue { color: var(--wp-error); }
       .wp-row-time.wp-today { color: var(--wp-warning); }
+      .wp-row-log { display: flex; align-items: baseline; gap: 5px; margin-top: 3px; font-size: 12px; color: var(--wp-text-tertiary); overflow: hidden; }
+      .wp-row-log-kind { flex-shrink: 0; padding: 0 4px; border-radius: 3px; background: var(--wp-fill); font-size: 11px; line-height: 16px; color: var(--wp-text-secondary); }
+      .wp-row-log-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .wp-detail {
         width: 400px; flex-shrink: 0; display: flex; flex-direction: column;
@@ -883,6 +1016,45 @@ window.__ModuleLoader__.load({
         font-size: 14px; line-height: 1.6; min-height: 96px;
         margin: 0 0 16px; color: var(--wp-text-secondary);
       }
+      .wp-detail-field { margin: 0 0 14px; }
+      .wp-detail-field-label { display: block; margin-bottom: 2px; font-size: 12px; color: var(--wp-text-tertiary); }
+      .wp-detail-small { font-size: 13px; line-height: 1.55; min-height: 38px; color: var(--wp-text); }
+      .wp-detail-actions { display: flex; gap: 8px; margin: 2px 0 14px; }
+      .wp-act-btn { height: 30px; padding: 0 12px; font-size: 12.5px; }
+      .wp-composer-panel { margin: 0 0 16px; padding: 12px; border: 1px solid var(--wp-border-secondary); border-radius: 10px; background: var(--wp-fill); }
+      .wp-composer-panel-input {
+        width: 100%; box-sizing: border-box; margin-top: 8px; padding: 8px 10px;
+        border: 1px solid var(--wp-border); border-radius: 8px;
+        background: var(--wp-bg-container); color: var(--wp-text);
+        font: inherit; font-size: 13px; line-height: 1.5; resize: vertical; outline: none;
+      }
+      .wp-composer-panel-input:focus { border-color: var(--wp-primary); }
+      .wp-composer-panel-input::placeholder { color: var(--wp-text-quaternary); }
+      .wp-composer-panel-hint { margin: 8px 0 0; font-size: 11.5px; color: var(--wp-text-tertiary); }
+      .wp-composer-panel-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+      .wp-kind-seg { display: inline-flex; padding: 2px; background: var(--wp-bg-container); border-radius: 6px; gap: 2px; }
+      .wp-detail-section { margin: 20px 0 0; }
+      .wp-detail-section-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+      .wp-detail-section-title { font-size: 12.5px; font-weight: 600; color: var(--wp-text-secondary); }
+      .wp-detail-section-count { min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--wp-fill); font-size: 11px; line-height: 16px; color: var(--wp-text-tertiary); text-align: center; }
+      .wp-detail-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--wp-text-quaternary); }
+      .wp-log-list { display: flex; flex-direction: column; gap: 10px; }
+      .wp-log-item { padding-left: 10px; border-left: 2px solid var(--wp-border-secondary); }
+      .wp-log-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+      .wp-log-kind { display: inline-block; padding: 0 4px; border-radius: 3px; background: var(--wp-fill); font-size: 11px; line-height: 16px; color: var(--wp-text-secondary); }
+      .wp-log-kind-ai { background: rgba(22, 119, 255, 0.1); color: var(--wp-primary); }
+      .wp-log-kind-issue { background: rgba(255, 77, 79, 0.1); color: var(--wp-error); }
+      .wp-log-kind-decision { background: rgba(250, 173, 20, 0.16); color: var(--wp-warning); }
+      .wp-log-time { font-size: 11.5px; color: var(--wp-text-quaternary); }
+      .wp-log-text { font-size: 13px; line-height: 1.6; color: var(--wp-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .wp-artifact-list { display: flex; flex-direction: column; gap: 10px; }
+      .wp-artifact { padding: 10px; border: 1px solid var(--wp-border-secondary); border-radius: 8px; }
+      .wp-artifact-summary { font-size: 13px; line-height: 1.55; color: var(--wp-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .wp-artifact-links { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+      .wp-artifact-link { font-size: 12.5px; color: var(--wp-primary); text-decoration: none; overflow-wrap: anywhere; }
+      .wp-artifact-link:hover { text-decoration: underline; }
+      .wp-artifact-url { font-size: 12.5px; color: var(--wp-text-secondary); overflow-wrap: anywhere; }
+      .wp-artifact-time { margin-top: 6px; font-size: 11.5px; color: var(--wp-text-quaternary); }
       .wp-status-seg { display: inline-flex; padding: 2px; background: var(--wp-fill); border-radius: 6px; gap: 2px; }
       .wp-status-seg-item {
         border: none; border-radius: 4px; background: transparent;
@@ -996,6 +1168,8 @@ window.__ModuleLoader__.load({
 
     function WorkPanel() {
       const [tasks, setTasks] = useState(loadTasks);
+      const [logs, setLogs] = useState(loadLogs);
+      const [artifacts, setArtifacts] = useState(loadArtifacts);
       const [activeView, setActiveView] = useState('all');
       const [sortBy, setSortBy] = useState('deadline');
       const [search, setSearch] = useState('');
@@ -1013,6 +1187,12 @@ window.__ModuleLoader__.load({
       const [flagOpen, setFlagOpen] = useState(false);
       const [detailCalOpen, setDetailCalOpen] = useState(false);
       const [detailCalMonth, setDetailCalMonth] = useState(() => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() }; });
+      const [logComposerOpen, setLogComposerOpen] = useState(false);
+      const [logText, setLogText] = useState('');
+      const [logKind, setLogKind] = useState('progress');
+      const [artifactComposerOpen, setArtifactComposerOpen] = useState(false);
+      const [artifactSummary, setArtifactSummary] = useState('');
+      const [artifactLinks, setArtifactLinks] = useState('');
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1028,6 +1208,12 @@ window.__ModuleLoader__.load({
       useEffect(() => { saveTheme(theme); }, [theme]);
       useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
       useEffect(() => {
+        // Switching tasks closes the inline composers so a draft never leaks
+        // into the record of a different task.
+        setLogComposerOpen(false); setLogText(''); setLogKind('progress');
+        setArtifactComposerOpen(false); setArtifactSummary(''); setArtifactLinks('');
+      }, [selectedId]);
+      useEffect(() => {
         if (!calOpen) return undefined;
         const onDown = (e) => {
           if (calRef.current && !calRef.current.contains(e.target)) setCalOpen(false);
@@ -1040,23 +1226,60 @@ window.__ModuleLoader__.load({
       const addTaskToState = (task) => {
         setTasks((prev) => { const next = [task, ...prev]; saveTasks(next); return next; });
       };
+      const commitLogs = (updater) => {
+        setLogs((prev) => {
+          const next = typeof updater === 'function' ? updater(prev) : updater;
+          saveLogs(next);
+          return next;
+        });
+      };
+      const commitArtifacts = (updater) => {
+        setArtifacts((prev) => {
+          const next = typeof updater === 'function' ? updater(prev) : updater;
+          saveArtifacts(next);
+          return next;
+        });
+      };
 
       const applyStatus = (task, newStatus) => {
         const next = statusTransition(task, newStatus);
-        commit(tasks.map((t) => (t.id === task.id ? { ...t, ...next, updatedAt: new Date().toISOString() } : t)));
+        const iso = new Date().toISOString();
+        const patch = next.status === 'done'
+          ? { ...next, completedAt: iso }
+          : { ...next, completedAt: null };
+        commit(tasks.map((t) => (t.id === task.id ? { ...t, ...patch, updatedAt: iso } : t)));
       };
-      const reopenTask = (task) => commit(tasks.map((t) => (t.id === task.id ? { ...t, ...reopenedState(), updatedAt: new Date().toISOString() } : t)));
+      const reopenTask = (task) => {
+        const iso = new Date().toISOString();
+        commit(tasks.map((t) => (t.id === task.id ? { ...t, ...reopenedState(), completedAt: null, updatedAt: iso } : t)));
+      };
       const toggleDone = (task) => { if (task.status === 'done') reopenTask(task); else applyStatus(task, 'done'); };
       const updateTask = (id, patch) => commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
+
+      /** Append one work record. Existing records are never edited or removed. */
+      const appendLog = (taskId, text, kind, source) => {
+        if (!String(text || '').trim()) return false;
+        commitLogs((prev) => prev.concat([makeLogEntry(taskId, text, kind, source)]));
+        updateTask(taskId, {});
+        return true;
+      };
+
+      /**
+       * Attach an artifact. Saving an artifact must NOT mark the task done —
+       * completion is always an explicit user action.
+       */
+      const addArtifact = (taskId, summary, links) => {
+        if (!String(summary || '').trim() && parseLinks(links).length === 0) return false;
+        commitArtifacts((prev) => prev.concat([makeArtifact(taskId, summary, links)]));
+        updateTask(taskId, {});
+        return true;
+      };
+
       const addQuick = () => {
         const title = quickText.trim();
         if (!title) { if (quickInputRef.current) quickInputRef.current.focus(); return; }
-        const iso = new Date().toISOString();
         const deadline = quickDeadline.time ? quickDeadline.date + 'T' + quickDeadline.time : quickDeadline.date;
-        const task = {
-          id: uid(), title, description: '', status: 'todo', urgency: 'medium', progress: 0,
-          deadline, createdAt: iso, updatedAt: iso,
-        };
+        const task = newTask({ title, deadline });
         addTaskToState(task);
         setQuickText('');
         setQuickDeadline({ date: todayDate(), time: '' });
@@ -1081,13 +1304,13 @@ window.__ModuleLoader__.load({
           if (intent === 'list') return buildTaskListReply(tasks);
           const parsed = parseTask(text, new Date());
           if (parsed) {
-            const iso = new Date().toISOString();
             const done = parsed.status === 'done';
-            const task = {
-              id: uid(), title: parsed.title, description: '', status: done ? 'done' : 'todo',
-              urgency: parsed.urgency, progress: done ? 100 : 0, deadline: parsed.deadline || todayDate(),
-              createdAt: iso, updatedAt: iso,
-            };
+            const task = newTask({
+              title: parsed.title,
+              status: done ? 'done' : 'todo',
+              urgency: parsed.urgency,
+              deadline: parsed.deadline || todayDate(),
+            });
             addTaskToState(task);
             return '（模型暂不可用，本次由本地规则解析）\n' + buildConfirmation(task);
           }
@@ -1203,9 +1426,18 @@ window.__ModuleLoader__.load({
         return { text: info.text, cls: '' };
       };
 
+      // Latest record per task, for the "最近进展" line in the list row.
+      // Deterministic (no model call): the newest record's own text.
+      const lastLogByTask = useMemo(() => {
+        const map = {};
+        for (const entry of logs) map[entry.taskId] = entry;
+        return map;
+      }, [logs]);
+
       const renderRow = (task) => {
         const done = task.status === 'done';
         const dl = rowDeadline(task);
+        const recent = lastLogByTask[task.id] || null;
         return h('div', {
           className: 'wp-row',
           key: task.id,
@@ -1219,7 +1451,10 @@ window.__ModuleLoader__.load({
           }, done ? h(CheckIcon) : null),
           h('div', { className: 'wp-row-main' },
             h('div', { className: 'wp-row-title' + (done ? ' wp-done' : '') }, task.title),
-            task.description ? h('div', { className: 'wp-row-desc' }, task.description) : null),
+            task.description ? h('div', { className: 'wp-row-desc' }, task.description) : null,
+            recent ? h('div', { className: 'wp-row-log' },
+              h('span', { className: 'wp-row-log-kind' }, LOG_KINDS[recent.kind] || '记录'),
+              h('span', { className: 'wp-row-log-text' }, recent.text)) : null),
           dl ? h('span', { className: 'wp-row-time ' + dl.cls }, dl.text) : null);
       };
 
@@ -1375,6 +1610,63 @@ window.__ModuleLoader__.load({
         updateTask(selectedTask.id, { deadline: time ? dateStr + 'T' + time : dateStr });
       };
 
+      const selectedLogs = selectedTask ? logsOf(logs, selectedTask.id) : [];
+      const selectedArtifacts = selectedTask ? artifactsOf(artifacts, selectedTask.id) : [];
+
+      const detailLogComposer = (selectedTask && logComposerOpen) ? h('div', { className: 'wp-composer-panel' },
+        h('div', { className: 'wp-kind-seg' }, LOG_KIND_ORDER.map((k) =>
+          h('button', {
+            className: 'wp-status-seg-item', key: k, type: 'button',
+            'data-active': logKind === k ? 'true' : 'false',
+            onClick: () => setLogKind(k),
+          }, LOG_KINDS[k]))),
+        h('textarea', {
+          className: 'wp-composer-panel-input', rows: 3, value: logText,
+          placeholder: '做了什么 / 遇到什么 / 决定了什么',
+          onChange: (e) => setLogText(e.target.value),
+        }),
+        h('div', { className: 'wp-composer-panel-actions' },
+          h('button', {
+            className: 'wp-btn wp-btn-text', type: 'button',
+            onClick: () => { setLogComposerOpen(false); setLogText(''); },
+          }, '取消'),
+          h('button', {
+            className: 'wp-btn wp-btn-primary', type: 'button', disabled: !logText.trim(),
+            onClick: () => {
+              if (appendLog(selectedTask.id, logText, logKind, 'manual')) {
+                setLogText('');
+                setLogComposerOpen(false);
+              }
+            },
+          }, '保存'))) : null;
+
+      const detailArtifactComposer = (selectedTask && artifactComposerOpen) ? h('div', { className: 'wp-composer-panel' },
+        h('textarea', {
+          className: 'wp-composer-panel-input', rows: 2, value: artifactSummary,
+          placeholder: '结果摘要（可选）',
+          onChange: (e) => setArtifactSummary(e.target.value),
+        }),
+        h('textarea', {
+          className: 'wp-composer-panel-input', rows: 2, value: artifactLinks,
+          placeholder: '链接或文件引用，一行一个（可选）',
+          onChange: (e) => setArtifactLinks(e.target.value),
+        }),
+        h('p', { className: 'wp-composer-panel-hint' }, '保存成果不会自动把任务标记为完成。'),
+        h('div', { className: 'wp-composer-panel-actions' },
+          h('button', {
+            className: 'wp-btn wp-btn-text', type: 'button',
+            onClick: () => { setArtifactComposerOpen(false); setArtifactSummary(''); setArtifactLinks(''); },
+          }, '取消'),
+          h('button', {
+            className: 'wp-btn wp-btn-primary', type: 'button',
+            disabled: !artifactSummary.trim() && !artifactLinks.trim(),
+            onClick: () => {
+              if (addArtifact(selectedTask.id, artifactSummary, artifactLinks)) {
+                setArtifactSummary(''); setArtifactLinks(''); setArtifactComposerOpen(false);
+              }
+            },
+          }, '保存'))) : null;
+
       const detailPanel = selectedTask ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-meta' },
@@ -1426,6 +1718,68 @@ window.__ModuleLoader__.load({
             placeholder: '添加任务描述',
             onChange: (e) => updateTask(selectedTask.id, { description: e.target.value }),
           }),
+          h('div', { className: 'wp-detail-field' },
+            h('label', { className: 'wp-detail-field-label' }, '预期结果'),
+            h('textarea', {
+              className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.expected,
+              placeholder: '希望交付什么、怎样判断完成（可选）',
+              onChange: (e) => updateTask(selectedTask.id, { expected: e.target.value }),
+            })),
+          h('div', { className: 'wp-detail-field' },
+            h('label', { className: 'wp-detail-field-label' }, '下一步'),
+            h('textarea', {
+              className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.nextStep,
+              placeholder: '当前准备采取的具体动作（可选）',
+              onChange: (e) => updateTask(selectedTask.id, { nextStep: e.target.value }),
+            })),
+          selectedTask.status !== 'done' ? h('div', { className: 'wp-detail-field' },
+            h('label', { className: 'wp-detail-field-label' }, '阻塞原因'),
+            h('textarea', {
+              className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.blockedReason,
+              placeholder: '有阻塞时补充原因（可选）',
+              onChange: (e) => updateTask(selectedTask.id, { blockedReason: e.target.value }),
+            })) : null,
+          h('div', { className: 'wp-detail-actions' },
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              'aria-expanded': logComposerOpen ? 'true' : 'false',
+              onClick: () => { setLogComposerOpen((v) => !v); setArtifactComposerOpen(false); },
+            }, '记录进展'),
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              'aria-expanded': artifactComposerOpen ? 'true' : 'false',
+              onClick: () => { setArtifactComposerOpen((v) => !v); setLogComposerOpen(false); },
+            }, '关联成果')),
+          detailLogComposer,
+          detailArtifactComposer,
+          h('div', { className: 'wp-detail-section' },
+            h('div', { className: 'wp-detail-section-head' },
+              h('span', { className: 'wp-detail-section-title' }, '工作记录'),
+              selectedLogs.length ? h('span', { className: 'wp-detail-section-count' }, String(selectedLogs.length)) : null),
+            selectedLogs.length
+              ? h('div', { className: 'wp-log-list' }, selectedLogs.slice().reverse().map((entry) =>
+                  h('div', { className: 'wp-log-item', key: entry.id },
+                    h('div', { className: 'wp-log-meta' },
+                      h('span', { className: 'wp-log-kind wp-log-kind-' + entry.kind }, LOG_KINDS[entry.kind] || '记录'),
+                      h('span', { className: 'wp-log-time' }, formatDateTime(entry.at))),
+                    h('div', { className: 'wp-log-text' }, entry.text))))
+              : h('p', { className: 'wp-detail-empty' }, '还没有记录。点「记录进展」写下这一次推进。')),
+          h('div', { className: 'wp-detail-section' },
+            h('div', { className: 'wp-detail-section-head' },
+              h('span', { className: 'wp-detail-section-title' }, '实际成果'),
+              selectedArtifacts.length ? h('span', { className: 'wp-detail-section-count' }, String(selectedArtifacts.length)) : null),
+            selectedArtifacts.length
+              ? h('div', { className: 'wp-artifact-list' }, selectedArtifacts.slice().reverse().map((item) =>
+                  h('div', { className: 'wp-artifact', key: item.id },
+                    item.summary ? h('div', { className: 'wp-artifact-summary' }, item.summary) : null,
+                    item.links.length ? h('div', { className: 'wp-artifact-links' }, item.links.map((url, i) => {
+                      const href = safeHref(url);
+                      return href
+                        ? h('a', { className: 'wp-artifact-link', key: i, href, target: '_blank', rel: 'noreferrer noopener' }, url)
+                        : h('span', { className: 'wp-artifact-url', key: i }, url);
+                    })) : null,
+                    h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at)))))
+              : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
           h('div', { className: 'wp-detail-rows wp-detail-times' },
             detailRow('创建时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.createdAt))),
             detailRow('更新时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.updatedAt)))))) : null;
@@ -1485,6 +1839,8 @@ window.__ModuleLoader__.load({
         formatDeadline, buildConfirmation, buildTaskListReply, buildTaskFromModel,
         progressTransition, statusTransition, reopenedState,
         formatRelativeTime, todayDate, normalizeDeadline, formatQuickLabel, formatTaskDate,
+        withV2Fields, newTask, logsOf, latestLog, artifactsOf, parseLinks, safeHref,
+        takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
       },
     };
   },

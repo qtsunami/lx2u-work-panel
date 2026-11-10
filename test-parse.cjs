@@ -148,5 +148,80 @@ check('task-date-time', dbg.formatTaskDate('2026-11-10T10:00', qNow), '今天 10
 check('task-next-week', dbg.formatTaskDate('2026-11-16T11:30', qNow), '下周一 11:30');
 check('task-empty', dbg.formatTaskDate('', qNow), '未设置');
 
+console.log('\n# v2 migration: withV2Fields');
+const legacyDone = dbg.withV2Fields({
+  id: 't-old', title: '旧任务', status: 'done', progress: 100,
+  createdAt: '2026-01-02T03:04:05.000Z', updatedAt: '2026-03-04T05:06:07.000Z',
+});
+check('legacy done keeps status', legacyDone.status, 'done');
+check('legacy done derives completedAt from updatedAt', legacyDone.completedAt, '2026-03-04T05:06:07.000Z');
+check('v2 defaults filled', [
+  legacyDone.description, legacyDone.project, legacyDone.expected, legacyDone.nextStep,
+  legacyDone.blockedReason, legacyDone.deletedAt,
+], ['', '', '', '', '', null]);
+const legacyDoing = dbg.withV2Fields({ id: 't-d', title: 'X', status: 'doing', progress: 40, createdAt: 'a', updatedAt: 'b' });
+check('legacy doing -> todo', [legacyDoing.status, legacyDoing.progress], ['todo', 0]);
+check('todo has no completedAt', legacyDoing.completedAt, null);
+check('migration keeps existing completedAt', dbg.withV2Fields({
+  id: 't-c', title: 'Y', status: 'done', completedAt: '2026-05-05T00:00:00.000Z',
+  createdAt: 'c', updatedAt: 'd',
+}).completedAt, '2026-05-05T00:00:00.000Z');
+check('empty strings survive', dbg.withV2Fields({ id: 't-e', title: 'Z', status: 'todo', description: undefined }).description, '');
+
+console.log('\n# newTask');
+const nt = dbg.newTask({ title: '新任务', deadline: '2026-11-11' });
+check('new task is normalized', [nt.status, nt.urgency, nt.expected, nt.deletedAt, typeof nt.id], ['todo', 'medium', '', null, 'string']);
+check('new task done gets completedAt', dbg.newTask({ title: 'A', status: 'done' }).status, 'done');
+check('new task done has completedAt', typeof dbg.newTask({ title: 'A', status: 'done' }).completedAt, 'string');
+
+console.log('\n# work records');
+const entry = dbg.makeLogEntry('t-1', '  写完方案  ', 'progress', 'manual', '2026-11-10T10:00:00.000Z');
+check('entry trimmed', entry.text, '写完方案');
+check('entry kind', entry.kind, 'progress');
+check('unknown kind falls back', dbg.makeLogEntry('t-1', 'x', 'nope').kind, 'note');
+check('entry has id', typeof entry.id, 'string');
+const logSet = [
+  { id: 'l2', taskId: 't-1', at: '2026-11-11T10:00:00.000Z', kind: 'issue', text: 'B' },
+  { id: 'l1', taskId: 't-1', at: '2026-11-10T10:00:00.000Z', kind: 'progress', text: 'A' },
+  { id: 'l3', taskId: 't-2', at: '2026-11-12T10:00:00.000Z', kind: 'progress', text: 'C' },
+];
+check('logsOf is filtered + oldest first', dbg.logsOf(logSet, 't-1').map((l) => l.id), ['l1', 'l2']);
+check('latestLog is newest of that task', dbg.latestLog(logSet, 't-1').id, 'l2');
+check('latestLog empty', dbg.latestLog(logSet, 't-none'), null);
+
+console.log('\n# artifacts');
+check('links split on newline/comma', dbg.parseLinks('http://a.com\nhttp://b.com,http://c.com'), ['http://a.com', 'http://b.com', 'http://c.com']);
+check('links ignore empty', dbg.parseLinks('  , http://a.com ,'), ['http://a.com']);
+check('artifact normalizes links', dbg.makeArtifact('t-1', ' 结果 ', 'http://a.com').links, ['http://a.com']);
+check('artifact summary trimmed', dbg.makeArtifact('t-1', ' 结果 ', '').summary, '结果');
+// Acceptance: saving an artifact carries no status, so it can never complete a task.
+check('artifact has no status field', 'status' in dbg.makeArtifact('t-1', 'x', ''), false);
+const artSet = [
+  { id: 'a1', taskId: 't-1', at: '2026-11-11T10:00:00.000Z', summary: 'B', links: [] },
+  { id: 'a2', taskId: 't-1', at: '2026-11-10T10:00:00.000Z', summary: 'A', links: [] },
+  { id: 'a3', taskId: 't-2', at: '2026-11-12T10:00:00.000Z', summary: 'C', links: [] },
+];
+check('artifactsOf filtered + oldest first', dbg.artifactsOf(artSet, 't-1').map((a) => a.id), ['a2', 'a1']);
+
+console.log('\n# safeHref');
+check('http allowed', dbg.safeHref('http://a.com'), 'http://a.com');
+check('https allowed', dbg.safeHref(' https://a.com '), 'https://a.com');
+check('javascript rejected', dbg.safeHref('javascript:alert(1)'), '');
+check('data rejected', dbg.safeHref('data:text/html,x'), '');
+
+console.log('\n# takeTaskSnapshot (report refs keep id + snapshot)');
+const snapTask = dbg.withV2Fields({
+  id: 't-1', title: '上线插件', status: 'done', urgency: 'high', deadline: '2026-11-10',
+  expected: 'v1 发布', nextStep: '', blockedReason: '',
+  completedAt: '2026-11-10T12:00:00.000Z', createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-10T12:00:00.000Z',
+});
+const snap = dbg.takeTaskSnapshot(snapTask, logSet);
+check('snapshot captures title/status', [snap.title, snap.status], ['上线插件', 'done']);
+check('snapshot keeps completedAt', snap.completedAt, '2026-11-10T12:00:00.000Z');
+check('snapshot captures last records', snap.recent.map((r) => r.text), ['A', 'B']);
+// Frozen decision: later edits to the task must not rewrite an existing snapshot.
+snapTask.title = '上线插件 v1.1';
+check('snapshot is immutable after task edit', snap.title, '上线插件');
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

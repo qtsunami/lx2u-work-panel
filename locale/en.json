@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Work panel",
-    "description": "A three-column personal workbench: smart views, task list, inline detail editing, priorities, and deadline-aware scheduling."
+    "description": "A three-column personal workbench: smart views, task list, inline editing, expected results, next steps, blockers, an append-only work log, and artifact references."
   }
 }

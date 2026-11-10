@@ -10,6 +10,10 @@ A personal workbench panel for DeepSeek Harness (DSH): a three-column layout wit
 - **Priorities**: high (red), medium (yellow), low (blue), none — reflected on the checkbox frame and the detail flag.
 - **Deadline display**: today / tomorrow / day-after / weekday / next-week / last-week / month-day, with optional time.
 - **Detail panel**: inline title/description editing (auto-save), completion checkbox, clickable date chip with calendar, priority flag menu.
+- **Expected result / next step / blocker**: three optional fields that turn a task into an executable item.
+- **Work records** (`记录进展`): append-only timeline of progress, problems, decisions and AI collaboration. Each record carries its own timestamp; records are never edited, only appended.
+- **Artifacts** (`关联成果`): attach a result summary plus links to docs/files. Saving an artifact never marks the task complete — completion stays an explicit user action.
+- **Recent progress in the list**: each row shows the newest work record (deterministic — no model call at render time).
 - **Search and sort**: by deadline, priority, or creation time.
 - **AI assistant** (optional): a top-bar button opens a chat drawer. Requires an LLM provider configured in your profile; without one it falls back to local rule-based parsing.
 - **Light/dark theme**.
@@ -70,6 +74,27 @@ node test-host.mjs
 node test-render.cjs
 node test-detail-render.cjs
 ```
+
+## Data model (v5)
+
+All state lives in `localStorage`, keyed by the plugin scope:
+
+| Key | Content |
+| --- | --- |
+| `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (reserved for the recycle bin), `project` (reserved for project views). |
+| `@local/work-panel:logs:v1` | Work records — append-only, keyed by `taskId`. |
+| `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved so a monthly report cannot claim the same result twice. |
+| `@local/work-panel:chat:v1` | AI assistant conversation. |
+| `@local/work-panel:theme` | Light/dark preference. |
+
+Task status stays binary (todo / done). A "blocked" situation is recorded as `blockedReason` on the task instead of a third status, so the state machine stays simple.
+
+## Roadmap
+
+- **v5.0 (this release)** — data foundation: expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper for report refs.
+- **v5.1** — weekly report: generated from work records and artifacts, with a reference sidebar; every fact is backed by a reference and shown as a snapshot taken at generation time, so later task edits never rewrite an old report.
+- **v5.2** — in-task AI collaboration (preview → confirm → undo) and monthly reports.
+- Deferred: kanban board, three-state status, project views, recycle-bin UI, paragraph-level polishing.
 
 ## License
 

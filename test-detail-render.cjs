@@ -18,7 +18,9 @@ const React = {
   useState: (init) => {
     call += 1;
     const v = typeof init === 'function' ? init() : init;
-    if (call === 5) return ['t-1', () => {}];
+    // useState order in WorkPanel: 1 tasks, 2 logs, 3 artifacts, 4 activeView,
+    // 5 sortBy, 6 search, 7 selectedId, ...
+    if (call === 7) return ['t-1', () => {}];
     return [v, () => {}];
   },
   useMemo: (fn) => fn(),
@@ -58,7 +60,11 @@ const classes = [];
   (node.children || []).forEach(walk);
 })(tree);
 
-const want = ['wp-detail', 'wp-detail-body', 'wp-detail-meta', 'wp-detail-check', 'wp-detail-date', 'wp-detail-flag', 'wp-row', 'wp-row-time', 'wp-row-desc'];
+const want = [
+  'wp-detail', 'wp-detail-body', 'wp-detail-meta', 'wp-detail-check', 'wp-detail-date', 'wp-detail-flag',
+  'wp-row', 'wp-row-time', 'wp-row-desc',
+  'wp-detail-field', 'wp-detail-actions', 'wp-detail-section', 'wp-detail-empty',
+];
 const missing = want.filter((c) => !classes.some((x) => x.split(' ').includes(c)));
 if (missing.length) throw new Error('missing classes: ' + missing.join(','));
 console.log('DETAIL RENDER OK · ' + classes.filter((c) => c.indexOf('wp-detail') === 0).join(', '));
