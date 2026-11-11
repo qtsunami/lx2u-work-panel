@@ -99,7 +99,7 @@ node test-detail-render.cjs
 node test-actions-render.cjs
 ```
 
-## Data model (v5)
+## Data model (v1.x)
 
 All state lives in `localStorage`, keyed by the plugin scope:
 
@@ -115,10 +115,10 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 
 ## Roadmap
 
-- **v5.0** — data foundation: expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper for report refs.
-- **v5.1 (this release)** — in-task AI collaboration: structured actions with preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, AI attribution.
-- **v5.2** — weekly report: generated from work records and artifacts, with a reference sidebar; every fact is backed by a reference stored as a snapshot taken at generation time, so later task edits never rewrite an old report.
-- **v5.3** — monthly report, project views, recycle-bin UI, paragraph-level polishing.
+- **1.0.0** (released) — the original three-column workbench (tasks, smart views, priorities, deadlines, assistant).
+- **1.1.0 (this release)** — data foundation (expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper) plus confirm-before-write AI collaboration (preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, attribution).
+- **1.2.0** — weekly report: generated from work records and artifacts, with a reference sidebar; every fact is backed by a reference stored as a snapshot taken at generation time, so later task edits never rewrite an old report.
+- **1.3.0** — monthly report, project views, recycle-bin UI, paragraph-level polishing.
 - Decided against: kanban board and a three-state status model.
 
 ## License
