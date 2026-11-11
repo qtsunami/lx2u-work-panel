@@ -223,5 +223,89 @@ check('snapshot captures last records', snap.recent.map((r) => r.text), ['A', 'B
 snapTask.title = '上线插件 v1.1';
 check('snapshot is immutable after task edit', snap.title, '上线插件');
 
+console.log('\n# AI duplicate guard');
+const baseTasks = [
+  { id: 't-1', title: '完成报告', status: 'todo', urgency: 'medium', deadline: '2026-11-10', description: '', expected: '', nextStep: '', blockedReason: '', deletedAt: null, completedAt: null, progress: 0 },
+  { id: 't-2', title: '整理会议纪要', status: 'done', urgency: 'low', deadline: '', description: '', expected: '', nextStep: '', blockedReason: '', deletedAt: null, completedAt: '2026-11-09T00:00:00.000Z', progress: 100 },
+];
+check('exact duplicate', dbg.findDuplicateTask(baseTasks, '完成报告').id, 't-1');
+check('normalized duplicate', dbg.findDuplicateTask(baseTasks, ' 完成 报告！ ').id, 't-1');
+check('substring duplicate', dbg.findDuplicateTask(baseTasks, '完成季度报告').id, 't-1');
+check('unrelated title', dbg.findDuplicateTask(baseTasks, '写周报'), null);
+check('deleted task ignored', dbg.findDuplicateTask([{ ...baseTasks[0], deletedAt: 'x' }], '完成报告'), null);
+check('empty title', dbg.findDuplicateTask(baseTasks, '   '), null);
+
+console.log('\n# applyActions: create');
+const emptyState = { tasks: baseTasks.slice(), logs: [], artifacts: [] };
+const created = dbg.applyActions(emptyState, [{ op: 'create', title: '写周报', deadline: '2026-11-14T18:00', urgency: 'high' }], '2026-11-11T00:00:00.000Z');
+check('create added', created.next.tasks.length, 3);
+check('create counted', created.applied, 1);
+check('create normalized', [created.next.tasks[0].status, created.next.tasks[0].urgency, created.next.tasks[0].completedAt], ['todo', 'high', null]);
+check('create deadline', created.next.tasks[0].deadline, '2026-11-14T18:00');
+check('create prepended', created.next.tasks[0].title, '写周报');
+const dup = dbg.applyActions(emptyState, [{ op: 'create', title: '完成 报告' }], 'now');
+check('create duplicate skipped', [dup.applied, dup.next.tasks.length, dup.outcomes[0].reason], [0, 2, 'duplicate']);
+check('duplicate not written', dup.next.tasks.length, 2);
+const forced = dbg.applyActions(emptyState, [{ op: 'create', title: '完成 报告', force: true }], 'now');
+check('create forced applies', forced.applied, 1);
+check('empty create rejected', dbg.applyActions(emptyState, [{ op: 'create', title: '  ' }], 'now').outcomes[0].reason, 'missing-title');
+
+console.log('\n# applyActions: update');
+const upd = dbg.applyActions(emptyState, [{ op: 'update', taskId: 't-1', patch: { urgency: 'high', nextStep: '写提纲', bogus: 1 } }], '2026-11-11T00:00:00.000Z');
+check('update applied', upd.applied, 1);
+check('update fields', [upd.next.tasks[0].urgency, upd.next.tasks[0].nextStep], ['high', '写提纲']);
+check('update strips unknown field', 'bogus' in upd.next.tasks[0], false);
+check('update bumps updatedAt', upd.next.tasks[0].updatedAt, '2026-11-11T00:00:00.000Z');
+check('update keeps original immutable', upd.before.tasks[0].urgency, 'medium');
+check('no-op update skipped', dbg.applyActions(emptyState, [{ op: 'update', taskId: 't-1', patch: { urgency: 'medium' } }], 'now').outcomes[0].reason, 'no-change');
+check('empty title not written', 'title' in (dbg.applyActions(emptyState, [{ op: 'update', taskId: 't-1', patch: { title: '  ' } }], 'now').outcomes[0]) , false);
+
+console.log('\n# applyActions: status, log, artifact');
+const completed = dbg.applyActions(emptyState, [{ op: 'complete', taskId: 't-1' }], '2026-11-11T01:00:00.000Z');
+check('complete sets status+completedAt', [completed.next.tasks[0].status, completed.next.tasks[0].completedAt, completed.next.tasks[0].progress], ['done', '2026-11-11T01:00:00.000Z', 100]);
+check('complete already done skipped', dbg.applyActions(emptyState, [{ op: 'complete', taskId: 't-2' }], 'now').outcomes[0].reason, 'no-change');
+const reopened = dbg.applyActions({ tasks: [{ ...baseTasks[0], status: 'done', completedAt: 'x', progress: 100 }], logs: [], artifacts: [] }, [{ op: 'reopen', taskId: 't-1' }], 'now');
+check('reopen clears completedAt', [reopened.next.tasks[0].status, reopened.next.tasks[0].completedAt], ['todo', null]);
+const logged = dbg.applyActions(emptyState, [{ op: 'log', taskId: 't-1', kind: 'progress', text: '  推进了一步  ' }], '2026-11-11T02:00:00.000Z');
+check('log appended', [logged.next.logs.length, logged.next.logs[0].source, logged.next.logs[0].text], [1, 'ai', '推进了一步']);
+check('AI log marked and task not completed', [logged.next.logs[0].source, logged.next.tasks[0].status], ['ai', 'todo']);
+const artifacted = dbg.applyActions(emptyState, [{ op: 'artifact', taskId: 't-1', summary: '报告 v1', links: ['https://a.com'] }], '2026-11-11T03:00:00.000Z');
+check('artifact appended', artifacted.next.artifacts.length, 1);
+check('artifact never completes task', [artifacted.next.tasks[0].status, artifacted.next.tasks[0].completedAt], ['todo', null]);
+
+console.log('\n# applyActions: rejection paths');
+const bad = dbg.applyActions(emptyState, [
+  { op: 'complete', taskId: 't-x' },
+  { op: 'nope', taskId: 't-1' },
+  { op: 'log', taskId: 't-1', text: '  ' },
+  { op: 'artifact', taskId: 't-1', summary: '', links: [] },
+], 'now');
+check('unknown task skipped', bad.outcomes[0].reason, 'missing-task');
+check('unknown op skipped', bad.outcomes[1].reason, 'unknown-op');
+check('empty log skipped', bad.outcomes[2].reason, 'empty-text');
+check('empty artifact skipped', bad.outcomes[3].reason, 'empty');
+check('rejections change nothing', [bad.next.tasks, bad.next.logs.length, bad.next.artifacts.length].map((x) => (Array.isArray(x) ? x.length : x)), [2, 0, 0]);
+check('undo snapshot holds previous stores', bad.before.tasks.length, 2);
+check('empty action list', dbg.applyActions(emptyState, [], 'now').applied, 0);
+
+console.log('\n# describeAction (confirmation preview)');
+const infoUpd = dbg.describeAction(baseTasks, { op: 'update', taskId: 't-1', patch: { urgency: 'high', deadline: '2026-11-12' } });
+check('preview label', infoUpd.label, '修改');
+check('preview title', infoUpd.title, '完成报告');
+check('preview shows deadline diff first', infoUpd.lines[0].indexOf('截止时间：'), 0);
+check('preview diff has arrow', infoUpd.lines[0].indexOf('→') > 0, true);
+check('preview skips identical value', dbg.describeAction(baseTasks, { op: 'update', taskId: 't-1', patch: { urgency: 'medium' } }).lines.length, 0);
+check('preview create duplicate flagged', dbg.describeAction(baseTasks, { op: 'create', title: '完成报告' }).duplicateOf, '完成报告');
+check('preview forced create clears flag', dbg.describeAction(baseTasks, { op: 'create', title: '完成报告', force: true }).duplicateOf, null);
+check('preview invalid task', (function () { const x = dbg.describeAction(baseTasks, { op: 'complete', taskId: 't-9' }); return [x.invalid, x.title]; })(), [true, '（找不到任务）']);
+check('preview complete line', dbg.describeAction(baseTasks, { op: 'complete', taskId: 't-1' }).lines[0], '状态：待办 → 已完成');
+
+console.log('\n# summarizeOutcomes');
+check('summary clean', dbg.summarizeOutcomes({ applied: 2, outcomes: [{ status: 'applied' }] }), '已应用 2 项变更。');
+check('summary with skips', dbg.summarizeOutcomes({
+  applied: 1,
+  outcomes: [{ status: 'skipped', reason: 'duplicate' }, { status: 'skipped', reason: 'no-change' }],
+}), '已应用 1 项变更。跳过 2 项（与现有任务重复、与当前状态相同）。');
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

@@ -190,6 +190,239 @@ window.__ModuleLoader__.load({
       };
     }
 
+    // ---- M2: AI action protocol -------------------------------------------
+    // The Host never writes data. It returns typed actions; the client shows a
+    // preview, applies them only after confirmation, and keeps an undo snapshot.
+    const ACTION_LABEL = {
+      create: '新建', update: '修改', complete: '完成',
+      reopen: '重开', log: '记录', artifact: '成果',
+    };
+    const PATCH_FIELD_LABEL = {
+      title: '标题', description: '描述', expected: '预期结果', nextStep: '下一步',
+      blockedReason: '阻塞原因', deadline: '截止时间', urgency: '优先级',
+    };
+    const PATCH_KEYS = ['title', 'description', 'expected', 'nextStep', 'blockedReason', 'deadline', 'urgency'];
+    const SKIP_REASON = {
+      duplicate: '与现有任务重复',
+      'missing-task': '任务不存在',
+      'missing-title': '缺少标题',
+      'no-change': '与当前状态相同',
+      'empty-text': '内容为空',
+      'empty': '内容为空',
+      'unknown-op': '无法识别的操作',
+    };
+
+    /** Loose title key for duplicate detection (case/space/punctuation insensitive). */
+    function normalizeTitle(value) {
+      return String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+    }
+
+    /** Character-set overlap; tolerant of word order, which suits short Chinese titles. */
+    function titleOverlap(a, b) {
+      const left = new Set(a);
+      const right = new Set(b);
+      let shared = 0;
+      for (const ch of left) if (right.has(ch)) shared += 1;
+      const union = left.size + right.size - shared;
+      return union === 0 ? 0 : shared / union;
+    }
+
+    /** Returns an existing task that a new title would duplicate, if any. */
+    function findDuplicateTask(tasks, title) {
+      const key = normalizeTitle(title);
+      if (!key) return null;
+      for (const task of tasks) {
+        if (!task || task.deletedAt) continue;
+        const other = normalizeTitle(task.title);
+        if (!other) continue;
+        if (other === key) return task;
+        const shorter = key.length <= other.length ? key : other;
+        const longer = key.length <= other.length ? other : key;
+        // Same wording with extra words appended ("写周报" / "写周报（周五）").
+        if (longer.indexOf(shorter) !== -1 && shorter.length / longer.length >= 0.6) return task;
+        // Overlapping wording in a different order ("完成报告" / "完成季度报告").
+        if (shorter.length >= 3 && titleOverlap(key, other) >= 0.6) return task;
+      }
+      return null;
+    }
+
+    function previewValue(key, value) {
+      if (key === 'deadline') return value ? formatDeadline(value) : '未设置';
+      if (key === 'urgency') return URGENCY[value] || '中';
+      const text = String(value || '').trim();
+      return text || '（空）';
+    }
+
+    /** Human-readable preview of one action, used by the confirmation card. */
+    function describeAction(tasks, action) {
+      const op = action && action.op;
+      const label = ACTION_LABEL[op] || String(op || '');
+      if (op === 'create') {
+        const title = String(action.title || '').trim();
+        const lines = [];
+        if (action.deadline) lines.push('截止：' + formatDeadline(action.deadline));
+        lines.push('优先级：' + (URGENCY[action.urgency] || '中'));
+        const duplicate = action.force ? null : findDuplicateTask(tasks, title);
+        return { op, label, title, lines, duplicateOf: duplicate ? duplicate.title : null };
+      }
+      const task = tasks.find((t) => t && t.id === action.taskId) || null;
+      if (!task) return { op, label, title: '（找不到任务）', lines: [], invalid: true };
+      if (op === 'update') {
+        const lines = [];
+        const patch = action.patch || {};
+        for (const key of PATCH_KEYS) {
+          if (!(key in patch)) continue;
+          const before = key === 'deadline' ? task.deadline : task[key];
+          if (String(before || '') === String(patch[key] || '')) continue;
+          lines.push(PATCH_FIELD_LABEL[key] + '：' + previewValue(key, before) + ' → ' + previewValue(key, patch[key]));
+        }
+        return { op, label, title: task.title, lines };
+      }
+      if (op === 'complete') return { op, label, title: task.title, lines: ['状态：待办 → 已完成'] };
+      if (op === 'reopen') return { op, label, title: task.title, lines: ['状态：已完成 → 待办'] };
+      if (op === 'log') {
+        return { op, label, title: task.title, lines: [(LOG_KINDS[action.kind] || '记录') + '：' + String(action.text || '')] };
+      }
+      if (op === 'artifact') {
+        const lines = [];
+        if (action.summary) lines.push('摘要：' + action.summary);
+        if (Array.isArray(action.links) && action.links.length) lines.push('链接：' + action.links.join(' '));
+        return { op, label, title: task.title, lines };
+      }
+      return { op, label, title: task.title, lines: [], invalid: true };
+    }
+
+    /**
+     * Pure: applies validated actions to the three stores.
+     * Returns the next stores, the previous ones (undo snapshot), and a
+     * per-action outcome list so the UI can report what was skipped and why.
+     */
+    function applyActions(state, actions, nowIso) {
+      const stamp = nowIso || new Date().toISOString();
+      let tasks = state.tasks.slice();
+      let logs = state.logs.slice();
+      let artifacts = state.artifacts.slice();
+      const outcomes = [];
+      for (const action of actions || []) {
+        const op = action && action.op;
+        if (op === 'create') {
+          const title = String(action.title || '').trim();
+          if (!title) { outcomes.push({ op, status: 'skipped', reason: 'missing-title' }); continue; }
+          const duplicate = action.force ? null : findDuplicateTask(tasks, title);
+          if (duplicate) {
+            outcomes.push({ op, status: 'skipped', reason: 'duplicate', taskId: duplicate.id, title });
+            continue;
+          }
+          const task = newTask({
+            title,
+            deadline: normalizeDeadline(action.deadline || todayDate()),
+            urgency: URGENCY[action.urgency] ? action.urgency : 'medium',
+          });
+          task.createdAt = stamp;
+          task.updatedAt = stamp;
+          tasks = [task].concat(tasks);
+          outcomes.push({ op, status: 'applied', taskId: task.id, title });
+          continue;
+        }
+        const index = tasks.findIndex((t) => t && t.id === action.taskId);
+        const task = index === -1 ? null : tasks[index];
+        if (!task) {
+          outcomes.push({ op, status: 'skipped', reason: 'missing-task', taskId: action.taskId });
+          continue;
+        }
+        if (op === 'update') {
+          const patch = {};
+          const raw = action.patch || {};
+          for (const key of PATCH_KEYS) {
+            if (!(key in raw)) continue;
+            // Only keep real changes, so a no-op update is reported as such
+            // instead of silently refreshing the task.
+            if (key === 'title') {
+              const title = String(raw.title || '').trim();
+              if (title && title !== task.title) patch.title = title;
+            } else if (key === 'urgency') {
+              if (URGENCY[raw.urgency] && raw.urgency !== task.urgency) patch.urgency = raw.urgency;
+            } else if (key === 'deadline') {
+              const deadline = normalizeDeadline(raw.deadline);
+              if (deadline !== (task.deadline || '')) patch.deadline = deadline;
+            } else {
+              const value = String(raw[key] == null ? '' : raw[key]).trim();
+              if (value !== (task[key] || '')) patch[key] = value;
+            }
+          }
+          if (Object.keys(patch).length === 0) {
+            outcomes.push({ op, status: 'skipped', reason: 'no-change', taskId: task.id });
+            continue;
+          }
+          tasks[index] = { ...task, ...patch, updatedAt: stamp };
+          outcomes.push({ op, status: 'applied', taskId: task.id, title: tasks[index].title });
+          continue;
+        }
+        if (op === 'complete' || op === 'reopen') {
+          const done = op === 'complete';
+          if ((task.status === 'done') === done) {
+            outcomes.push({ op, status: 'skipped', reason: 'no-change', taskId: task.id });
+            continue;
+          }
+          tasks[index] = {
+            ...task,
+            status: done ? 'done' : 'todo',
+            progress: done ? 100 : 0,
+            completedAt: done ? stamp : null,
+            updatedAt: stamp,
+          };
+          outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
+          continue;
+        }
+        if (op === 'log') {
+          const body = String(action.text || '').trim();
+          if (!body) {
+            outcomes.push({ op, status: 'skipped', reason: 'empty-text', taskId: task.id });
+            continue;
+          }
+          logs = logs.concat([makeLogEntry(task.id, body, action.kind, 'ai', stamp)]);
+          tasks[index] = { ...task, updatedAt: stamp };
+          outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
+          continue;
+        }
+        if (op === 'artifact') {
+          const summary = String(action.summary || '').trim();
+          const links = Array.isArray(action.links) ? action.links : [];
+          if (!summary && links.length === 0) {
+            outcomes.push({ op, status: 'skipped', reason: 'empty', taskId: task.id });
+            continue;
+          }
+          artifacts = artifacts.concat([makeArtifact(task.id, summary, links.join('\n'), stamp)]);
+          tasks[index] = { ...task, updatedAt: stamp };
+          outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
+          continue;
+        }
+        outcomes.push({ op, status: 'skipped', reason: 'unknown-op', taskId: task.id });
+      }
+      return {
+        next: { tasks, logs, artifacts },
+        before: { tasks: state.tasks, logs: state.logs, artifacts: state.artifacts },
+        outcomes,
+        applied: outcomes.filter((o) => o.status === 'applied').length,
+        skipped: outcomes.filter((o) => o.status === 'skipped').length,
+      };
+    }
+
+    /** One-line human summary of what an applied batch did. */
+    function summarizeOutcomes(result) {
+      let text = '已应用 ' + result.applied + ' 项变更。';
+      const skipped = result.outcomes.filter((o) => o.status === 'skipped');
+      if (skipped.length) {
+        const reasons = [];
+        for (const item of skipped) {
+          const reason = SKIP_REASON[item.reason] || item.reason;
+          if (reasons.indexOf(reason) === -1) reasons.push(reason);
+        }
+        text += '跳过 ' + skipped.length + ' 项（' + reasons.join('、') + '）。';
+      }
+      return text;
+    }
+
     // ---- deadline helpers -------------------------------------------------
     function makeDT(y, mo, d, hh, mm) { return y + '-' + pad2(mo) + '-' + pad2(d) + 'T' + pad2(hh) + ':' + pad2(mm); }
     function formatDeadline(deadline) {
@@ -1055,6 +1288,55 @@ window.__ModuleLoader__.load({
       .wp-artifact-link:hover { text-decoration: underline; }
       .wp-artifact-url { font-size: 12.5px; color: var(--wp-text-secondary); overflow-wrap: anywhere; }
       .wp-artifact-time { margin-top: 6px; font-size: 11.5px; color: var(--wp-text-quaternary); }
+
+      /* ---- in-task AI suggestions ---- */
+      .wp-ai-panel { margin: 0 0 16px; padding: 12px; border: 1px dashed var(--wp-border); border-radius: 10px; background: var(--wp-fill); }
+      .wp-ai-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+      .wp-ai-title { font-size: 12.5px; font-weight: 600; color: var(--wp-text-secondary); }
+      .wp-ai-tag { padding: 0 5px; border-radius: 3px; background: rgba(250, 173, 20, 0.16); font-size: 11px; line-height: 16px; color: var(--wp-warning); }
+      .wp-ai-close { margin-left: auto; width: 22px; height: 22px; padding: 0; border: none; border-radius: 4px; background: transparent; color: var(--wp-text-tertiary); font-size: 16px; line-height: 1; cursor: pointer; }
+      .wp-ai-close:hover { color: var(--wp-text); background: var(--wp-bg-container); }
+      .wp-ai-loading { margin: 0; font-size: 12.5px; color: var(--wp-text-tertiary); }
+      .wp-ai-body { display: flex; flex-direction: column; }
+      .wp-ai-reply { margin: 0 0 8px; font-size: 13px; line-height: 1.6; color: var(--wp-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .wp-ai-sugs { display: flex; flex-direction: column; gap: 10px; }
+      .wp-ai-sug { padding: 8px 10px; border-radius: 8px; background: var(--wp-bg-container); }
+      .wp-ai-sug-label { display: block; margin-bottom: 2px; font-size: 11px; color: var(--wp-text-tertiary); }
+      .wp-ai-sug-text { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--wp-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .wp-ai-adopt { margin-top: 6px; padding: 2px 8px; border: 1px solid var(--wp-border); border-radius: 4px; background: var(--wp-bg-container); color: var(--wp-primary); font: inherit; font-size: 11.5px; cursor: pointer; }
+      .wp-ai-adopt:hover { border-color: var(--wp-primary); }
+      .wp-ai-adopt:disabled { color: var(--wp-text-tertiary); border-color: var(--wp-border-secondary); cursor: default; }
+      .wp-ai-hint { margin: 10px 0 0; font-size: 11.5px; color: var(--wp-text-tertiary); }
+      .wp-composer-ai { color: var(--wp-primary); }
+      .wp-composer-spacer { flex: 1; }
+      .wp-composer-locked { align-self: center; flex-shrink: 0; font-size: 11.5px; color: var(--wp-warning); }
+      .wp-tidy-note { color: var(--wp-primary); }
+      .wp-log-ai-tag { padding: 0 3px; border-radius: 3px; background: rgba(22, 119, 255, 0.1); font-size: 10px; line-height: 15px; color: var(--wp-primary); }
+
+      /* ---- AI action confirmation card ---- */
+      .wp-action-card {
+        flex-shrink: 0; display: flex; flex-direction: column; max-height: 40vh;
+        margin: 0 12px 8px; padding: 10px;
+        border: 1px solid var(--wp-border-secondary); border-radius: 10px; background: var(--wp-fill);
+      }
+      .wp-action-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+      .wp-action-card-title { font-size: 12.5px; font-weight: 600; color: var(--wp-text); }
+      .wp-action-card-count { padding: 0 5px; border-radius: 3px; background: var(--wp-bg-container); font-size: 11px; line-height: 16px; color: var(--wp-text-tertiary); }
+      .wp-action-card-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+      .wp-action-item { display: flex; gap: 8px; padding: 8px; border-radius: 8px; background: var(--wp-bg-container); }
+      .wp-action-item-warn { border: 1px dashed var(--wp-warning); }
+      .wp-action-op { flex-shrink: 0; align-self: flex-start; padding: 0 5px; border-radius: 3px; background: rgba(22, 119, 255, 0.1); font-size: 11px; line-height: 17px; color: var(--wp-primary); }
+      .wp-action-body { min-width: 0; flex: 1; }
+      .wp-action-task { font-size: 12.5px; font-weight: 500; color: var(--wp-text); overflow-wrap: anywhere; }
+      .wp-action-line { margin-top: 2px; font-size: 11.5px; line-height: 1.5; color: var(--wp-text-secondary); overflow-wrap: anywhere; }
+      .wp-action-warn { margin-top: 4px; font-size: 11.5px; color: var(--wp-warning); }
+      .wp-action-force { margin-left: 6px; padding: 0 5px; border: 1px solid var(--wp-border); border-radius: 3px; background: var(--wp-bg-container); color: var(--wp-text-secondary); font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; }
+      .wp-action-force:hover { color: var(--wp-primary); border-color: var(--wp-primary); }
+      .wp-action-card-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+      .wp-undo-bar { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 16px 8px; }
+      .wp-undo-text { font-size: 11.5px; color: var(--wp-text-tertiary); }
+      .wp-undo-btn { padding: 2px 8px; border: 1px solid var(--wp-border); border-radius: 4px; background: var(--wp-bg-container); color: var(--wp-primary); font: inherit; font-size: 11.5px; cursor: pointer; }
+      .wp-undo-btn:hover { border-color: var(--wp-primary); }
       .wp-status-seg { display: inline-flex; padding: 2px; background: var(--wp-fill); border-radius: 6px; gap: 2px; }
       .wp-status-seg-item {
         border: none; border-radius: 4px; background: transparent;
@@ -1163,7 +1445,7 @@ window.__ModuleLoader__.load({
     }
     const INITIAL_ASSISTANT_MESSAGE = {
       role: 'assistant',
-      text: '你好，我是任务助手 👋\n直接告诉我要做什么，我会识别标题、截止时间与紧急程度并创建任务，例如「明天10点前完成季度报告，紧急」；也可以问我「我有哪些任务」。',
+      text: '你好，我是任务助手 👋\n我可以帮你创建、修改、完成和记录任务，例如「明天10点前完成季度报告，紧急」「把报告改到周五」「逾期那几条顺延到下周」。\n涉及改动时，我会先列出要改什么，你确认后才执行，也能撤销。',
     };
 
     function WorkPanel() {
@@ -1193,6 +1475,14 @@ window.__ModuleLoader__.load({
       const [artifactComposerOpen, setArtifactComposerOpen] = useState(false);
       const [artifactSummary, setArtifactSummary] = useState('');
       const [artifactLinks, setArtifactLinks] = useState('');
+      const [pendingActions, setPendingActions] = useState(null);
+      const [lastApply, setLastApply] = useState(null);
+      const [aiPanelOpen, setAiPanelOpen] = useState(false);
+      const [aiLoading, setAiLoading] = useState(false);
+      const [aiResult, setAiResult] = useState(null);
+      const [aiAdopted, setAiAdopted] = useState({});
+      const [tidyLoading, setTidyLoading] = useState(false);
+      const [tidyNote, setTidyNote] = useState('');
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1212,6 +1502,8 @@ window.__ModuleLoader__.load({
         // into the record of a different task.
         setLogComposerOpen(false); setLogText(''); setLogKind('progress');
         setArtifactComposerOpen(false); setArtifactSummary(''); setArtifactLinks('');
+        setAiPanelOpen(false); setAiResult(null); setAiAdopted({});
+        setTidyLoading(false); setTidyNote('');
       }, [selectedId]);
       useEffect(() => {
         if (!calOpen) return undefined;
@@ -1241,7 +1533,10 @@ window.__ModuleLoader__.load({
         });
       };
 
+      // Undo only covers the batch that was just applied; any manual edit in
+      // between drops the snapshot so an undo can never silently eat it.
       const applyStatus = (task, newStatus) => {
+        setLastApply(null);
         const next = statusTransition(task, newStatus);
         const iso = new Date().toISOString();
         const patch = next.status === 'done'
@@ -1250,11 +1545,15 @@ window.__ModuleLoader__.load({
         commit(tasks.map((t) => (t.id === task.id ? { ...t, ...patch, updatedAt: iso } : t)));
       };
       const reopenTask = (task) => {
+        setLastApply(null);
         const iso = new Date().toISOString();
         commit(tasks.map((t) => (t.id === task.id ? { ...t, ...reopenedState(), completedAt: null, updatedAt: iso } : t)));
       };
       const toggleDone = (task) => { if (task.status === 'done') reopenTask(task); else applyStatus(task, 'done'); };
-      const updateTask = (id, patch) => commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
+      const updateTask = (id, patch) => {
+        setLastApply(null);
+        commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
+      };
 
       /** Append one work record. Existing records are never edited or removed. */
       const appendLog = (taskId, text, kind, source) => {
@@ -1275,10 +1574,131 @@ window.__ModuleLoader__.load({
         return true;
       };
 
+      // ---- AI actions: preview -> confirm -> apply -> undo ----------------
+      const runActions = (actions) => {
+        const result = applyActions({ tasks, logs, artifacts }, actions);
+        if (result.applied > 0) {
+          setTasks(result.next.tasks); saveTasks(result.next.tasks);
+          commitLogs(result.next.logs);
+          commitArtifacts(result.next.artifacts);
+          setLastApply({ before: result.before, at: new Date().toISOString() });
+        }
+        return result;
+      };
+
+      const cancelPending = () => {
+        setPendingActions(null);
+        setMessages((prev) => prev.concat([{ role: 'assistant', text: '好的，这次变更已取消，什么都没有改动。' }]));
+      };
+
+      const confirmPending = () => {
+        if (!pendingActions) return;
+        const result = runActions(pendingActions.actions);
+        setMessages((prev) => prev.concat([{ role: 'assistant', text: summarizeOutcomes(result) }]));
+        setPendingActions(null);
+      };
+
+      /** "Create anyway": marks one pending create action as explicitly forced. */
+      const forcePendingAction = (index) => {
+        setPendingActions((prev) => {
+          if (!prev) return prev;
+          const actions = prev.actions.map((action, i) => (i === index ? { ...action, force: true } : action));
+          return { ...prev, actions };
+        });
+      };
+
+      const undoLastApply = () => {
+        if (!lastApply) return;
+        setTasks(lastApply.before.tasks); saveTasks(lastApply.before.tasks);
+        commitLogs(lastApply.before.logs);
+        commitArtifacts(lastApply.before.artifacts);
+        setLastApply(null);
+        setMessages((prev) => prev.concat([{ role: 'assistant', text: '已撤销上一次变更，数据已恢复到变更前。' }]));
+      };
+
+      // ---- in-task AI: advice and record tidying -------------------------
+      const analyzeTask = async (task) => {
+        if (!task || aiLoading) return;
+        setAiPanelOpen(true);
+        setAiLoading(true);
+        setAiResult(null);
+        setAiAdopted({});
+        try {
+          const res = await fetch(CHAT_ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'task',
+              intent: 'analyze',
+              task: {
+                id: task.id, title: task.title, description: task.description,
+                expected: task.expected, nextStep: task.nextStep, blockedReason: task.blockedReason,
+                status: task.status, urgency: task.urgency, deadline: task.deadline,
+              },
+              logs: logsOf(logs, task.id).slice(-10).map((l) => ({ at: l.at, kind: l.kind, text: l.text })),
+              artifacts: artifactsOf(artifacts, task.id).slice(-5).map((a) => ({ summary: a.summary, links: a.links })),
+            }),
+          });
+          if (!res.ok) throw new Error('http-' + res.status);
+          const data = await res.json();
+          if (!data || data.error) throw new Error((data && data.error) || 'model-error');
+          setAiResult({
+            reply: typeof data.reply === 'string' ? data.reply : '',
+            suggestion: data.suggestion || null,
+          });
+        } catch {
+          setAiResult({ reply: 'AI 暂时不可用，稍后再试。', suggestion: null, error: true });
+        } finally {
+          setAiLoading(false);
+        }
+      };
+
+      /**
+       * Adopting a suggestion is the only way AI text reaches the task.
+       * Until this click, the suggestion is displayed as unconfirmed advice.
+       */
+      const adoptSuggestion = (task, field, value) => {
+        if (!task || !value) return;
+        updateTask(task.id, { [field]: value });
+        setAiAdopted((prev) => ({ ...prev, [field]: true }));
+      };
+
+      const tidyLog = async (task) => {
+        const raw = logText.trim();
+        if (!raw || tidyLoading || !task) return;
+        setTidyLoading(true);
+        setTidyNote('');
+        try {
+          const res = await fetch(CHAT_ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'task',
+              intent: 'tidy',
+              task: { id: task.id, title: task.title, expected: task.expected, nextStep: task.nextStep },
+              rawText: raw,
+            }),
+          });
+          if (!res.ok) throw new Error('http-' + res.status);
+          const data = await res.json();
+          if (!data || data.error) throw new Error((data && data.error) || 'model-error');
+          const proposal = data.proposal && typeof data.proposal.text === 'string' ? data.proposal.text.trim() : '';
+          if (!proposal) throw new Error('empty-proposal');
+          setLogText(proposal);
+          if (data.proposal && LOG_KINDS[data.proposal.kind]) setLogKind(data.proposal.kind);
+          setTidyNote('AI 已整理。确认无误后再保存，保存的才是你确认的事实。');
+        } catch {
+          setTidyNote('AI 暂时不可用，已保留你的原文。');
+        } finally {
+          setTidyLoading(false);
+        }
+      };
+
       const addQuick = () => {
         const title = quickText.trim();
         if (!title) { if (quickInputRef.current) quickInputRef.current.focus(); return; }
         const deadline = quickDeadline.time ? quickDeadline.date + 'T' + quickDeadline.time : quickDeadline.date;
+        setLastApply(null);
         const task = newTask({ title, deadline });
         addTaskToState(task);
         setQuickText('');
@@ -1288,6 +1708,9 @@ window.__ModuleLoader__.load({
       };
 
       const sendChat = async (textArg) => {
+        // A pending preview must be resolved first: asking again would replace
+        // the card and silently drop the changes the user has not reviewed.
+        if (pendingActions) return;
         const text = (typeof textArg === 'string' ? textArg : cmdInput).trim();
         if (!text || sendingRef.current) return;
         if (typeof textArg !== 'string') setCmdInput('');
@@ -1302,17 +1725,23 @@ window.__ModuleLoader__.load({
           const intent = detectIntent(text);
           if (intent === 'greeting') return '你好！直接告诉我要做什么就能创建任务，例如「明天10点前完成报告，紧急」。';
           if (intent === 'list') return buildTaskListReply(tasks);
+          if (intent !== 'create') {
+            return '模型暂时不可用，所以这次没有改动任何任务。等模型可用后再试，或直接在任务详情里手动修改。';
+          }
           const parsed = parseTask(text, new Date());
           if (parsed) {
-            const done = parsed.status === 'done';
-            const task = newTask({
+            // Local fallback goes through the same action pipeline, so the
+            // duplicate guard applies even when the model is unavailable.
+            const result = runActions([{
+              op: 'create',
               title: parsed.title,
-              status: done ? 'done' : 'todo',
+              deadline: parsed.deadline || '',
               urgency: parsed.urgency,
-              deadline: parsed.deadline || todayDate(),
-            });
-            addTaskToState(task);
-            return '（模型暂不可用，本次由本地规则解析）\n' + buildConfirmation(task);
+            }]);
+            if (result.applied > 0) {
+              return '（模型暂不可用，本次由本地规则解析）\n' + buildConfirmation(result.next.tasks[0]);
+            }
+            return '（模型暂不可用，本次由本地规则解析）\n已存在相同或相似的任务，未重复创建。';
           }
           return '模型暂时不可用，我也没理解这条任务。可以试试「明天10点前完成季度报告，紧急」。';
         };
@@ -1322,22 +1751,29 @@ window.__ModuleLoader__.load({
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
+              mode: 'chat',
               messages: history.slice(-12).map((m) => ({ role: m.role, text: m.text })),
-              tasks: tasks.slice(0, 50).map((t) => ({ title: t.title, status: t.status, urgency: t.urgency, progress: t.progress, deadline: t.deadline })),
+              tasks: tasks.slice(0, 50).map((t) => ({
+                id: t.id, title: t.title, status: t.status, urgency: t.urgency,
+                deadline: t.deadline, nextStep: t.nextStep, blockedReason: t.blockedReason,
+              })),
             }),
           });
           if (!res.ok) throw new Error('http-' + res.status);
           const data = await res.json();
           if (!data || data.error) throw new Error((data && data.error) || 'model-error');
-          let reply = typeof data.reply === 'string' ? data.reply : '';
-          if (data.task) {
-            const task = buildTaskFromModel(data.task);
-            if (task) {
-              addTaskToState(task);
-              if (!reply) reply = buildConfirmation(task);
-            }
+          const reply = typeof data.reply === 'string' ? data.reply : '';
+          const actions = Array.isArray(data.actions) ? data.actions : [];
+          if (actions.length > 0) {
+            // Nothing is written yet: the card above the composer asks first.
+            setPendingActions({ actions, reply });
+            setMessages((prev) => prev.concat([{
+              role: 'assistant',
+              text: reply || '我整理了 ' + actions.length + ' 项变更，请在下方确认后执行。',
+            }]));
+          } else {
+            setMessages((prev) => prev.concat([{ role: 'assistant', text: reply || '已处理。' }]));
           }
-          setMessages((prev) => [...prev, { role: 'assistant', text: reply || '已处理。' }]);
         } catch {
           setMessages((prev) => [...prev, { role: 'assistant', text: fallback() }]);
         } finally {
@@ -1623,12 +2059,19 @@ window.__ModuleLoader__.load({
         h('textarea', {
           className: 'wp-composer-panel-input', rows: 3, value: logText,
           placeholder: '做了什么 / 遇到什么 / 决定了什么',
-          onChange: (e) => setLogText(e.target.value),
+          onChange: (e) => { setLogText(e.target.value); setTidyNote(''); },
         }),
+        tidyNote ? h('p', { className: 'wp-composer-panel-hint wp-tidy-note' }, tidyNote) : null,
         h('div', { className: 'wp-composer-panel-actions' },
           h('button', {
+            className: 'wp-btn wp-btn-text wp-composer-ai', type: 'button',
+            disabled: !logText.trim() || tidyLoading ? 'true' : undefined,
+            onClick: () => tidyLog(selectedTask),
+          }, tidyLoading ? '整理中…' : 'AI 整理'),
+          h('span', { className: 'wp-composer-spacer' }),
+          h('button', {
             className: 'wp-btn wp-btn-text', type: 'button',
-            onClick: () => { setLogComposerOpen(false); setLogText(''); },
+            onClick: () => { setLogComposerOpen(false); setLogText(''); setTidyNote(''); },
           }, '取消'),
           h('button', {
             className: 'wp-btn wp-btn-primary', type: 'button', disabled: !logText.trim(),
@@ -1666,6 +2109,45 @@ window.__ModuleLoader__.load({
               }
             },
           }, '保存'))) : null;
+
+      const detailAiPanel = (selectedTask && aiPanelOpen) ? h('div', { className: 'wp-ai-panel' },
+        h('div', { className: 'wp-ai-head' },
+          h('span', { className: 'wp-ai-title' }, 'AI 建议'),
+          h('span', { className: 'wp-ai-tag' }, '未确认'),
+          h('button', {
+            className: 'wp-ai-close', type: 'button', 'aria-label': '收起',
+            onClick: () => setAiPanelOpen(false),
+          }, '×')),
+        aiLoading
+          ? h('p', { className: 'wp-ai-loading' }, '正在结合这条任务的记录分析…')
+          : h('div', { className: 'wp-ai-body' },
+              aiResult && aiResult.reply ? h('p', { className: 'wp-ai-reply' }, aiResult.reply) : null,
+              aiResult && aiResult.suggestion ? h('div', { className: 'wp-ai-sugs' },
+                aiResult.suggestion.summary ? h('div', { className: 'wp-ai-sug' },
+                  h('span', { className: 'wp-ai-sug-label' }, '进展摘要'),
+                  h('p', { className: 'wp-ai-sug-text' }, aiResult.suggestion.summary)) : null,
+                aiResult.suggestion.nextStep ? h('div', { className: 'wp-ai-sug' },
+                  h('span', { className: 'wp-ai-sug-label' }, '建议下一步'),
+                  h('p', { className: 'wp-ai-sug-text' }, aiResult.suggestion.nextStep),
+                  h('button', {
+                    className: 'wp-ai-adopt', type: 'button',
+                    disabled: aiAdopted.nextStep ? 'true' : undefined,
+                    onClick: () => adoptSuggestion(selectedTask, 'nextStep', aiResult.suggestion.nextStep),
+                  }, aiAdopted.nextStep ? '已采纳' : '采纳为下一步')) : null,
+                aiResult.suggestion.blockedReason ? h('div', { className: 'wp-ai-sug' },
+                  h('span', { className: 'wp-ai-sug-label' }, '疑似阻塞'),
+                  h('p', { className: 'wp-ai-sug-text' }, aiResult.suggestion.blockedReason),
+                  h('button', {
+                    className: 'wp-ai-adopt', type: 'button',
+                    disabled: aiAdopted.blockedReason ? 'true' : undefined,
+                    onClick: () => adoptSuggestion(selectedTask, 'blockedReason', aiResult.suggestion.blockedReason),
+                  }, aiAdopted.blockedReason ? '已采纳' : '采纳为阻塞原因')) : null,
+                Array.isArray(aiResult.suggestion.risks) && aiResult.suggestion.risks.length
+                  ? h('div', { className: 'wp-ai-sug' },
+                      h('span', { className: 'wp-ai-sug-label' }, '风险提示'),
+                      aiResult.suggestion.risks.map((risk, i) => h('p', { className: 'wp-ai-sug-text', key: i }, '· ' + risk)))
+                  : null) : null),
+        h('p', { className: 'wp-ai-hint' }, '以上是 AI 建议，只有点「采纳」才会写入任务。')) : null;
 
       const detailPanel = selectedTask ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
@@ -1749,9 +2231,20 @@ window.__ModuleLoader__.load({
               className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
               'aria-expanded': artifactComposerOpen ? 'true' : 'false',
               onClick: () => { setArtifactComposerOpen((v) => !v); setLogComposerOpen(false); },
-            }, '关联成果')),
+            }, '关联成果'),
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              'aria-expanded': aiPanelOpen ? 'true' : 'false',
+              disabled: aiLoading ? 'true' : undefined,
+              onClick: () => {
+                if (aiLoading) return;
+                if (aiPanelOpen) { setAiPanelOpen(false); return; }
+                analyzeTask(selectedTask);
+              },
+            }, aiLoading ? '分析中…' : 'AI 建议')),
           detailLogComposer,
           detailArtifactComposer,
+          detailAiPanel,
           h('div', { className: 'wp-detail-section' },
             h('div', { className: 'wp-detail-section-head' },
               h('span', { className: 'wp-detail-section-title' }, '工作记录'),
@@ -1761,6 +2254,7 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'wp-log-item', key: entry.id },
                     h('div', { className: 'wp-log-meta' },
                       h('span', { className: 'wp-log-kind wp-log-kind-' + entry.kind }, LOG_KINDS[entry.kind] || '记录'),
+                      entry.source === 'ai' ? h('span', { className: 'wp-log-ai-tag' }, 'AI') : null,
                       h('span', { className: 'wp-log-time' }, formatDateTime(entry.at))),
                     h('div', { className: 'wp-log-text' }, entry.text))))
               : h('p', { className: 'wp-detail-empty' }, '还没有记录。点「记录进展」写下这一次推进。')),
@@ -1792,17 +2286,50 @@ window.__ModuleLoader__.load({
         onKeyDown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } },
       });
       const composerSend = h('button', {
-        className: 'wp-send-btn', type: 'button', 'aria-label': '发送', title: '发送',
-        disabled: !cmdInput.trim() || sending, onClick: () => sendChat(),
+        className: 'wp-send-btn', type: 'button', 'aria-label': '发送',
+        title: pendingActions ? '请先确认或取消上方的变更' : '发送',
+        disabled: !cmdInput.trim() || sending || !!pendingActions, onClick: () => sendChat(),
       }, h(SendIcon));
       const composer = h('div', { className: 'wp-drawer-composer' },
-        h('div', { className: 'wp-composer-box' }, composerInput, composerSend));
+        h('div', { className: 'wp-composer-box' },
+          pendingActions ? h('span', { className: 'wp-composer-locked' }, '先确认上方变更') : null,
+          composerInput, composerSend));
+
+      const pendingCard = pendingActions ? h('div', { className: 'wp-action-card', role: 'group', 'aria-label': '待确认变更' },
+        h('div', { className: 'wp-action-card-head' },
+          h('span', { className: 'wp-action-card-title' }, '待确认变更'),
+          h('span', { className: 'wp-action-card-count' }, pendingActions.actions.length + ' 项')),
+        h('div', { className: 'wp-action-card-list' }, pendingActions.actions.map((action, i) => {
+          const info = describeAction(tasks, action);
+          return h('div', {
+            className: 'wp-action-item' + (info.duplicateOf || info.invalid ? ' wp-action-item-warn' : ''),
+            key: i,
+          },
+            h('span', { className: 'wp-action-op' }, info.label),
+            h('div', { className: 'wp-action-body' },
+              h('div', { className: 'wp-action-task' }, info.title),
+              info.lines.map((line, j) => h('div', { className: 'wp-action-line', key: j }, line)),
+              info.duplicateOf ? h('div', { className: 'wp-action-warn' },
+                '已存在相似任务「' + info.duplicateOf + '」，执行时将跳过',
+                h('button', {
+                  className: 'wp-action-force', type: 'button',
+                  onClick: () => forcePendingAction(i),
+                }, '仍然创建')) : null,
+              info.invalid ? h('div', { className: 'wp-action-warn' }, '无法执行，执行时将跳过') : null));
+        })),
+        h('div', { className: 'wp-action-card-actions' },
+          h('button', { className: 'wp-btn wp-btn-text', type: 'button', onClick: cancelPending }, '取消'),
+          h('button', { className: 'wp-btn wp-btn-primary', type: 'button', onClick: confirmPending }, '确认执行'))) : null;
+
+      const undoBar = lastApply ? h('div', { className: 'wp-undo-bar' },
+        h('span', { className: 'wp-undo-text' }, '上一次变更已生效'),
+        h('button', { className: 'wp-undo-btn', type: 'button', onClick: undoLastApply }, '撤销')) : null;
 
       const drawer = assistantOpen ? h('aside', { className: 'wp-drawer', role: 'dialog', 'aria-label': 'AI 助手' },
         h('div', { className: 'wp-drawer-head' },
           h(SparkIcon, { size: 15 }),
           h('span', { className: 'wp-drawer-title' }, 'AI 助手'),
-          h('span', { className: 'wp-drawer-sub' }, '对话式创建任务'),
+          h('span', { className: 'wp-drawer-sub' }, '确认后执行 · 可撤销'),
           h('button', { className: 'wp-drawer-close', type: 'button', 'aria-label': '关闭', onClick: () => setAssistantOpen(false) }, '×')),
         h('div', { className: 'wp-drawer-thread', ref: chatScrollRef },
           messages.map((msg, i) => h('div', { className: 'wp-msg wp-msg-' + msg.role, key: i },
@@ -1812,6 +2339,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-drawer-suggestions' },
           ['明天10点前完成季度报告，紧急', '本周五下午6点前提交方案', '我有哪些任务'].map((s, i) =>
             h('button', { className: 'wp-suggestion', key: i, type: 'button', onClick: () => sendChat(s) }, s))),
+        pendingCard,
+        undoBar,
         composer) : null;
 
       return h('div', { className: 'wp-root', 'data-theme': theme },
@@ -1841,6 +2370,7 @@ window.__ModuleLoader__.load({
         formatRelativeTime, todayDate, normalizeDeadline, formatQuickLabel, formatTaskDate,
         withV2Fields, newTask, logsOf, latestLog, artifactsOf, parseLinks, safeHref,
         takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
+        normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
       },
     };
   },
