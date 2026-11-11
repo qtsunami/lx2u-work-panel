@@ -423,6 +423,157 @@ window.__ModuleLoader__.load({
       return text;
     }
 
+    // ---- M3: weekly report ------------------------------------------------
+    const REPORTS_KEY = '@local/work-panel:reports:v1';
+    // Inline evidence marker written by the model; resolved against the
+    // evidence bundle so a report can always be traced back to its sources.
+    const REF_SOURCE = '\\[\\[(task|log|artifact):([A-Za-z0-9_-]+)\\]\\]';
+    const REPORT_SECTIONS = ['本期主要成果', '重点工作进展', '问题、风险与阻塞', 'AI 辅助分析与建议', '下期计划'];
+
+    function ymd(date) { return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()); }
+    function isoToYmd(iso) {
+      const date = new Date(iso || '');
+      return Number.isNaN(date.getTime()) ? '' : ymd(date);
+    }
+    /** Local-day membership: both ends are inclusive. */
+    function inPeriod(iso, period) {
+      const day = isoToYmd(iso);
+      return !!day && !!period && day >= period.start && day <= period.end;
+    }
+    function weekRangeOf(date) {
+      const start = startOfWeek(date);
+      const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+      return { start: ymd(start), end: ymd(end) };
+    }
+    function shiftWeek(period, delta) {
+      const start = dateOnlyToDate(period && period.start) || new Date();
+      return weekRangeOf(new Date(start.getFullYear(), start.getMonth(), start.getDate() + delta * 7));
+    }
+    function periodLabel(period) {
+      const start = dateOnlyToDate(period && period.start);
+      const end = dateOnlyToDate(period && period.end);
+      if (!start || !end) return (period && period.start) + ' ~ ' + (period && period.end);
+      return (start.getMonth() + 1) + '月' + start.getDate() + '日 - ' + (end.getMonth() + 1) + '月' + end.getDate() + '日';
+    }
+    function periodKey(period) { return (period && period.start) + '_' + (period && period.end); }
+
+    function loadReports() {
+      try {
+        const raw = window.localStorage.getItem(REPORTS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((r) => r && typeof r.id === 'string' && typeof r.body === 'string');
+      } catch { return []; }
+    }
+    function saveReports(reports) { try { window.localStorage.setItem(REPORTS_KEY, JSON.stringify(reports)); } catch { /* ignore */ } }
+
+    /**
+     * Evidence for one period: tasks completed inside it, plus unfinished
+     * tasks that gained a work record or an artifact inside it.
+     */
+    function collectEvidence(tasks, logs, artifacts, period) {
+      const items = [];
+      for (const task of tasks) {
+        if (!task || task.deletedAt) continue;
+        const taskLogs = logsOf(logs, task.id).filter((entry) => inPeriod(entry.at, period));
+        const taskArtifacts = artifactsOf(artifacts, task.id).filter((item) => inPeriod(item.at, period));
+        const completedThisPeriod = task.status === 'done' && inPeriod(task.completedAt, period);
+        if (!completedThisPeriod && taskLogs.length === 0 && taskArtifacts.length === 0) continue;
+        items.push({
+          taskId: task.id,
+          title: task.title,
+          status: task.status,
+          completedThisPeriod,
+          expected: task.expected,
+          nextStep: task.nextStep,
+          blockedReason: task.blockedReason,
+          logs: taskLogs,
+          artifacts: taskArtifacts,
+          snapshot: takeTaskSnapshot(task, logs),
+        });
+      }
+      items.sort((a, b) => {
+        if (a.completedThisPeriod !== b.completedThisPeriod) return a.completedThisPeriod ? -1 : 1;
+        return String(a.title).localeCompare(String(b.title));
+      });
+      return items;
+    }
+
+    function buildEvidenceIndex(evidence) {
+      const byTask = new Map();
+      const byLog = new Map();
+      const byArtifact = new Map();
+      for (const item of evidence) {
+        byTask.set(item.taskId, item);
+        for (const entry of item.logs) byLog.set(entry.id, { item, entry });
+        for (const artifact of item.artifacts) byArtifact.set(artifact.id, { item, artifact });
+      }
+      return { byTask, byLog, byArtifact };
+    }
+
+    function resolveRef(index, type, id) {
+      if (type === 'task') {
+        const item = index.byTask.get(id);
+        return item ? { type, id, item } : null;
+      }
+      if (type === 'log') {
+        const hit = index.byLog.get(id);
+        return hit ? { type, id, item: hit.item, entry: hit.entry } : null;
+      }
+      if (type === 'artifact') {
+        const hit = index.byArtifact.get(id);
+        return hit ? { type, id, item: hit.item, artifact: hit.artifact } : null;
+      }
+      return null;
+    }
+
+    /** Unique, resolvable refs in document order. Unknown markers are ignored. */
+    function parseRefs(body, evidence) {
+      const index = buildEvidenceIndex(evidence);
+      const out = [];
+      const seen = new Set();
+      const re = new RegExp(REF_SOURCE, 'g');
+      let match = re.exec(String(body || ''));
+      while (match !== null) {
+        const key = match[1] + ':' + match[2];
+        const found = resolveRef(index, match[1], match[2]);
+        if (found && !seen.has(key)) {
+          seen.add(key);
+          out.push(found);
+        }
+        match = re.exec(String(body || ''));
+      }
+      return out;
+    }
+
+    function refLabel(ref) {
+      if (ref.type === 'task') return '任务「' + ref.item.title + '」（' + (ref.item.status === 'done' ? '已完成' : '待办') + '）';
+      if (ref.type === 'log') {
+        const text = String((ref.entry && ref.entry.text) || '');
+        const short = text.slice(0, 40) + (text.length > 40 ? '…' : '');
+        return '工作记录「' + short + '」（任务：' + ref.item.title + '，' + formatDateTime(ref.entry && ref.entry.at) + '）';
+      }
+      const summary = String((ref.artifact && ref.artifact.summary) || '').slice(0, 40);
+      return '成果「' + (summary || '无摘要') + '」（任务：' + ref.item.title + '）';
+    }
+
+    /** Markdown export: inline markers become numbered footnotes. */
+    function markdownWithFootnotes(body, evidence) {
+      const refs = parseRefs(body, evidence);
+      const numbers = new Map();
+      const numbered = refs.map((ref) => {
+        numbers.set(ref.type + ':' + ref.id, numbers.size + 1);
+        return { ref, n: numbers.get(ref.type + ':' + ref.id) };
+      });
+      const text = String(body || '').replace(new RegExp(REF_SOURCE, 'g'), (whole, type, id) => {
+        const n = numbers.get(type + ':' + id);
+        return n ? '[^' + n + ']' : '';
+      });
+      const notes = numbered.map(({ ref, n }) => '[^' + n + ']: ' + refLabel(ref));
+      return text + (notes.length ? '\n\n' + notes.join('\n') : '');
+    }
+
     // ---- deadline helpers -------------------------------------------------
     function makeDT(y, mo, d, hh, mm) { return y + '-' + pad2(mo) + '-' + pad2(d) + 'T' + pad2(hh) + ':' + pad2(mm); }
     function formatDeadline(deadline) {
@@ -1332,6 +1483,72 @@ window.__ModuleLoader__.load({
       .wp-action-warn { margin-top: 4px; font-size: 11.5px; color: var(--wp-warning); }
       .wp-action-force { margin-left: 6px; padding: 0 5px; border: 1px solid var(--wp-border); border-radius: 3px; background: var(--wp-bg-container); color: var(--wp-text-secondary); font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; }
       .wp-action-force:hover { color: var(--wp-primary); border-color: var(--wp-primary); }
+
+      /* ---- weekly report ---- */
+      .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
+      .wp-report { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+      .wp-report-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+      .wp-report-period { display: flex; align-items: center; gap: 6px; }
+      .wp-report-nav {
+        width: 24px; height: 24px; padding: 0; border: 1px solid var(--wp-border); border-radius: 6px;
+        background: transparent; color: var(--wp-text-secondary); font: inherit; line-height: 1; cursor: pointer;
+      }
+      .wp-report-nav:hover { color: var(--wp-primary); border-color: var(--wp-primary); }
+      .wp-report-period-label { font-size: 13px; font-weight: 500; color: var(--wp-text); }
+      .wp-report-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .wp-report-dirty { font-size: 11.5px; color: var(--wp-warning); }
+      .wp-report-notice { margin: 0; padding: 7px 10px; border-radius: 7px; font-size: 12px; line-height: 1.5; background: var(--wp-fill); color: var(--wp-text-secondary); }
+      .wp-report-notice-warn { background: rgba(250, 173, 20, 0.12); color: var(--wp-warning); }
+      .wp-report-notice-err { background: rgba(255, 77, 79, 0.1); color: var(--wp-error); }
+      .wp-report-editor {
+        flex: 1; min-height: 0; width: 100%; box-sizing: border-box;
+        padding: 14px 16px; border: 1px solid var(--wp-border-secondary); border-radius: 10px;
+        background: var(--wp-bg-container); color: var(--wp-text);
+        font: inherit; font-size: 13.5px; line-height: 1.85; resize: none; outline: none;
+      }
+      .wp-report-editor:focus { border-color: var(--wp-primary); }
+      .wp-report-preview { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 2px 20px; }
+      .wp-report-h { margin: 20px 0 6px; font-size: 15px; font-weight: 600; color: var(--wp-text); }
+      .wp-report-h:first-child { margin-top: 0; }
+      .wp-report-line { font-size: 13.5px; line-height: 1.85; color: var(--wp-text); overflow-wrap: anywhere; }
+      .wp-report-gap { height: 4px; }
+      .wp-ref {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 15px; height: 15px; margin: 0 2px; padding: 0 3px;
+        border: none; border-radius: 3px; background: rgba(22, 119, 255, 0.1);
+        color: var(--wp-primary); font: inherit; font-size: 10.5px; line-height: 1; cursor: pointer;
+        vertical-align: 2px;
+      }
+      .wp-ref:hover { background: rgba(22, 119, 255, 0.22); }
+      .wp-ref-broken { background: var(--wp-fill); color: var(--wp-text-tertiary); cursor: help; }
+      .wp-report-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; }
+      .wp-report-empty-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--wp-text); }
+      .wp-report-empty-desc { margin: 0; max-width: 440px; font-size: 12.5px; line-height: 1.7; color: var(--wp-text-secondary); }
+      .wp-report-empty-warn { margin: 0; font-size: 12px; color: var(--wp-warning); }
+
+      /* ---- evidence sidebar ---- */
+      .wp-evidence {
+        width: 380px; flex-shrink: 0; display: flex; flex-direction: column; overflow-y: auto;
+        padding: 16px; background: var(--wp-bg-container); border-left: 1px solid var(--wp-border-secondary);
+      }
+      .wp-evidence-head { display: flex; align-items: center; gap: 6px; }
+      .wp-evidence-title { font-size: 13px; font-weight: 600; color: var(--wp-text); }
+      .wp-evidence-count { padding: 0 5px; border-radius: 8px; background: var(--wp-fill); font-size: 11px; line-height: 16px; color: var(--wp-text-tertiary); }
+      .wp-evidence-all {
+        margin-left: auto; padding: 2px 8px; border: 1px solid var(--wp-border); border-radius: 4px;
+        background: transparent; color: var(--wp-text-secondary); font: inherit; font-size: 11.5px; cursor: pointer;
+      }
+      .wp-evidence-all:hover { color: var(--wp-primary); border-color: var(--wp-primary); }
+      .wp-evidence-hint { margin: 8px 0 12px; font-size: 11.5px; line-height: 1.6; color: var(--wp-text-tertiary); }
+      .wp-evidence-list { display: flex; flex-direction: column; gap: 8px; }
+      .wp-evidence-item { display: flex; gap: 8px; padding: 10px; border: 1px solid var(--wp-border-secondary); border-radius: 8px; cursor: pointer; }
+      .wp-evidence-item:hover { background: var(--wp-fill); }
+      .wp-evidence-off { opacity: 0.45; }
+      .wp-evidence-check { margin-top: 2px; flex-shrink: 0; }
+      .wp-evidence-body { min-width: 0; flex: 1; }
+      .wp-evidence-task { font-size: 13px; font-weight: 500; color: var(--wp-text); overflow-wrap: anywhere; }
+      .wp-evidence-meta { margin-top: 2px; font-size: 11.5px; color: var(--wp-text-tertiary); }
+      .wp-evidence-last { margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--wp-text-secondary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
       .wp-action-card-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
       .wp-undo-bar { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 16px 8px; }
       .wp-undo-text { font-size: 11.5px; color: var(--wp-text-tertiary); }
@@ -1345,9 +1562,9 @@ window.__ModuleLoader__.load({
       }
       .wp-status-seg-item[data-active='true'] { background: var(--wp-bg-container); color: var(--wp-primary); font-weight: 500; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
 
-      @media (max-width: 1200px) { .wp-detail { width: 360px; } }
+      @media (max-width: 1200px) { .wp-detail { width: 360px; } .wp-evidence { width: 340px; } }
       @media (max-width: 980px) {
-        .wp-detail {
+        .wp-detail, .wp-evidence {
           position: absolute; top: 0; right: 0; bottom: 0; z-index: 120;
           width: min(400px, calc(100% - 40px)); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
         }
@@ -1357,7 +1574,7 @@ window.__ModuleLoader__.load({
         .wp-mid-head { padding: 12px 14px 8px; }
         .wp-mid-body { padding: 12px 14px 20px; }
         .wp-search-input { width: 120px; }
-        .wp-detail { width: 100%; }
+        .wp-detail, .wp-evidence { width: 100%; }
       }
 
       @media (max-width: 760px) {
@@ -1483,6 +1700,14 @@ window.__ModuleLoader__.load({
       const [aiAdopted, setAiAdopted] = useState({});
       const [tidyLoading, setTidyLoading] = useState(false);
       const [tidyNote, setTidyNote] = useState('');
+      const [reports, setReports] = useState(loadReports);
+      const [reportPeriod, setReportPeriod] = useState(() => weekRangeOf(new Date()));
+      const [reportMode, setReportMode] = useState('preview');
+      const [reportBody, setReportBody] = useState('');
+      const [reportDirty, setReportDirty] = useState(false);
+      const [reportExcluded, setReportExcluded] = useState([]);
+      const [reportGenerating, setReportGenerating] = useState(false);
+      const [reportNotice, setReportNotice] = useState(null);
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1497,6 +1722,15 @@ window.__ModuleLoader__.load({
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
       useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
+      // Load the draft that belongs to the selected period (one draft per week).
+      useEffect(() => {
+        const draft = reports.find((r) => r.kind === 'week' && periodKey(r.period) === periodKey(reportPeriod)) || null;
+        setReportBody(draft ? draft.body : '');
+        setReportExcluded(draft && Array.isArray(draft.excluded) ? draft.excluded : []);
+        setReportDirty(false);
+        setReportNotice(null);
+      }, [reportPeriod.start, reportPeriod.end, reports.length]);
+
       useEffect(() => {
         // Switching tasks closes the inline composers so a draft never leaks
         // into the record of a different task.
@@ -1803,6 +2037,11 @@ window.__ModuleLoader__.load({
         return { total: tasks.length, byStatus, overdue, todayCount };
       }, [tasks]);
 
+      // Report scope: one draft per week, built from this period's evidence.
+      const reportDraft = reports.find((r) => r.kind === 'week' && periodKey(r.period) === periodKey(reportPeriod)) || null;
+      const reportEvidenceAll = collectEvidence(tasks, logs, artifacts, reportPeriod);
+      const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
+
       const viewTasks = useMemo(() => {
         if (activeView === 'done') return tasks.filter((t) => t.status === 'done');
         if (activeView === 'today') return tasks.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
@@ -1845,8 +2084,13 @@ window.__ModuleLoader__.load({
       }, [filteredTasks]);
 
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
-      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成' }[activeView] || '全部任务';
+      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报' }[activeView] || '全部任务';
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
+      const isReportsView = activeView === 'reports';
+      const midTitle = isReportsView ? '周报' : viewTitle;
+      const midStats = isReportsView
+        ? periodLabel(reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
+        : statsText;
 
       const rowDeadline = (task) => {
         if (!task.deadline) return null;
@@ -1892,6 +2136,143 @@ window.__ModuleLoader__.load({
               h('span', { className: 'wp-row-log-kind' }, LOG_KINDS[recent.kind] || '记录'),
               h('span', { className: 'wp-row-log-text' }, recent.text)) : null),
           dl ? h('span', { className: 'wp-row-time ' + dl.cls }, dl.text) : null);
+      };
+
+      // ---- weekly report --------------------------------------------------
+      const saveReport = (body) => {
+        const text = String(body == null ? reportBody : body);
+        const now = new Date().toISOString();
+        const existing = reports.find((r) => r.kind === 'week' && periodKey(r.period) === periodKey(reportPeriod)) || null;
+        // A+B decision: refs keep the id (navigation) and the snapshot captured
+        // now (so editing a task later never rewrites this report).
+        const refs = parseRefs(text, reportEvidenceAll).map((ref) => ({
+          type: ref.type,
+          id: ref.id,
+          taskId: ref.item.taskId,
+          snapshot: ref.item.snapshot,
+          entry: ref.entry ? { at: ref.entry.at, kind: ref.entry.kind, text: ref.entry.text } : null,
+          artifact: ref.artifact ? { summary: ref.artifact.summary, links: ref.artifact.links } : null,
+        }));
+        const record = {
+          id: existing ? existing.id : 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+          kind: 'week',
+          period: { start: reportPeriod.start, end: reportPeriod.end },
+          projectScope: '',
+          body: text,
+          refs,
+          excluded: reportExcluded.slice(),
+          derivedFromReportIds: existing ? existing.derivedFromReportIds || [] : [],
+          status: 'draft',
+          createdAt: existing ? existing.createdAt : now,
+          updatedAt: now,
+        };
+        const next = existing ? reports.map((r) => (r.id === existing.id ? record : r)) : reports.concat([record]);
+        setReports(next);
+        saveReports(next);
+        setReportBody(text);
+        setReportDirty(false);
+        return record;
+      };
+
+      const generateReport = async () => {
+        if (reportGenerating) return;
+        setReportGenerating(true);
+        setReportNotice(null);
+        try {
+          const res = await fetch(CHAT_ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'report',
+              kind: 'week',
+              period: { start: reportPeriod.start, end: reportPeriod.end },
+              evidence: reportEvidence.map((item) => ({
+                taskId: item.taskId,
+                title: item.title,
+                status: item.status,
+                completedThisPeriod: item.completedThisPeriod,
+                expected: item.expected,
+                nextStep: item.nextStep,
+                blockedReason: item.blockedReason,
+                logs: item.logs.map((entry) => ({ id: entry.id, at: entry.at, kind: entry.kind, text: entry.text })),
+                artifacts: item.artifacts.map((artifact) => ({ id: artifact.id, summary: artifact.summary, links: artifact.links })),
+              })),
+            }),
+          });
+          if (!res.ok) throw new Error('http-' + res.status);
+          const data = await res.json();
+          if (!data || data.error) throw new Error((data && data.error) || 'model-error');
+          const body = data.report && typeof data.report.body === 'string' ? data.report.body.trim() : '';
+          if (!body) throw new Error('empty-report');
+          saveReport(body);
+          const notices = [];
+          if (data.droppedRefs) notices.push('已移除 ' + data.droppedRefs + ' 个无法核对的依据标记');
+          if (parseRefs(body, reportEvidenceAll).length === 0) notices.push('正文没有引用任何依据，请人工核对');
+          setReportNotice({
+            kind: notices.length ? 'warn' : 'ok',
+            text: notices.length ? notices.join('；') : '报告已生成并保存为草稿，可继续编辑后复制或导出。',
+          });
+        } catch {
+          setReportNotice({ kind: 'err', text: '生成失败：模型暂时不可用或返回无法解析。你的草稿没有被改动。' });
+        } finally {
+          setReportGenerating(false);
+        }
+      };
+
+      const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll);
+
+      const copyReport = () => {
+        const text = reportMarkdown();
+        const fallbackCopy = () => {
+          try {
+            const area = document.createElement('textarea');
+            area.value = text;
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand('copy');
+            document.body.removeChild(area);
+            setReportNotice({ kind: 'ok', text: '已复制到剪贴板。' });
+          } catch {
+            setReportNotice({ kind: 'err', text: '复制失败，请手动选择正文。' });
+          }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(
+            () => setReportNotice({ kind: 'ok', text: '已复制到剪贴板。' }),
+            fallbackCopy,
+          );
+        } else {
+          fallbackCopy();
+        }
+      };
+
+      const exportReport = () => {
+        try {
+          const blob = new Blob([reportMarkdown()], { type: 'text/markdown;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = '周报_' + reportPeriod.start + '_' + reportPeriod.end + '.md';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+          setReportNotice({ kind: 'ok', text: '已导出 Markdown。' });
+        } catch {
+          setReportNotice({ kind: 'err', text: '导出失败。' });
+        }
+      };
+
+      const jumpToRef = (ref) => {
+        setActiveView('all');
+        setSelectedId(ref.item.taskId);
+      };
+
+      const toggleEvidence = (taskId) => {
+        setReportExcluded((prev) => (prev.indexOf(taskId) === -1 ? prev.concat([taskId]) : prev.filter((id) => id !== taskId)));
+      };
+      const toggleAllEvidence = () => {
+        setReportExcluded(reportExcluded.length ? [] : reportEvidenceAll.map((item) => item.taskId));
       };
 
       // ---------- calendar popover (shared by quick-add and detail) ----------
@@ -1959,6 +2340,123 @@ window.__ModuleLoader__.load({
             onToday: () => { setQuickDeadline({ date: todayDate(), time: '' }); const d = new Date(); setCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
           }) : null));
 
+      // ---------- weekly report ----------
+      const renderRefs = (text) => {
+        const index = buildEvidenceIndex(reportEvidenceAll);
+        const parts = [];
+        const re = new RegExp(REF_SOURCE, 'g');
+        let cursor = 0;
+        let match = re.exec(text);
+        let n = 0;
+        while (match !== null) {
+          if (match.index > cursor) parts.push(text.slice(cursor, match.index));
+          const ref = resolveRef(index, match[1], match[2]);
+          if (ref) {
+            n += 1;
+            parts.push(h('button', {
+              className: 'wp-ref', key: 'r' + match.index, type: 'button',
+              title: refLabel(ref),
+              onClick: () => jumpToRef(ref),
+            }, String(n)));
+          } else {
+            // The source disappeared (task deleted) or the marker was hand-edited:
+            // keep a visible placeholder rather than silently dropping the claim.
+            parts.push(h('span', {
+              className: 'wp-ref wp-ref-broken', key: 'r' + match.index, title: '依据已失效',
+            }, '?'));
+          }
+          cursor = match.index + match[0].length;
+          match = re.exec(text);
+        }
+        if (cursor < text.length) parts.push(text.slice(cursor));
+        return parts;
+      };
+
+      const reportLines = reportBody.trim()
+        ? String(reportBody).split('\n').map((line, i) => {
+            if (!line.trim()) return h('div', { className: 'wp-report-gap', key: i });
+            const heading = /^#{1,4}\s+/.test(line);
+            const content = line.replace(/^#{1,4}\s+/, '');
+            return h('div', { className: heading ? 'wp-report-h' : 'wp-report-line', key: i }, renderRefs(content));
+          })
+        : [];
+
+      const reportPanel = h('div', { className: 'wp-report' },
+        h('div', { className: 'wp-report-toolbar' },
+          h('div', { className: 'wp-report-period' },
+            h('button', { className: 'wp-report-nav', type: 'button', 'aria-label': '上一周', onClick: () => setReportPeriod((p) => shiftWeek(p, -1)) }, '‹'),
+            h('span', { className: 'wp-report-period-label' }, periodLabel(reportPeriod)),
+            h('button', { className: 'wp-report-nav', type: 'button', 'aria-label': '下一周', onClick: () => setReportPeriod((p) => shiftWeek(p, 1)) }, '›'),
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setReportPeriod(weekRangeOf(new Date())) }, '本周')),
+          h('div', { className: 'wp-report-actions' },
+            h('button', {
+              className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+              disabled: reportGenerating ? 'true' : undefined,
+              onClick: generateReport,
+            }, reportGenerating ? '生成中…' : (reportDraft ? '重新生成' : '生成本期报告')),
+            h('div', { className: 'wp-kind-seg' },
+              h('button', { className: 'wp-status-seg-item', type: 'button', 'data-active': reportMode === 'edit' ? 'true' : 'false', onClick: () => setReportMode('edit') }, '编辑'),
+              h('button', { className: 'wp-status-seg-item', type: 'button', 'data-active': reportMode === 'preview' ? 'true' : 'false', onClick: () => setReportMode('preview') }, '预览')),
+            h('span', { className: 'wp-report-dirty' }, reportDirty ? '未保存' : (reportDraft ? '已保存' : '')),
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              disabled: reportDirty ? undefined : 'true',
+              onClick: () => saveReport(reportBody),
+            }, '保存草稿'),
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              disabled: reportBody.trim() ? undefined : 'true', onClick: copyReport,
+            }, '复制'),
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              disabled: reportBody.trim() ? undefined : 'true', onClick: exportReport,
+            }, '导出 MD'))),
+        reportNotice ? h('p', { className: 'wp-report-notice wp-report-notice-' + reportNotice.kind }, reportNotice.text) : null,
+        reportBody.trim()
+          ? (reportMode === 'edit'
+              ? h('textarea', {
+                  className: 'wp-report-editor', value: reportBody, spellCheck: false,
+                  placeholder: '用 [[task:id]] / [[log:id]] / [[artifact:id]] 标注依据',
+                  onChange: (e) => { setReportBody(e.target.value); setReportDirty(true); },
+                })
+              : h('div', { className: 'wp-report-preview' }, reportLines))
+          : h('div', { className: 'wp-report-empty' },
+              h('p', { className: 'wp-report-empty-title' }, '还没有本周报告'),
+              h('p', { className: 'wp-report-empty-desc' }, '点「生成本期报告」会读取本期完成的任务、工作记录和成果，生成五段式周报；之后可以编辑、复制或导出 Markdown。'),
+              reportEvidenceAll.length === 0
+                ? h('p', { className: 'wp-report-empty-warn' }, '本期还没有任何工作记录，生成的内容只会指出资料不足。')
+                : null));
+
+      const evidencePanel = h('aside', { className: 'wp-evidence' },
+        h('div', { className: 'wp-evidence-head' },
+          h('span', { className: 'wp-evidence-title' }, '本期依据'),
+          h('span', { className: 'wp-evidence-count' }, reportEvidence.length + ' / ' + reportEvidenceAll.length),
+          reportEvidenceAll.length
+            ? h('button', { className: 'wp-evidence-all', type: 'button', onClick: toggleAllEvidence }, reportExcluded.length ? '全选' : '全不选')
+            : null),
+        h('p', { className: 'wp-evidence-hint' }, '勾选只影响下一次生成，不会改动已有正文。'),
+        reportEvidenceAll.length === 0
+          ? h('p', { className: 'wp-detail-empty' }, '本期没有工作记录。先在任务里记录进展或关联成果。')
+          : h('div', { className: 'wp-evidence-list' }, reportEvidenceAll.map((item) =>
+              h('label', {
+                className: 'wp-evidence-item' + (reportExcluded.indexOf(item.taskId) !== -1 ? ' wp-evidence-off' : ''),
+                key: item.taskId,
+              },
+                h('input', {
+                  className: 'wp-evidence-check', type: 'checkbox',
+                  checked: reportExcluded.indexOf(item.taskId) === -1,
+                  onChange: () => toggleEvidence(item.taskId),
+                }),
+                h('div', { className: 'wp-evidence-body' },
+                  h('div', { className: 'wp-evidence-task' }, item.title),
+                  h('div', { className: 'wp-evidence-meta' },
+                    item.completedThisPeriod ? '本期完成' : '本期有进展',
+                    ' · 记录 ' + item.logs.length,
+                    item.artifacts.length ? ' · 成果 ' + item.artifacts.length : ''),
+                  item.logs.length
+                    ? h('div', { className: 'wp-evidence-last' }, item.logs[item.logs.length - 1].text)
+                    : null)))));
+
       // ---------- list ----------
       const groupList = filteredTasks.length === 0
         ? h('div', { className: 'wp-card' },
@@ -1979,10 +2477,10 @@ window.__ModuleLoader__.load({
       // ---------- header / sidenav / detail ----------
       const middleHeader = h('div', { className: 'wp-mid-head' },
         h('div', { className: 'wp-mid-head-left' },
-          h('h1', { className: 'wp-mid-title' }, viewTitle),
-          h('p', { className: 'wp-mid-stats' }, statsText)),
+          h('h1', { className: 'wp-mid-title' }, midTitle),
+          h('p', { className: 'wp-mid-stats' }, midStats)),
         h('div', { className: 'wp-mid-head-right' },
-          h('div', { className: 'wp-search' },
+          isReportsView ? null : h('div', { className: 'wp-search' },
             h('span', { className: 'wp-search-icon' }, h(SearchIcon)),
             h('input', {
               className: 'wp-search-input', type: 'text', placeholder: '搜索任务', value: search,
@@ -2008,16 +2506,16 @@ window.__ModuleLoader__.load({
             h('option', { value: 'priority' }, '按优先级'),
             h('option', { value: 'created' }, '按创建时间'))));
 
-      const middleBody = h('div', { className: 'wp-mid-body' },
-        quickAdd,
-        toolbar,
-        groupList);
+      const middleBody = isReportsView
+        ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
+        : h('div', { className: 'wp-mid-body' }, quickAdd, toolbar, groupList);
 
       const navItems = [
         { key: 'all', label: '全部任务', count: stats.total },
         { key: 'today', label: '今天到期', count: stats.todayCount },
         { key: 'overdue', label: '已逾期', count: stats.overdue },
         { key: 'done', label: '已完成', count: stats.byStatus.done },
+        { key: 'reports', label: '周报', count: reports.length },
       ];
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
@@ -2348,7 +2846,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-workbench' },
           sidenav,
           h('section', { className: 'wp-mid' }, middleHeader, middleBody),
-          detailPanel),
+          isReportsView ? evidencePanel : detailPanel),
         drawer);
     }
 
@@ -2371,6 +2869,9 @@ window.__ModuleLoader__.load({
         withV2Fields, newTask, logsOf, latestLog, artifactsOf, parseLinks, safeHref,
         takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
+        weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
+        collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,
+        REPORT_SECTIONS,
       },
     };
   },

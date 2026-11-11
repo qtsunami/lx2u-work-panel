@@ -144,6 +144,35 @@ registered = undefined;
 apply(makeCtx(mockLlm(JSON.stringify({ reply: 'ok', proposal: { text: 'x', kind: 'bogus' } }))));
 check('tidy-kind-fallback', (await call({ mode: 'task', intent: 'tidy' })).proposal.kind, 'progress');
 
+console.log('\n# report mode');
+const EVIDENCE = [{
+  taskId: 't-1', title: '上线插件', status: 'done', completedThisPeriod: true,
+  expected: 'v1 发布', nextStep: '', blockedReason: '',
+  logs: [{ id: 'l-1', at: '2026-11-10T04:00:00.000Z', kind: 'progress', text: '完成发布' }],
+  artifacts: [{ id: 'a-1', summary: '发布记录', links: ['https://a.com'] }],
+}];
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({
+  reply: '依据 1 个任务',
+  body: '## 一、本期主要成果\n- 上线插件已完成 [[task:t-1]]\n- 编造的引用 [[task:t-9]]\n- 记录 [[log:l-1]]',
+}))));
+const rp = await call({ mode: 'report', kind: 'week', period: { start: '2026-11-09', end: '2026-11-15' }, evidence: EVIDENCE });
+check('report-reply', rp.reply, '依据 1 个任务');
+check('report-keeps-known-refs', [rp.report.body.indexOf('[[task:t-1]]') > 0, rp.report.body.indexOf('[[log:l-1]]') > 0], [true, true]);
+check('report-drops-unknown-ref', rp.report.body.indexOf('t-9'), -1);
+check('report-drop-count', rp.droppedRefs, 1);
+
+registered = undefined;
+apply(makeCtx(mockLlm('随便一段话，没有 JSON')));
+const rpBad = await call({ mode: 'report', evidence: EVIDENCE });
+check('report-unparseable', [rpBad.error, rpBad.report], ['empty-report', null]);
+
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({ reply: '', body: '## 一、本期主要成果\n本期缺少相关记录' }))));
+const rpEmpty = await call({ mode: 'report', evidence: [] });
+check('report-empty-evidence-ok', rpEmpty.report.body.indexOf('缺少相关记录') > 0, true);
+check('report-no-refs-zero-dropped', rpEmpty.droppedRefs, 0);
+
 console.log('\n# failure paths');
 registered = undefined;
 apply(makeCtx(undefined));

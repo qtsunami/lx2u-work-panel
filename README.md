@@ -25,6 +25,17 @@ Safety rules:
 
 `AI 建议` and `AI 整理` require a model; without one the panel says so and leaves data unchanged.
 
+## Weekly report (v1.2)
+
+Left nav `周报` opens a report page: period selector on the left, editor in the middle, evidence sidebar on the right.
+
+- **Evidence** = tasks completed inside the week plus unfinished tasks that gained a work record or an artifact inside it. Each item can be unchecked; **unchecking only affects the next generation** and never rewrites a body you already edited.
+- **Generate** → a five-section draft (`本期主要成果` / `重点工作进展` / `问题、风险与阻塞` / `AI 辅助分析与建议` / `下期计划`), saved as a draft automatically.
+- **Traceability**: every factual sentence carries an inline marker (`[[task:t-…]]`, `[[log:l-…]]`, `[[artifact:a-…]]`). In the preview they render as clickable badges that jump to the source task; a marker whose source disappeared shows `?` instead of vanishing.
+- **Host validation**: markers whose ids are not in the evidence bundle are stripped before the body reaches the browser, and the count is reported back.
+- **Edit / Preview** toggle, `保存草稿`, `复制`, `导出 MD` (markers become numbered footnotes plus a source list). Nothing is sent anywhere.
+- **Snapshot rule**: saving a draft stores both the reference id and a snapshot taken at that moment, so editing a task later never rewrites an existing report.
+
 ## Features
 
 - **Three-column workbench**: views · task list · task detail.
@@ -97,6 +108,7 @@ node test-host.mjs         # prompt routing, action sanitization
 node test-render.cjs       # empty panel smoke
 node test-detail-render.cjs
 node test-actions-render.cjs
+node test-report-render.cjs
 ```
 
 ## Data model (v1.x)
@@ -108,6 +120,7 @@ All state lives in `localStorage`, keyed by the plugin scope:
 | `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (reserved for the recycle bin), `project` (reserved for project views). |
 | `@local/work-panel:logs:v1` | Work records — append-only, keyed by `taskId`. |
 | `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved so a monthly report cannot claim the same result twice. |
+| `@local/work-panel:reports:v1` | Report drafts — `{id, kind, period, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. |
 | `@local/work-panel:chat:v1` | AI assistant conversation. |
 | `@local/work-panel:theme` | Light/dark preference. |
 
@@ -116,9 +129,9 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 ## Roadmap
 
 - **1.0.0** (released) — the original three-column workbench (tasks, smart views, priorities, deadlines, assistant).
-- **1.1.0 (this release)** — data foundation (expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper) plus confirm-before-write AI collaboration (preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, attribution).
-- **1.2.0** — weekly report: generated from work records and artifacts, with a reference sidebar; every fact is backed by a reference stored as a snapshot taken at generation time, so later task edits never rewrite an old report.
-- **1.3.0** — monthly report, project views, recycle-bin UI, paragraph-level polishing.
+- **1.1.0** — data foundation (expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper) plus confirm-before-write AI collaboration (preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, attribution).
+- **1.2.0 (this release)** — weekly report: period-scoped evidence, five-section draft, inline evidence markers with jump-back, snapshot-backed refs, copy and Markdown export.
+- **1.3.0** — monthly report (built from weekly reports), project views, recycle-bin UI, paragraph-level polishing.
 - Decided against: kanban board and a three-state status model.
 
 ## License

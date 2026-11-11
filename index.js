@@ -236,6 +236,81 @@ function buildTidySystemPrompt(today) {
   ].join('\n');
 }
 
+function buildReportSystemPrompt(period) {
+  return [
+    '你是一个中文工作报告助手，负责把一个人本期的工作记录整理成周报。',
+    `报告周期：${(period && period.start) || ''} ~ ${(period && period.end) || ''}。`,
+    '你会收到本期依据：任务、任务下的工作记录、已关联的成果。每条记录和成果都有 id。',
+    '只输出一个 JSON 对象（不要 Markdown 代码块、不要额外解释）：',
+    '{"reply":"给用户的简短说明","body":"Markdown 正文"}',
+    '正文必须使用以下五段结构（用 ## 开头）：',
+    '## 一、本期主要成果',
+    '## 二、重点工作进展',
+    '## 三、问题、风险与阻塞',
+    '## 四、AI 辅助分析与建议',
+    '## 五、下期计划',
+    '规则：',
+    '1. 只有依据中出现过的事实才能写。每条事实后面紧跟依据标记，格式为 [[task:任务id]]、[[log:记录id]] 或 [[artifact:成果id]]，id 必须来自依据包，绝不编造。',
+    '2. 不虚构收益、数据或业务影响；依据里没有数字就不要写数字。',
+    '3. 第四段必须明确标为推断（例如以「以下为推断」开头），供用户修改确认。',
+    '4. 同一成果只写一次，不要重复宣称完成。跨期的未完成任务只描述本期内的进展。',
+    '5. 依据不足时，在对应段落直接写「本期缺少相关记录」，不要补写成事实。',
+    '6. 某一段完全没有内容时写「本期无」。正文里不要使用 ``` 代码块。',
+    '7. reply 用一句话说明这份报告依据了多少条任务与记录。',
+  ].join('\n');
+}
+
+function buildReportUserText(body) {
+  const period = (body && body.period) || {};
+  const evidence = Array.isArray(body && body.evidence) ? body.evidence.slice(0, 40) : [];
+  const lines = [];
+  for (const item of evidence) {
+    const taskId = typeof item.taskId === 'string' ? item.taskId : '';
+    if (!taskId) continue;
+    lines.push('### 任务 [' + taskId + '] ' + str(item.title, 200));
+    lines.push('状态：' + (item.status === 'done' ? '已完成' : '待办') + (item.completedThisPeriod ? '（本期完成）' : ''));
+    if (str(item.expected, 500)) lines.push('预期结果：' + str(item.expected, 500));
+    if (str(item.nextStep, 500)) lines.push('下一步：' + str(item.nextStep, 500));
+    if (str(item.blockedReason, 500)) lines.push('阻塞原因：' + str(item.blockedReason, 500));
+    for (const entry of countText(item.logs, 8)) {
+      if (!entry || typeof entry.id !== 'string') continue;
+      lines.push('- 记录 [' + entry.id + '] ' + str(entry.at, 40) + ' ' + str(entry.text, 500));
+    }
+    for (const artifact of countText(item.artifacts, 5)) {
+      if (!artifact || typeof artifact.id !== 'string') continue;
+      const links = Array.isArray(artifact.links) ? artifact.links.filter((l) => typeof l === 'string').slice(0, 3) : [];
+      lines.push('- 成果 [' + artifact.id + '] ' + str(artifact.summary, 500) + (links.length ? ' 链接：' + links.join(' ') : ''));
+    }
+  }
+  return [
+    '报告周期：' + (period.start || '') + ' ~ ' + (period.end || ''),
+    '',
+    evidence.length ? '本期依据：' : '本期依据：空（没有任何任务、记录或成果）',
+    ...lines,
+    '',
+    '请按要求输出 JSON。',
+  ].join('\n');
+}
+
+const REPORT_REF = /\[\[(task|log|artifact):([A-Za-z0-9_-]+)\]\]/g;
+
+/**
+ * Keeps only refs that exist in the evidence bundle, so a hallucinated id can
+ * never enter a report. Returns the dropped count for the client to surface.
+ */
+function sanitizeReport(raw, knownRefs) {
+  if (!raw || typeof raw !== 'object') return null;
+  let body = str(raw.body, 30000);
+  if (!body) return null;
+  let dropped = 0;
+  body = body.replace(REPORT_REF, (whole, type, id) => {
+    if (knownRefs.has(type + ':' + id)) return whole;
+    dropped += 1;
+    return '';
+  });
+  return { body, droppedRefs: dropped };
+}
+
 function countText(body, max) {
   return Array.isArray(body) ? body.slice(0, max) : [];
 }
@@ -317,9 +392,38 @@ export function apply(ctx, config) {
       if (!llm || typeof preferredProvider !== 'string' || typeof preferredModel !== 'string') {
         return json({ error: 'model-unavailable' });
       }
-      const mode = body && body.mode === 'task' ? 'task' : 'chat';
+      const mode = body && body.mode === 'report' ? 'report' : (body && body.mode === 'task' ? 'task' : 'chat');
       const tasks = Array.isArray(body && body.tasks) ? body.tasks : [];
       try {
+        if (mode === 'report') {
+          const evidence = Array.isArray(body && body.evidence) ? body.evidence : [];
+          const knownRefs = new Set();
+          for (const item of evidence) {
+            if (!item || typeof item.taskId !== 'string') continue;
+            knownRefs.add('task:' + item.taskId);
+            for (const entry of countText(item.logs, 20)) {
+              if (entry && typeof entry.id === 'string') knownRefs.add('log:' + entry.id);
+            }
+            for (const artifact of countText(item.artifacts, 10)) {
+              if (artifact && typeof artifact.id === 'string') knownRefs.add('artifact:' + artifact.id);
+            }
+          }
+          const raw = await complete(
+            llm, preferredProvider, preferredModel,
+            buildReportSystemPrompt(body && body.period),
+            buildReportUserText(body),
+            2200,
+          );
+          const parsed = extractJson(raw);
+          const reply = parsed && typeof parsed.reply === 'string' && parsed.reply.trim()
+            ? parsed.reply.trim()
+            : '';
+          const report = parsed ? sanitizeReport(parsed, knownRefs) : null;
+          if (!report) {
+            return json({ reply: reply || '（模型没有返回可用的报告）', report: null, error: 'empty-report' });
+          }
+          return json({ reply, report: { body: report.body }, droppedRefs: report.droppedRefs });
+        }
         if (mode === 'task') {
           const tidy = body && body.intent === 'tidy';
           const raw = await complete(

@@ -307,5 +307,69 @@ check('summary with skips', dbg.summarizeOutcomes({
   outcomes: [{ status: 'skipped', reason: 'duplicate' }, { status: 'skipped', reason: 'no-change' }],
 }), '已应用 1 项变更。跳过 2 项（与现有任务重复、与当前状态相同）。');
 
+console.log('\n# report period');
+const wed = new Date(2026, 10, 11); // 2026-11-11 Wednesday
+const P = { start: '2026-11-09', end: '2026-11-15' };
+check('week range from wed', dbg.weekRangeOf(wed), P);
+check('week range from sunday', dbg.weekRangeOf(new Date(2026, 10, 15)), P);
+check('week range from monday', dbg.weekRangeOf(new Date(2026, 10, 9)), P);
+check('shift prev', dbg.shiftWeek(P, -1), { start: '2026-11-02', end: '2026-11-08' });
+check('shift next', dbg.shiftWeek(P, 1), { start: '2026-11-16', end: '2026-11-22' });
+check('period label', dbg.periodLabel(P), '11月9日 - 11月15日');
+check('period key', dbg.periodKey(P), '2026-11-09_2026-11-15');
+check('in period first day', dbg.inPeriod('2026-11-09T00:30', P), true);
+check('in period last day', dbg.inPeriod('2026-11-15T23:00', P), true);
+check('outside period', dbg.inPeriod('2026-11-16T00:00', P), false);
+check('empty timestamp', dbg.inPeriod('', P), false);
+
+console.log('\n# evidence collection');
+const evTasks = [
+  { id: 't-1', title: '上线插件', status: 'done', completedAt: '2026-11-10T04:00:00.000Z', deletedAt: null, expected: '', nextStep: '', blockedReason: '', urgency: 'high', deadline: '', description: '', createdAt: 'x', updatedAt: 'y' },
+  { id: 't-2', title: '写周报', status: 'todo', completedAt: null, deletedAt: null, expected: '', nextStep: '', blockedReason: '', urgency: 'medium', deadline: '', description: '', createdAt: 'x', updatedAt: 'y' },
+  { id: 't-3', title: '旧任务', status: 'done', completedAt: '2026-10-01T04:00:00.000Z', deletedAt: null, expected: '', nextStep: '', blockedReason: '', urgency: 'low', deadline: '', description: '', createdAt: 'x', updatedAt: 'y' },
+  { id: 't-4', title: '已删除', status: 'todo', completedAt: null, deletedAt: '2026-11-10T00:00:00.000Z', expected: '', nextStep: '', blockedReason: '', urgency: 'low', deadline: '', description: '', createdAt: 'x', updatedAt: 'y' },
+  { id: 't-5', title: '无记录', status: 'todo', completedAt: null, deletedAt: null, expected: '', nextStep: '', blockedReason: '', urgency: 'low', deadline: '', description: '', createdAt: 'x', updatedAt: 'y' },
+];
+const evLogs = [
+  { id: 'l-1', taskId: 't-2', at: '2026-11-12T04:00:00.000Z', kind: 'progress', text: '写了开头' },
+  { id: 'l-2', taskId: 't-3', at: '2026-10-02T04:00:00.000Z', kind: 'progress', text: '上个月' },
+];
+const evArtifacts = [
+  { id: 'a-1', taskId: 't-2', at: '2026-11-13T04:00:00.000Z', summary: '周报草稿', links: [] },
+];
+const evidence = dbg.collectEvidence(evTasks, evLogs, evArtifacts, P);
+check('evidence includes completed + progressed', evidence.map((e) => e.taskId), ['t-1', 't-2']);
+check('completed flags', evidence.map((e) => e.completedThisPeriod), [true, false]);
+check('unfinished keeps its records', evidence[1].logs.map((l) => l.id), ['l-1']);
+check('unfinished keeps its artifacts', evidence[1].artifacts.map((a) => a.id), ['a-1']);
+check('completed last month excluded', evidence.some((e) => e.taskId === 't-3'), false);
+check('deleted task excluded', evidence.some((e) => e.taskId === 't-4'), false);
+check('task without evidence excluded', evidence.some((e) => e.taskId === 't-5'), false);
+check('evidence carries a snapshot', [typeof evidence[0].snapshot.title, evidence[0].snapshot.completedAt], ['string', '2026-11-10T04:00:00.000Z']);
+
+console.log('\n# report refs');
+const body = [
+  '## 一、本期主要成果',
+  '- 上线插件已完成 [[task:t-1]]。',
+  '- 周报写了开头 [[log:l-1]]。',
+  '- 同一任务再提一次 [[task:t-1]]。',
+  '- 编造的引用 [[task:t-9]]。',
+].join('\n');
+const refs = dbg.parseRefs(body, evidence);
+check('refs deduped in document order', refs.map((r) => r.type + ':' + r.id), ['task:t-1', 'log:l-1']);
+check('unknown ref ignored', refs.some((r) => r.id === 't-9'), false);
+check('artifact ref resolves', dbg.parseRefs('见 [[artifact:a-1]]', evidence).map((r) => r.id), ['a-1']);
+check('task ref label', dbg.refLabel(refs[0]), '任务「上线插件」（已完成）');
+check('log ref label names its task', dbg.refLabel(refs[1]).indexOf('任务：写周报') > 0, true);
+check('empty body has no refs', dbg.parseRefs('', evidence).length, 0);
+
+console.log('\n# markdown export');
+const md = dbg.markdownWithFootnotes(body, evidence);
+check('markers replaced', md.indexOf('[[task:t-1]]'), -1);
+check('dedupe keeps one footnote definition', (md.match(/\[\^1\]:/g) || []).length, 1);
+check('footnotes appended', md.indexOf('\n\n[^1]: ') > 0, true);
+check('unknown marker dropped from export', md.indexOf('t-9'), -1);
+check('plain body without refs unchanged', dbg.markdownWithFootnotes('纯文本', evidence), '纯文本');
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);
