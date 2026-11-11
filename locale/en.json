@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Work panel",
-    "description": "A three-column personal workbench: tasks, append-only work records, artifacts, a recycle bin, confirm-before-write AI collaboration, and evidence-backed weekly/monthly reports with paragraph polishing."
+    "description": "A three-column personal workbench: tasks, project grouping, work records, artifacts, a recycle bin, confirm-before-write AI collaboration, and evidence-backed reports scoped by week, month or project."
   }
 }

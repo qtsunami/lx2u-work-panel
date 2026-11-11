@@ -50,6 +50,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Work records** (`记录进展`): append-only timeline of progress, problems, decisions and AI collaboration. Each record carries its own timestamp; records are never edited, only appended.
 - **Artifacts** (`关联成果`): attach a result summary plus links to docs/files. Saving an artifact never marks the task complete — completion stays an explicit user action.
 - **Recent progress in the list**: each row shows the newest work record (deterministic — no model call at render time).
+- **Projects**: set a project name on any task (the detail field suggests existing ones). The sidebar groups every project in use with a task count, and clicking one filters the list; quick-add inside a project view files the new task into that project. Reports can be scoped to a single project, which also scopes their evidence and export filename.
 - **Recycle bin**: the trash icon in the task detail moves a task to `回收站` (soft delete). The trash view lists what was deleted, when, and offers `恢复` or `彻底删除`; purging asks for confirmation, removes the task with its own records and artifacts, and keeps report snapshots so old reports still resolve. A toast confirms each action and can be left to fade.
 - **Search and sort**: by deadline, priority, or creation time.
 - **AI assistant** (optional): a top-bar button opens a chat drawer that creates, updates, completes and records tasks after confirmation. Requires an LLM provider configured in your profile; without one, chat still parses a simple create locally (with the duplicate guard).
@@ -113,6 +114,7 @@ node test-detail-render.cjs
 node test-actions-render.cjs
 node test-report-render.cjs
 node test-trash-render.cjs
+node test-project-render.cjs
 ```
 
 ## Data model (v1.x)
@@ -136,8 +138,8 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.1.0** — data foundation (expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper) plus confirm-before-write AI collaboration (preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, attribution).
 - **1.2.0** — weekly report: period-scoped evidence, five-section draft, inline evidence markers with jump-back, snapshot-backed refs, copy and Markdown export.
 - **1.2.1** — monthly report: `周报 / 月报` switch, natural-month period, weeklies inside the month are consolidated (not concatenated), repeated achievements written once.
-- **1.2.2 (unreleased, in progress)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
-- **1.2.3** — project views.
+- **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
+- **1.2.3 (unreleased, in progress)** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
 - Decided against: kanban board and a three-state status model.
 
 ## License

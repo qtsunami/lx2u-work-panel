@@ -409,6 +409,20 @@ window.__ModuleLoader__.load({
     }
 
     // ---- recycle bin ------------------------------------------------------
+    /** Projects in use, derived from live tasks (no separate project store). */
+    function collectProjects(tasks) {
+      const counts = new Map();
+      for (const task of tasks) {
+        if (!task || task.deletedAt) continue;
+        const name = String(task.project || '').trim();
+        if (!name) continue;
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+      return Array.from(counts.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => (a.count === b.count ? a.name.localeCompare(b.name) : b.count - a.count));
+    }
+
     /** Tasks that are not in the recycle bin. */
     function liveTasks(tasks) {
       return tasks.filter((task) => task && !task.deletedAt);
@@ -1476,6 +1490,21 @@ window.__ModuleLoader__.load({
         margin: 0 0 16px; color: var(--wp-text-secondary);
       }
       .wp-detail-field { margin: 0 0 14px; }
+      .wp-detail-project { height: 30px; padding: 2px 0; }
+      .wp-nav-section { display: flex; align-items: center; gap: 6px; margin: 14px 0 4px; padding: 0 10px; }
+      .wp-nav-section-label { font-size: 11px; letter-spacing: 0.04em; color: var(--wp-text-tertiary); }
+      .wp-nav-section-add {
+        margin-left: auto; width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
+        background: transparent; color: var(--wp-text-tertiary);
+        font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+      }
+      .wp-nav-section-add:hover { color: var(--wp-primary); background: var(--wp-fill); }
+      .wp-report-scope {
+        height: 26px; padding: 0 6px; border: 1px solid var(--wp-border); border-radius: 6px;
+        background: var(--wp-bg-container); color: var(--wp-text-secondary);
+        font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .wp-report-scope:hover { border-color: var(--wp-primary); color: var(--wp-primary); }
       .wp-detail-field-label { display: block; margin-bottom: 2px; font-size: 12px; color: var(--wp-text-tertiary); }
       .wp-detail-small { font-size: 13px; line-height: 1.55; min-height: 38px; color: var(--wp-text); }
       .wp-detail-actions { display: flex; gap: 8px; margin: 2px 0 14px; }
@@ -1864,6 +1893,7 @@ window.__ModuleLoader__.load({
       const [purgeConfirmId, setPurgeConfirmId] = useState(null);
       const [toast, setToast] = useState(null);
       const [polish, setPolish] = useState({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+      const [reportScope, setReportScope] = useState('');
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1892,7 +1922,7 @@ window.__ModuleLoader__.load({
         setReportDirty(false);
         setReportNotice(null);
         setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
-      }, [reportPeriod.start, reportPeriod.end, reportKind, reports.length]);
+      }, [reportPeriod.start, reportPeriod.end, reportKind, reportScope, reports.length]);
 
       useEffect(() => {
         // Switching tasks closes the inline composers so a draft never leaks
@@ -2148,7 +2178,7 @@ window.__ModuleLoader__.load({
         if (!title) { if (quickInputRef.current) quickInputRef.current.focus(); return; }
         const deadline = quickDeadline.time ? quickDeadline.date + 'T' + quickDeadline.time : quickDeadline.date;
         setLastApply(null);
-        const task = newTask({ title, deadline });
+        const task = newTask({ title, deadline, project: activeProject || '' });
         addTaskToState(task);
         setQuickText('');
         setQuickDeadline({ date: todayDate(), time: '' });
@@ -2254,14 +2284,29 @@ window.__ModuleLoader__.load({
         return { total, byStatus, overdue, todayCount, deletedCount };
       }, [tasks]);
 
-      // Report scope: one draft per week, built from this period's evidence.
-      const reportDraft = reports.find((r) => r.kind === reportKind && periodKey(r.period) === periodKey(reportPeriod)) || null;
-      const reportEvidenceAll = collectEvidence(tasks, logs, artifacts, reportPeriod);
+      const activeProject = activeView.indexOf('proj:') === 0 ? activeView.slice(5) : null;
+      const projectCounts = useMemo(() => {
+        if (!activeProject) return null;
+        const list = liveTasks(tasks).filter((t) => String(t.project || '').trim() === activeProject);
+        return { total: list.length, done: list.filter((t) => t.status === 'done').length };
+      }, [tasks, activeProject]);
+
+      const projects = collectProjects(tasks);
+
+      // Report scope: one draft per kind + period + project.
+      const reportDraft = reports.find((r) => r.kind === reportKind
+        && periodKey(r.period) === periodKey(reportPeriod)
+        && (r.projectScope || '') === reportScope) || null;
+      const reportTasks = reportScope
+        ? tasks.filter((t) => String(t.project || '').trim() === reportScope)
+        : tasks;
+      const reportEvidenceAll = collectEvidence(reportTasks, logs, artifacts, reportPeriod);
       const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
 
       const viewTasks = useMemo(() => {
         if (activeView === 'trash') return tasks.filter((t) => t.deletedAt);
         const alive = liveTasks(tasks);
+        if (activeProject) return alive.filter((t) => String(t.project || '').trim() === activeProject);
         if (activeView === 'done') return alive.filter((t) => t.status === 'done');
         if (activeView === 'today') return alive.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
         if (activeView === 'overdue') {
@@ -2303,7 +2348,9 @@ window.__ModuleLoader__.load({
       }, [filteredTasks]);
 
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
-      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站' }[activeView] || '全部任务';
+      const viewTitle = activeProject
+        || { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站' }[activeView]
+        || '全部任务';
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
       const isReportsView = activeView === 'reports';
       const isTrashView = activeView === 'trash';
@@ -2312,7 +2359,9 @@ window.__ModuleLoader__.load({
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
         : isTrashView
           ? stats.deletedCount + ' 条已删除 · 恢复或彻底删除'
-          : statsText;
+          : projectCounts
+            ? projectCounts.total + ' 项任务 · 已完成 ' + projectCounts.done + ' 项'
+            : statsText;
 
       const rowDeadline = (task) => {
         if (!task.deadline) return null;
@@ -2379,7 +2428,7 @@ window.__ModuleLoader__.load({
           id: existing ? existing.id : 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
           kind: reportKind,
           period: { start: reportPeriod.start, end: reportPeriod.end },
-          projectScope: '',
+          projectScope: reportScope,
           body: text,
           refs,
           excluded: reportExcluded.slice(),
@@ -2407,6 +2456,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({
               mode: 'report',
               kind: reportKind,
+              projectScope: reportScope,
               period: { start: reportPeriod.start, end: reportPeriod.end },
               // A monthly report summarizes the weeklies inside it instead of
               // concatenating raw records again.
@@ -2483,9 +2533,10 @@ window.__ModuleLoader__.load({
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
+          const scopeSuffix = reportScope ? '_' + reportScope : '';
           link.download = (reportKind === 'month'
             ? '月报_' + reportPeriod.start.slice(0, 7)
-            : '周报_' + reportPeriod.start + '_' + reportPeriod.end) + '.md';
+            : '周报_' + reportPeriod.start + '_' + reportPeriod.end) + scopeSuffix + '.md';
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
@@ -2748,7 +2799,15 @@ window.__ModuleLoader__.load({
             h('button', {
               className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
               onClick: () => setReportPeriod(periodFor(reportKind, new Date())),
-            }, reportKind === 'month' ? '本月' : '本周')),
+            }, reportKind === 'month' ? '本月' : '本周'),
+            projects.length
+              ? h('select', {
+                  className: 'wp-report-scope', value: reportScope, title: '报告范围',
+                  onChange: (e) => { setReportScope(e.target.value); resetPolish(); },
+                },
+                  h('option', { value: '' }, '全部项目'),
+                  projects.map((project) => h('option', { value: project.name, key: project.name }, project.name)))
+              : null),
           h('div', { className: 'wp-report-actions' },
             h('button', {
               className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
@@ -2783,7 +2842,9 @@ window.__ModuleLoader__.load({
                 })
               : h('div', { className: 'wp-report-preview' }, reportLines))
           : h('div', { className: 'wp-report-empty' },
-              h('p', { className: 'wp-report-empty-title' }, reportKind === 'month' ? '还没有本月报告' : '还没有本周报告'),
+              h('p', { className: 'wp-report-empty-title' },
+                (reportScope ? reportScope + ' · ' : '')
+                + (reportKind === 'month' ? '还没有本月报告' : '还没有本周报告')),
               h('p', { className: 'wp-report-empty-desc' }, '点「生成本期报告」会读取本期完成的任务、工作记录和成果，生成五段式周报；之后可以编辑、复制或导出 Markdown。'),
               reportEvidenceAll.length === 0
                 ? h('p', { className: 'wp-report-empty-warn' }, '本期还没有任何工作记录，生成的内容只会指出资料不足。')
@@ -2899,15 +2960,33 @@ window.__ModuleLoader__.load({
         { key: 'reports', label: '周报/月报', count: reports.length },
         { key: 'trash', label: '回收站', count: stats.deletedCount },
       ];
+      const navButton = (it) => h('button', {
+        className: 'wp-nav-item' + (activeView === it.key ? ' wp-active' : ''),
+        key: it.key, type: 'button',
+        onClick: () => { setActiveView(it.key); setSelectedId(null); },
+      },
+        h('span', null, it.label),
+        it.count ? h('span', { className: 'wp-nav-count' }, String(it.count)) : null);
+
+      const projectNav = projects.map((project) => ({
+        key: 'proj:' + project.name,
+        label: project.name,
+        count: project.count,
+      }));
+
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
-        navItems.map((it) => h('button', {
-          className: 'wp-nav-item' + (activeView === it.key ? ' wp-active' : ''),
-          key: it.key, type: 'button',
-          onClick: () => { setActiveView(it.key); setSelectedId(null); },
-        },
-          h('span', null, it.label),
-          it.count ? h('span', { className: 'wp-nav-count' }, String(it.count)) : null)),
+        navItems.map(navButton),
+        projects.length
+          ? h('div', { className: 'wp-nav-section' },
+              h('span', { className: 'wp-nav-section-label' }, '项目'),
+              h('button', {
+                className: 'wp-nav-section-add', type: 'button',
+                title: '在任务详情的「项目」里填写名称即可新建',
+                onClick: () => showToast('打开任意任务，在「项目」里填写名称即可'),
+              }, '+'))
+          : null,
+        projects.length ? projectNav.map(navButton) : null,
         h('div', { className: 'wp-sidenav-spacer' }));
 
       const detailRow = (label, value) => h('div', { className: 'wp-detail-row' },
@@ -3085,6 +3164,16 @@ window.__ModuleLoader__.load({
             placeholder: '添加任务描述',
             onChange: (e) => updateTask(selectedTask.id, { description: e.target.value }),
           }),
+          h('div', { className: 'wp-detail-field' },
+            h('label', { className: 'wp-detail-field-label' }, '项目'),
+            h('input', {
+              className: 'wp-detail-input wp-detail-small wp-detail-project',
+              type: 'text', value: selectedTask.project || '', placeholder: '未分组 · 输入项目名',
+              list: 'wp-project-options', spellCheck: false,
+              onChange: (e) => updateTask(selectedTask.id, { project: e.target.value }),
+            }),
+            h('datalist', { id: 'wp-project-options' },
+              projects.map((project) => h('option', { value: project.name, key: project.name })))),
           h('div', { className: 'wp-detail-field' },
             h('label', { className: 'wp-detail-field-label' }, '预期结果'),
             h('textarea', {
@@ -3269,7 +3358,7 @@ window.__ModuleLoader__.load({
         withV2Fields, newTask, logsOf, latestLog, artifactsOf, parseLinks, safeHref,
         takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
-        liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft,
+        liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft, collectProjects,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,

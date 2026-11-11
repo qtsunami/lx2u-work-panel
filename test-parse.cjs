@@ -428,5 +428,24 @@ check('saved ref label uses snapshot', dbg.refLabel(savedRefs[0]), '任务「已
 const mdDeleted = dbg.markdownWithFootnotes('见 [[task:t-1]]', [], draftRefs);
 check('export still resolves a deleted source', mdDeleted.indexOf('[^1]: 任务「已删任务」') > 0, true);
 
+console.log('\n# projects');
+const projectTasks = [
+  { id: 'p-1', title: 'A', project: ' 工作台 ', deletedAt: null, status: 'todo' },
+  { id: 'p-2', title: 'B', project: '工作台', deletedAt: null, status: 'done' },
+  { id: 'p-3', title: 'C', project: '客户交付', deletedAt: null, status: 'todo' },
+  { id: 'p-4', title: 'D', project: '', deletedAt: null, status: 'todo' },
+  { id: 'p-5', title: 'E', project: '已删项目', deletedAt: '2026-11-10T00:00:00.000Z', status: 'todo' },
+];
+const projects = dbg.collectProjects(projectTasks);
+check('projects trimmed and grouped', projects.map((p) => p.name + ':' + p.count), ['工作台:2', '客户交付:1']);
+check('projects skip blanks', projects.some((p) => p.name === ''), false);
+check('projects skip deleted tasks', projects.some((p) => p.name === '已删项目'), false);
+check('projects empty list', dbg.collectProjects([]), []);
+check('projects sort by count then name', dbg.collectProjects([
+  { id: 'x', project: 'B', deletedAt: null },
+  { id: 'y', project: 'A', deletedAt: null },
+  { id: 'z', project: 'A', deletedAt: null },
+]).map((p) => p.name + ':' + p.count), ['A:2', 'B:1']);
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);
