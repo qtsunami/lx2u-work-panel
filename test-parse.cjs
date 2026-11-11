@@ -518,5 +518,26 @@ check('preview create names the project', createInfo.lines.indexOf('项目：客
 const ungroupInfo = dbg.describeAction([{ id: 't-1', title: 'A', projectId: 'p-1' }], { op: 'update', taskId: 't-1', patch: { projectId: '' } }, previewProjects);
 check('preview ungroup reads 未分组', ungroupInfo.lines[0], '项目：工作台 → 未分组');
 
+console.log('\n# project health');
+const healthWeek = dbg.weekRangeOf(new Date());
+const healthTasks = [
+  { id: 'h1', projectId: 'p-1', status: 'todo', deadline: '2020-01-01', deletedAt: null },
+  { id: 'h2', projectId: 'p-1', status: 'done', deadline: '', deletedAt: null },
+  { id: 'h3', projectId: 'p-2', status: 'todo', deadline: '', deletedAt: null },
+  { id: 'h4', projectId: 'p-1', status: 'todo', deadline: '', deletedAt: '2026-01-01T00:00:00.000Z' },
+];
+const healthLogs = [
+  { id: 'hl1', taskId: 'h1', at: new Date().toISOString(), kind: 'progress', text: 'x' },
+  { id: 'hl2', taskId: 'h3', at: new Date().toISOString(), kind: 'progress', text: 'y' },
+];
+const health = dbg.projectHealth(healthTasks, healthLogs, [], 'p-1', healthWeek);
+check('health counts todo and done', [health.todo, health.done, health.total], [1, 1, 2]);
+check('health counts overdue', health.overdue, 1);
+check('health counts this week records', health.records, 1);
+check('health computes completion rate', health.rate, 50);
+check('health tracks last activity', health.lastAt.length > 0, true);
+const emptyHealth = dbg.projectHealth([], [], [], 'p-9', healthWeek);
+check('empty project health', [emptyHealth.total, emptyHealth.rate, emptyHealth.lastAt], [0, 0, '']);
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

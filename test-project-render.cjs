@@ -18,7 +18,7 @@ const PROJECTS = [
 ];
 const TASKS = [
   { ...base, id: 't-1', title: '插件收尾', projectId: 'p-1', status: 'todo' },
-  { ...base, id: 't-2', title: '插件文档', projectId: 'p-1', status: 'done' },
+  { ...base, id: 't-2', title: '插件文档', projectId: 'p-1', status: 'done', completedAt: now },
   { ...base, id: 't-3', title: '客户上门', projectId: 'p-2', status: 'todo' },
   { ...base, id: 't-4', title: '无项目任务', projectId: '', status: 'todo' },
 ];
@@ -186,7 +186,21 @@ const confirming = render({ 4: 'proj:p-1', 50: true, 51: { name: '工作台', de
 assert(confirming.text.indexOf('确认删除') !== -1, 'delete confirmation missing');
 assert(confirming.text.indexOf('任务会变为未分组') !== -1, 'confirmation must explain that tasks are kept');
 
-// ---- 8. archived project toggles to 取消归档 ----
+// ---- 8. project health card ----
+const healthView = render({ 4: 'proj:p-1' });
+assert(healthView.has('wp-project-health'), 'project view should show the health card');
+assert(healthView.text.indexOf('本周记录') !== -1, 'health card should label this week records');
+assert(healthView.text.indexOf('已完成 · 50%') !== -1, 'health card should show the completion rate, got ' + healthView.text);
+
+// ---- 9. per-project report batch ----
+const batchView = render({ 4: 'reports', 38: '## 一、本期主要成果\n- 完成 [[task:t-2]]' });
+assert(batchView.text.indexOf('按项目生成') !== -1, 'report page should offer per-project generation when projects have evidence');
+const batchConfirmView = render({ 4: 'reports', 38: '## 一、本期主要成果\n- 完成 [[task:t-2]]', 54: true });
+assert(batchConfirmView.has('wp-batch-bar'), 'batch confirmation strip should render');
+assert(batchConfirmView.text.indexOf('确认生成') !== -1, 'batch confirmation button missing');
+assert(batchConfirmView.text.indexOf('个项目各生成一份周报草稿') !== -1, 'batch confirmation must state the count');
+
+// ---- 10. archived project toggles to 取消归档 ----
 const archivedSettings = render({ 4: 'proj:p-2', 50: true, 51: { name: '客户交付', description: '' } });
 assert(archivedSettings.text.indexOf('取消归档') !== -1, 'archived project should offer unarchive');
 

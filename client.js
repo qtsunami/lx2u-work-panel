@@ -548,6 +548,39 @@ window.__ModuleLoader__.load({
         : p));
     }
 
+    /**
+     * Health snapshot of one project: the numbers a person actually asks about
+     * ("what's left, what's late, did anything move this period").
+     */
+    function projectHealth(tasks, logs, artifacts, projectId, period) {
+      const list = liveTasks(tasks).filter((task) => task.projectId === projectId);
+      const nowMs = Date.now();
+      let done = 0;
+      let overdue = 0;
+      let records = 0;
+      let artifactsCount = 0;
+      let lastAt = '';
+      for (const task of list) {
+        if (task.status === 'done') done += 1;
+        else if (deadlineMs(task.deadline) !== null && deadlineMs(task.deadline) < nowMs) overdue += 1;
+        const taskLogs = logsOf(logs, task.id);
+        records += taskLogs.filter((entry) => inPeriod(entry.at, period)).length;
+        artifactsCount += artifactsOf(artifacts, task.id).filter((item) => inPeriod(item.at, period)).length;
+        const last = taskLogs[taskLogs.length - 1];
+        if (last && String(last.at) > lastAt) lastAt = String(last.at);
+      }
+      return {
+        total: list.length,
+        done,
+        todo: list.length - done,
+        overdue,
+        records,
+        artifacts: artifactsCount,
+        lastAt,
+        rate: list.length ? Math.round((done / list.length) * 100) : 0,
+      };
+    }
+
     /** Deleting a project never deletes its tasks: they become ungrouped. */
     function deleteProject(projects, tasks, id) {
       return {
@@ -811,9 +844,14 @@ window.__ModuleLoader__.load({
     }
     function deadlineMs(deadline) {
       if (!deadline) return null;
-      const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(deadline);
+      const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/.exec(deadline);
       if (!m) return null;
-      const t = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+      // A date-only deadline is due at the end of that day, so a task "due
+      // today" is not overdue yet — this keeps the overdue count and the row
+      // label (formatRelativeTime) consistent.
+      const t = m[4] != null
+        ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime()
+        : new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999).getTime();
       return Number.isNaN(t) ? null : t;
     }
     function isOverdue(task) {
@@ -1687,6 +1725,23 @@ window.__ModuleLoader__.load({
       .wp-project-settings-spacer { flex: 1; }
       .wp-inline-confirm { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--wp-warning); }
       .wp-danger-text { color: var(--wp-error); }
+
+      /* ---- project health ---- */
+      .wp-project-health { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+      .wp-health-items { display: flex; flex-wrap: wrap; gap: 18px; }
+      .wp-health-item { display: flex; flex-direction: column; min-width: 56px; }
+      .wp-health-num { font-size: 17px; font-weight: 600; line-height: 1.2; color: var(--wp-text); }
+      .wp-health-label { font-size: 11.5px; color: var(--wp-text-tertiary); }
+      .wp-health-warn .wp-health-num { color: var(--wp-error); }
+      .wp-health-last { font-size: 11.5px; color: var(--wp-text-quaternary); }
+
+      /* ---- per-project report batch ---- */
+      .wp-batch-bar {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+        padding: 8px 10px; border-radius: 8px;
+        background: rgba(250, 173, 20, 0.12); color: var(--wp-warning); font-size: 12px;
+      }
+      .wp-batch-text { flex: 1; min-width: 160px; }
       .wp-detail-field-label { display: block; margin-bottom: 2px; font-size: 12px; color: var(--wp-text-tertiary); }
       .wp-detail-small { font-size: 13px; line-height: 1.55; min-height: 38px; color: var(--wp-text); }
       .wp-detail-actions { display: flex; gap: 8px; margin: 2px 0 14px; }
@@ -2081,6 +2136,8 @@ window.__ModuleLoader__.load({
       const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
       const [projectEdit, setProjectEdit] = useState({ name: '', description: '' });
       const [projectDeleteConfirm, setProjectDeleteConfirm] = useState(false);
+      const [batch, setBatch] = useState({ running: false, total: 0, done: 0, failed: 0, message: '' });
+      const [batchConfirm, setBatchConfirm] = useState(false);
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -2585,6 +2642,14 @@ window.__ModuleLoader__.load({
       const reportTasks = reportScope ? tasks.filter((t) => t.projectId === reportScope) : tasks;
       const reportEvidenceAll = collectEvidence(reportTasks, logs, artifacts, reportPeriod);
       const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
+      // Projects that have evidence this period, for one-click per-project reports.
+      const batchTargets = projects
+        .filter((project) => project.status !== 'archived')
+        .map((project) => ({
+          project,
+          evidence: collectEvidence(tasks.filter((t) => t.projectId === project.id), logs, artifacts, reportPeriod),
+        }))
+        .filter((target) => target.evidence.length > 0);
 
       const viewTasks = useMemo(() => {
         if (activeView === 'trash') return tasks.filter((t) => t.deletedAt);
@@ -2693,13 +2758,18 @@ window.__ModuleLoader__.load({
       };
 
       // ---- weekly report --------------------------------------------------
-      const saveReport = (body) => {
+      const saveReport = (body, options) => {
+        const opts = options || {};
+        const scopeId = opts.scopeId !== undefined ? opts.scopeId : reportScope;
+        const evidence = opts.evidence || reportEvidenceAll;
         const text = String(body == null ? reportBody : body);
         const now = new Date().toISOString();
-        const existing = reports.find((r) => r.kind === reportKind && periodKey(r.period) === periodKey(reportPeriod)) || null;
+        const existing = reports.find((r) => r.kind === reportKind
+          && periodKey(r.period) === periodKey(reportPeriod)
+          && (r.projectId || '') === scopeId) || null;
         // A+B decision: refs keep the id (navigation) and the snapshot captured
         // now (so editing a task later never rewrites this report).
-        const refs = parseRefs(text, reportEvidenceAll).map((ref) => ({
+        const refs = parseRefs(text, evidence).map((ref) => ({
           type: ref.type,
           id: ref.id,
           taskId: ref.item.taskId,
@@ -2711,8 +2781,8 @@ window.__ModuleLoader__.load({
           id: existing ? existing.id : 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
           kind: reportKind,
           period: { start: reportPeriod.start, end: reportPeriod.end },
-          projectId: reportScope,
-          projectName: reportScope ? projectNameOf(reportScope) : '',
+          projectId: scopeId,
+          projectName: scopeId ? projectNameOf(scopeId) : '',
           body: text,
           refs,
           excluded: reportExcluded.slice(),
@@ -2721,12 +2791,68 @@ window.__ModuleLoader__.load({
           createdAt: existing ? existing.createdAt : now,
           updatedAt: now,
         };
-        const next = existing ? reports.map((r) => (r.id === existing.id ? record : r)) : reports.concat([record]);
-        setReports(next);
-        saveReports(next);
-        setReportBody(text);
-        setReportDirty(false);
+        // Functional update: a batch writes several drafts in one run, so a
+        // stale closure must never overwrite an earlier record.
+        setReports((prev) => {
+          const current = prev.find((r) => r.kind === record.kind
+            && periodKey(r.period) === periodKey(record.period)
+            && (r.projectId || '') === (record.projectId || '')) || null;
+          const saved = current ? { ...record, id: current.id, createdAt: current.createdAt } : record;
+          const next = current ? prev.map((r) => (r.id === current.id ? saved : r)) : prev.concat([saved]);
+          saveReports(next);
+          return next;
+        });
+        if (opts.applyToEditor !== false) {
+          setReportBody(text);
+          setReportDirty(false);
+        }
         return record;
+      };
+
+      const compactEvidence = (item) => ({
+        taskId: item.taskId,
+        title: item.title,
+        status: item.status,
+        completedThisPeriod: item.completedThisPeriod,
+        expected: item.expected,
+        nextStep: item.nextStep,
+        blockedReason: item.blockedReason,
+        logs: item.logs.map((entry) => ({ id: entry.id, at: entry.at, kind: entry.kind, text: entry.text })),
+        artifacts: item.artifacts.map((artifact) => ({ id: artifact.id, summary: artifact.summary, links: artifact.links })),
+      });
+
+      const weekliesFor = (scopeId) => (reportKind === 'month'
+        ? reports
+            .filter((r) => r.kind === 'week'
+              && (r.projectId || '') === scopeId
+              && r.period.start >= reportPeriod.start && r.period.start <= reportPeriod.end)
+            .map((r) => ({ period: r.period.start + ' ~ ' + r.period.end, body: r.body }))
+        : []);
+
+      const requestReport = async (scopeId, evidence) => {
+        const res = await fetch(CHAT_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'report',
+            kind: reportKind,
+            projectId: scopeId,
+            project: scopeId
+              ? { name: projectNameOf(scopeId), description: (projectById.get(scopeId) || {}).description || '' }
+              : null,
+            period: { start: reportPeriod.start, end: reportPeriod.end },
+            // A monthly report summarizes the weeklies inside it instead of
+            // concatenating raw records again.
+            weeklies: weekliesFor(scopeId),
+            evidence: evidence.map(compactEvidence),
+          }),
+        });
+        if (!res.ok) throw new Error('http-' + res.status);
+        const data = await res.json();
+        if (!data || data.error) throw new Error((data && data.error) || 'model-error');
+        const body = data.report && typeof data.report.body === 'string' ? data.report.body.trim() : '';
+        if (!body) throw new Error('empty-report');
+        return { body, droppedRefs: data.droppedRefs || 0 };
       };
 
       const generateReport = async () => {
@@ -2734,51 +2860,13 @@ window.__ModuleLoader__.load({
         setReportGenerating(true);
         setReportNotice(null);
         try {
-          const res = await fetch(CHAT_ENDPOINT, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              mode: 'report',
-              kind: reportKind,
-              projectId: reportScope,
-              project: reportScope
-                ? {
-                    name: projectNameOf(reportScope),
-                    description: (projectById.get(reportScope) || {}).description || '',
-                  }
-                : null,
-              period: { start: reportPeriod.start, end: reportPeriod.end },
-              // A monthly report summarizes the weeklies inside it instead of
-              // concatenating raw records again.
-              weeklies: reportKind === 'month'
-                ? reports
-                    .filter((r) => r.kind === 'week' && r.period.start >= reportPeriod.start && r.period.start <= reportPeriod.end)
-                    .map((r) => ({ period: r.period.start + ' ~ ' + r.period.end, body: r.body }))
-                : [],
-              evidence: reportEvidence.map((item) => ({
-                taskId: item.taskId,
-                title: item.title,
-                status: item.status,
-                completedThisPeriod: item.completedThisPeriod,
-                expected: item.expected,
-                nextStep: item.nextStep,
-                blockedReason: item.blockedReason,
-                logs: item.logs.map((entry) => ({ id: entry.id, at: entry.at, kind: entry.kind, text: entry.text })),
-                artifacts: item.artifacts.map((artifact) => ({ id: artifact.id, summary: artifact.summary, links: artifact.links })),
-              })),
-            }),
-          });
-          if (!res.ok) throw new Error('http-' + res.status);
-          const data = await res.json();
-          if (!data || data.error) throw new Error((data && data.error) || 'model-error');
-          const body = data.report && typeof data.report.body === 'string' ? data.report.body.trim() : '';
-          if (!body) throw new Error('empty-report');
-          saveReport(body);
+          const result = await requestReport(reportScope, reportEvidence);
+          saveReport(result.body, { evidence: reportEvidence });
           resetPolish();
           setReportMode('preview');
           const notices = [];
-          if (data.droppedRefs) notices.push('已移除 ' + data.droppedRefs + ' 个无法核对的依据标记');
-          if (parseRefs(body, reportEvidenceAll).length === 0) notices.push('正文没有引用任何依据，请人工核对');
+          if (result.droppedRefs) notices.push('已移除 ' + result.droppedRefs + ' 个无法核对的依据标记');
+          if (parseRefs(result.body, reportEvidenceAll).length === 0) notices.push('正文没有引用任何依据，请人工核对');
           setReportNotice({
             kind: notices.length ? 'warn' : 'ok',
             text: notices.length ? notices.join('；') : '报告已生成并保存为草稿，可继续编辑后复制或导出。',
@@ -2788,6 +2876,41 @@ window.__ModuleLoader__.load({
         } finally {
           setReportGenerating(false);
         }
+      };
+
+      /**
+       * One report per project that has evidence this period. Runs sequentially
+       * (one model call at a time) and writes each draft without touching the
+       * editor, so unfinished text is never replaced behind the user's back.
+       */
+      const generateForAllProjects = async () => {
+        if (batch.running || !batchTargets.length) return;
+        setBatchConfirm(false);
+        setBatch({ running: true, total: batchTargets.length, done: 0, failed: 0, message: '' });
+        let done = 0;
+        let failed = 0;
+        for (const target of batchTargets) {
+          try {
+            const result = await requestReport(target.project.id, target.evidence);
+            saveReport(result.body, {
+              evidence: target.evidence,
+              scopeId: target.project.id,
+              applyToEditor: false,
+            });
+          } catch {
+            failed += 1;
+          }
+          done += 1;
+          setBatch({ running: true, total: batchTargets.length, done, failed, message: '' });
+        }
+        setBatch({
+          running: false,
+          total: batchTargets.length,
+          done,
+          failed,
+          message: '已生成 ' + (done - failed) + ' 份项目报告草稿' + (failed ? '，' + failed + ' 份失败' : ''),
+        });
+        showToast('按项目生成完成，切换项目范围即可查看各份草稿');
       };
 
       const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll, reportDraft);
@@ -3098,6 +3221,14 @@ window.__ModuleLoader__.load({
                   h('option', { value: '' }, '全部项目'),
                   sortedProjects.map((project) => h('option', { value: project.id, key: project.id },
                     project.name + (project.status === 'archived' ? '（已归档）' : ''))))
+              : null,
+            batchTargets.length
+              ? h('button', {
+                  className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                  disabled: (batch.running || reportDirty) ? 'true' : undefined,
+                  title: reportDirty ? '先保存当前草稿，避免覆盖未保存内容' : '为每个有本期记录的项目各生成一份草稿',
+                  onClick: () => setBatchConfirm(true),
+                }, batch.running ? '生成中 ' + batch.done + '/' + batch.total : '按项目生成')
               : null),
           h('div', { className: 'wp-report-actions' },
             h('button', {
@@ -3123,6 +3254,16 @@ window.__ModuleLoader__.load({
               disabled: reportBody.trim() ? undefined : 'true', onClick: exportReport,
             }, '导出 MD'))),
         reportNotice ? h('p', { className: 'wp-report-notice wp-report-notice-' + reportNotice.kind }, reportNotice.text) : null,
+        batchConfirm ? h('div', { className: 'wp-batch-bar' },
+          h('span', { className: 'wp-batch-text' },
+            '将为 ' + batchTargets.length + ' 个项目各生成一份' + (reportKind === 'month' ? '月报' : '周报') + '草稿'),
+          h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: generateForAllProjects }, '确认生成'),
+          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setBatchConfirm(false) }, '取消')) : null,
+        (batch.running || batch.message)
+          ? h('p', { className: 'wp-report-notice' }, batch.running
+              ? '正在生成 ' + batch.done + '/' + batch.total + '…'
+              : batch.message)
+          : null,
         polishPanel,
         reportBody.trim()
           ? (reportMode === 'edit'
@@ -3241,6 +3382,28 @@ window.__ModuleLoader__.load({
             h('option', { value: 'priority' }, '按优先级'),
             h('option', { value: 'created' }, '按创建时间'))));
 
+      const healthPeriod = weekRangeOf(new Date());
+      const health = activeProject ? projectHealth(tasks, logs, artifacts, activeProject, healthPeriod) : null;
+      const projectHealthCard = (activeProjectEntity && health) ? h('div', { className: 'wp-card wp-project-health' },
+        h('div', { className: 'wp-health-items' },
+          h('div', { className: 'wp-health-item' },
+            h('span', { className: 'wp-health-num' }, String(health.todo)),
+            h('span', { className: 'wp-health-label' }, '待办')),
+          h('div', { className: 'wp-health-item' },
+            h('span', { className: 'wp-health-num' }, String(health.done)),
+            h('span', { className: 'wp-health-label' }, '已完成 · ' + health.rate + '%')),
+          h('div', { className: 'wp-health-item' + (health.overdue ? ' wp-health-warn' : '') },
+            h('span', { className: 'wp-health-num' }, String(health.overdue)),
+            h('span', { className: 'wp-health-label' }, '逾期')),
+          h('div', { className: 'wp-health-item' },
+            h('span', { className: 'wp-health-num' }, String(health.records)),
+            h('span', { className: 'wp-health-label' }, '本周记录')),
+          h('div', { className: 'wp-health-item' },
+            h('span', { className: 'wp-health-num' }, String(health.artifacts)),
+            h('span', { className: 'wp-health-label' }, '本周成果'))),
+        h('div', { className: 'wp-health-last' },
+          health.lastAt ? '最近活动 ' + formatDateTime(health.lastAt) : '还没有工作记录')) : null;
+
       const projectSettingsPanel = (activeProjectEntity && projectSettingsOpen)
         ? h('div', { className: 'wp-composer-panel wp-project-settings' },
             h('div', { className: 'wp-detail-section-head' },
@@ -3282,7 +3445,7 @@ window.__ModuleLoader__.load({
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
         : isTrashView
           ? h('div', { className: 'wp-mid-body' }, trashList)
-          : h('div', { className: 'wp-mid-body' }, projectSettingsPanel, quickAdd, toolbar, groupList);
+          : h('div', { className: 'wp-mid-body' }, projectSettingsPanel, projectHealthCard, quickAdd, toolbar, groupList);
 
       const taskNav = [
         { key: 'all', label: '全部任务', count: stats.total },
@@ -3741,6 +3904,7 @@ window.__ModuleLoader__.load({
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
         liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft,
         makeProject, projectKey, migrateProjectRefs, renameProject, setProjectArchived, deleteProject, countProjectTasks,
+        projectHealth,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,

@@ -51,6 +51,8 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Work records** (`记录进展`): append-only timeline of progress, problems, decisions and AI collaboration. Each record carries its own timestamp; records are never edited, only appended.
 - **Artifacts** (`关联成果`): attach a result summary plus links to docs/files. Saving an artifact never marks the task complete — completion stays an explicit user action.
 - **Recent progress in the list**: each row shows the newest work record (deterministic — no model call at render time).
+- **Project health**: a project view shows what matters at a glance — todo, done with completion rate, overdue, this week's records and artifacts, plus the last activity time.
+- **Per-project reports**: from the report page, `按项目生成` writes one draft for every project that has evidence in the period (sequential, one model call each); the current editor is left untouched and generating is blocked while the current draft has unsaved edits.
 - **Projects**: a project is a real record (`id`, name, description, active/archived), not a text label on a task — tasks reference it by id, so renaming a project updates every task at once and never splits it in two. Pick one in the task detail, create it inline (`+ 新建项目…` or the sidebar `+`), or leave the task ungrouped. The sidebar lists every project including empty and archived ones with live task counts; project settings rename, describe, archive and delete (deleting keeps the tasks, they just become ungrouped; renaming onto an existing name merges the two). Reports can be scoped to one project id, which scopes their evidence and export filename, and old reports keep the project name they were generated with.
 - **Recycle bin**: the trash icon in the task detail moves a task to `回收站` (soft delete). The trash view lists what was deleted, when, and offers `恢复` or `彻底删除`; purging asks for confirmation, removes the task with its own records and artifacts, and keeps report snapshots so old reports still resolve. A toast confirms each action and can be left to fade.
 - **Search and sort**: by deadline, priority, or creation time.
@@ -144,7 +146,7 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
 - **1.2.3** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
 - **1.2.4** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
-- **1.2.5 (unreleased, in progress)** — AI project awareness (`projectId` in the action protocol, project list in the prompt, unknown ids rejected) and project context in project-scoped reports; the left sidebar is grouped into sections.
+- **1.2.5 (unreleased, in progress)** — AI project awareness (`projectId` in the action protocol, project list in the prompt, unknown ids rejected), project context in project-scoped reports, a grouped left sidebar, a project health card, per-project batch report generation, and date-only deadlines now count as overdue from the next day (the overdue view, counts and sorting previously ignored them).
 - Decided against: kanban board and a three-state status model.
 
 ## License
