@@ -128,6 +128,16 @@ assert(sidebar.navLabels.indexOf('空项目') !== -1, 'an empty project must sti
 assert(sidebar.navClasses.some((c) => c.split(' ').includes('wp-nav-item-archived')), 'archived project should be marked');
 assert(sidebar.navLabels.indexOf('无项目任务') === -1, 'tasks without a project must not create a nav entry');
 
+// ---- 1b. the sidebar is grouped into sections ----
+const sectionLabels = sidebar.nodes
+  .filter((n) => n.props && n.props.className === 'wp-nav-section-label')
+  .map(textOf);
+['任务', '项目', '报告', '管理'].forEach((title) => {
+  assert(sectionLabels.indexOf(title) !== -1, 'missing nav group: ' + title + ' (got ' + JSON.stringify(sectionLabels) + ')');
+});
+const groupCount = sidebar.classes.filter((c) => c.split(' ').includes('wp-nav-group')).length;
+assert(groupCount === 4, 'expected 4 nav groups, got ' + groupCount);
+
 // ---- 2. a project view lists only its tasks ----
 const projectView = render({ 4: 'proj:p-1' });
 assert(projectView.text.indexOf('插件收尾') !== -1, 'project view should list its tasks');

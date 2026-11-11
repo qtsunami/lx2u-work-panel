@@ -11,7 +11,7 @@ const TASK = {
   id: 't-1', title: '完成报告', description: '描述', status: 'todo',
   urgency: 'high', progress: 0, deadline: '2026-11-12T10:00',
   expected: '', nextStep: '', blockedReason: '', completedAt: null, deletedAt: null,
-  createdAt: iso, updatedAt: iso,
+  createdAt: iso, updatedAt: iso, projectId: 'p-1',
 };
 const localStorage = {
   getItem: (k) => (k === '@local/work-panel:tasks:v1' ? JSON.stringify([TASK]) : null),
@@ -35,10 +35,12 @@ const OVERRIDES = {
       { op: 'complete', taskId: 't-1' },
       { op: 'update', taskId: 't-1', patch: { urgency: 'high', nextStep: '写提纲' } },
       { op: 'create', title: '完成报告' },
+      { op: 'update', taskId: 't-1', patch: { projectId: 'p-2' } },
       { op: 'complete', taskId: 't-missing' },
     ],
   },
   28: { before: { tasks: [TASK], logs: [], artifacts: [] }, at: iso },
+  48: [{ id: 'p-1', name: '工作台' }, { id: 'p-2', name: '客户' }],
   29: true,
   31: {
     reply: '还缺验收标准',
@@ -88,9 +90,11 @@ const WorkPanel = registered['work-panel'];
 const tree = WorkPanel();
 
 const classes = [];
+const texts = [];
 (function walk(node) {
   if (!node) return;
   if (Array.isArray(node)) { node.forEach(walk); return; }
+  if (typeof node === 'string') { texts.push(node); return; }
   if (typeof node !== 'object') return;
   if (node.props && typeof node.props.className === 'string') classes.push(node.props.className);
   (node.children || []).forEach(walk);
@@ -120,5 +124,8 @@ const warnings = [];
 })(tree);
 if (!warnings.some((t) => t.indexOf('相似任务') !== -1)) throw new Error('duplicate warning text missing');
 if (!warnings.some((t) => t.indexOf('无法执行') !== -1)) throw new Error('invalid-task warning text missing');
+
+// A project move is previewed by name, not by opaque id.
+if (texts.join('|').indexOf('项目：工作台 → 客户') === -1) throw new Error('project move preview missing names');
 
 console.log('ACTIONS RENDER OK · ' + want.length + ' classes · warnings: ' + warnings.length);

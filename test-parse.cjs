@@ -488,5 +488,35 @@ check('counts skip deleted tasks and blanks', JSON.stringify(Array.from(dbg.coun
   { projectId: '', deletedAt: null },
 ]).entries())), JSON.stringify([['p1', 1], ['p2', 1]]));
 
+console.log('\n# AI project actions');
+const projState = {
+  tasks: [{
+    id: 't-1', title: 'A', status: 'todo', projectId: 'p-1', urgency: 'medium',
+    description: '', expected: '', nextStep: '', blockedReason: '', deadline: '2026-11-12',
+    completedAt: null, deletedAt: null, progress: 0,
+  }],
+  logs: [], artifacts: [],
+  projects: [{ id: 'p-1', name: '工作台' }, { id: 'p-2', name: '客户' }],
+};
+const moved = dbg.applyActions(projState, [{ op: 'update', taskId: 't-1', patch: { projectId: 'p-2' } }], 'now');
+check('move to another project applies', moved.next.tasks[0].projectId, 'p-2');
+const ungrouped = dbg.applyActions(projState, [{ op: 'update', taskId: 't-1', patch: { projectId: '' } }], 'now');
+check('ungroup applies', ungrouped.next.tasks[0].projectId, '');
+check('unknown project rejected', dbg.applyActions(projState, [{ op: 'update', taskId: 't-1', patch: { projectId: 'p-404' } }], 'now').outcomes[0].reason, 'no-change');
+check('same project is a no-op', dbg.applyActions(projState, [{ op: 'update', taskId: 't-1', patch: { projectId: 'p-1' } }], 'now').outcomes[0].reason, 'no-change');
+const createdInProject = dbg.applyActions(projState, [{ op: 'create', title: '新任务', projectId: 'p-2' }], 'now');
+check('create carries a known project', createdInProject.next.tasks[0].projectId, 'p-2');
+const createdWithBadProject = dbg.applyActions(projState, [{ op: 'create', title: '另一个', projectId: 'p-404' }], 'now');
+check('create drops an unknown project', createdWithBadProject.next.tasks[0].projectId, '');
+
+const previewProjects = [{ id: 'p-1', name: '工作台' }, { id: 'p-2', name: '客户' }];
+const moveInfo = dbg.describeAction([{ id: 't-1', title: 'A', projectId: 'p-1' }], { op: 'update', taskId: 't-1', patch: { projectId: 'p-2' } }, previewProjects);
+check('preview shows project names', moveInfo.lines[0], '项目：工作台 → 客户');
+check('preview hides unchanged project', dbg.describeAction([{ id: 't-1', title: 'A', projectId: 'p-1' }], { op: 'update', taskId: 't-1', patch: { projectId: 'p-1' } }, previewProjects).lines.length, 0);
+const createInfo = dbg.describeAction([], { op: 'create', title: 'X', projectId: 'p-2' }, previewProjects);
+check('preview create names the project', createInfo.lines.indexOf('项目：客户') !== -1, true);
+const ungroupInfo = dbg.describeAction([{ id: 't-1', title: 'A', projectId: 'p-1' }], { op: 'update', taskId: 't-1', patch: { projectId: '' } }, previewProjects);
+check('preview ungroup reads 未分组', ungroupInfo.lines[0], '项目：工作台 → 未分组');
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

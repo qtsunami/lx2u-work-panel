@@ -234,6 +234,45 @@ registered = undefined;
 apply(makeCtx(undefined));
 check('polish-no-model', (await call({ mode: 'polish', paragraph: 'x' })).error, 'model-unavailable');
 
+console.log('\n# project-aware actions');
+const PROJECTS = [{ id: 'p-1', name: '工作台', status: 'active' }, { id: 'p-2', name: '客户', status: 'archived' }];
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({ reply: 'ok', actions: [
+  { op: 'update', taskId: 't-1', patch: { projectId: 'p-1' } },
+  { op: 'update', taskId: 't-2', patch: { projectId: 'p-9' } },
+  { op: 'create', title: '新任务', projectId: 'p-2' },
+  { op: 'create', title: '编造项目', projectId: 'p-9' },
+  { op: 'update', taskId: 't-1', patch: { projectId: '' } },
+]}))));
+const projRes = await call({ messages: [], tasks: TASKS, projects: PROJECTS });
+check('unknown-project-update-dropped', projRes.actions.length, 4);
+check('known-project-kept', projRes.actions[0].patch, { projectId: 'p-1' });
+check('create-keeps-project', projRes.actions[1].projectId, 'p-2');
+check('create-drops-unknown-project', 'projectId' in projRes.actions[2], false);
+check('ungroup-kept', projRes.actions[3].patch, { projectId: '' });
+
+registered = undefined;
+const capProjects = captureLlm(JSON.stringify({ reply: 'ok', actions: [] }));
+apply(makeCtx(capProjects));
+await call({ messages: [], tasks: TASKS, projects: PROJECTS });
+check('prompt-lists-projects', capProjects.captured.user.indexOf('工作台') > 0, true);
+check('prompt-warns-against-inventing-projects', capProjects.captured.system.indexOf('绝不编造') > 0, true);
+check('prompt-schema-mentions-projectId', capProjects.captured.system.indexOf('"projectId"') > 0, true);
+
+console.log('\n# report mode: project context');
+registered = undefined;
+const capReportProject = captureLlm(JSON.stringify({ reply: 'ok', body: '## 一、本期主要成果\n- 完成 [[task:t-1]]' }));
+apply(makeCtx(capReportProject));
+await call({
+  mode: 'report', kind: 'week',
+  period: { start: '2026-11-09', end: '2026-11-15' },
+  project: { name: '工作台', description: '插件开发' },
+  evidence: EVIDENCE,
+});
+check('report-user-names-project', capReportProject.captured.user.indexOf('报告项目：工作台') > 0, true);
+check('report-user-carries-description', capReportProject.captured.user.indexOf('插件开发') > 0, true);
+check('report-user-scope-warning', capReportProject.captured.user.indexOf('不要提及无关项目') > 0, true);
+
 console.log('\n# failure paths');
 registered = undefined;
 apply(makeCtx(undefined));

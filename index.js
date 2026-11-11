@@ -93,7 +93,7 @@ const URGENCIES = ['low', 'medium', 'high', 'none'];
 const LOG_KINDS = ['progress', 'issue', 'decision', 'ai'];
 
 /** Field-level whitelist for `update` — the model can never write anything else. */
-function sanitizePatch(raw) {
+function sanitizePatch(raw, knownProjectIds) {
   if (!raw || typeof raw !== 'object') return null;
   const patch = {};
   const title = str(raw.title, 200);
@@ -104,6 +104,12 @@ function sanitizePatch(raw) {
   for (const key of ['description', 'expected', 'nextStep', 'blockedReason']) {
     if (typeof raw[key] === 'string') patch[key] = str(raw[key], MAX_ACTION_TEXT);
   }
+  // '' means "ungrouped"; any other id must exist in the project list the
+  // client sent, so the model cannot invent a project.
+  if (typeof raw.projectId === 'string') {
+    const id = raw.projectId.trim();
+    if (id === '' || !knownProjectIds || knownProjectIds.has(id)) patch.projectId = id;
+  }
   return Object.keys(patch).length ? patch : null;
 }
 
@@ -111,7 +117,7 @@ function sanitizePatch(raw) {
  * Validates the model's action list against the ids the client actually sent.
  * Anything not understood is dropped rather than guessed at.
  */
-function sanitizeActions(raw, knownIds) {
+function sanitizeActions(raw, knownIds, knownProjectIds) {
   if (!Array.isArray(raw)) return [];
   const out = [];
   for (const item of raw.slice(0, MAX_ACTIONS)) {
@@ -120,18 +126,23 @@ function sanitizeActions(raw, knownIds) {
     if (op === 'create') {
       const title = str(item.title, 200);
       if (!title) continue;
-      out.push({
+      const create = {
         op: 'create',
         title,
         deadline: sanitizeDeadline(item.deadline),
         urgency: URGENCIES.includes(item.urgency) ? item.urgency : 'medium',
-      });
+      };
+      if (typeof item.projectId === 'string') {
+        const id = item.projectId.trim();
+        if (id === '' || !knownProjectIds || knownProjectIds.has(id)) create.projectId = id;
+      }
+      out.push(create);
       continue;
     }
     const taskId = typeof item.taskId === 'string' ? item.taskId : '';
     if (!taskId || !knownIds.has(taskId)) continue;
     if (op === 'update') {
-      const patch = sanitizePatch(item.patch);
+      const patch = sanitizePatch(item.patch, knownProjectIds);
       if (patch) out.push({ op: 'update', taskId, patch });
     } else if (op === 'complete' || op === 'reopen') {
       out.push({ op, taskId });
@@ -190,8 +201,8 @@ function buildChatSystemPrompt(today) {
     '只输出一个 JSON 对象（不要 Markdown 代码块、不要额外解释）：',
     '{"reply":"给用户的简洁中文回复","actions":[]}',
     'actions 的每一项必须是下面之一：',
-    '{"op":"create","title":"任务标题","deadline":"YYYY-MM-DDTHH:mm"或"","urgency":"low|medium|high|none"}',
-    '{"op":"update","taskId":"清单里的 id","patch":{"title":"","deadline":"","urgency":"","nextStep":"","expected":"","blockedReason":"","description":""}}',
+    '{"op":"create","title":"任务标题","deadline":"YYYY-MM-DDTHH:mm"或"","urgency":"low|medium|high|none","projectId":"项目清单里的 id 或空字符串"}',
+    '{"op":"update","taskId":"清单里的 id","patch":{"title":"","deadline":"","urgency":"","nextStep":"","expected":"","blockedReason":"","description":"","projectId":"项目清单里的 id 或空字符串"}}',
     '{"op":"complete","taskId":"..."}',
     '{"op":"reopen","taskId":"..."}',
     '{"op":"log","taskId":"...","kind":"progress|issue|decision|ai","text":"这次推进的内容"}',
@@ -202,7 +213,9 @@ function buildChatSystemPrompt(today) {
     '3. 创建任务前先检查清单里是否已有相同或高度相似的任务：已有就用 update，不要重复 create。',
     '4. 相对时间（今天/明天/周五等）换算成具体日期，精确到小时（分钟填 00）。',
     '5. 一次最多给出 6 条 actions，按执行顺序排列。',
-    '6. reply 简短友好，说明准备做什么改动。',
+    '6. 需要归属项目时，projectId 只能取自项目清单里的 id；把任务移出项目就填空字符串；不确定时留空，绝不编造。',
+    '7. 用户问项目相关问题时，按项目清单回答，不要自行创造项目名。',
+    '8. reply 简短友好，说明准备做什么改动。',
   ].join('\n');
 }
 
@@ -341,12 +354,19 @@ function buildReportUserText(body) {
       lines.push('- 成果 [' + artifact.id + '] ' + str(artifact.summary, 500) + (links.length ? ' 链接：' + links.join(' ') : ''));
     }
   }
+  const project = body && body.project && typeof body.project === 'object' ? body.project : null;
   const parts = [
     '报告周期：' + (period.start || '') + ' ~ ' + (period.end || ''),
+  ];
+  if (project && str(project.name, 100)) {
+    parts.push('报告项目：' + str(project.name, 100) + (str(project.description, 300) ? '（' + str(project.description, 300) + '）' : ''));
+    parts.push('本报告只覆盖该项目下的任务，不要提及无关项目。');
+  }
+  parts.push(
     '',
     evidence.length ? '本期依据：' : '本期依据：空（没有任何任务、记录或成果）',
     ...lines,
-  ];
+  );
   if (weeklies.length) {
     parts.push('', '当月已有周报（请归纳重点，不要简单拼接）：');
     for (const weekly of weeklies) {
@@ -381,7 +401,7 @@ function countText(body, max) {
   return Array.isArray(body) ? body.slice(0, max) : [];
 }
 
-function buildChatUserText(body, tasks) {
+function buildChatUserText(body, tasks, projects) {
   const messages = Array.isArray(body && body.messages) ? body.messages : [];
   const history = messages
     .filter((m) => m && typeof m.text === 'string' && m.text.length > 0)
@@ -394,6 +414,9 @@ function buildChatUserText(body, tasks) {
   return [
     '当前任务清单（JSON）：',
     JSON.stringify(list),
+    '',
+    '项目清单（JSON，projectId 只能取自这里）：',
+    JSON.stringify(projects),
     '',
     '对话记录：',
     history,
@@ -536,15 +559,17 @@ export function apply(ctx, config) {
         const raw = await complete(
           llm, preferredProvider, preferredModel,
           buildChatSystemPrompt(localToday()),
-          buildChatUserText(body, tasks),
+          buildChatUserText(body, tasks, Array.isArray(body && body.projects) ? body.projects.slice(0, 50) : []),
           800,
         );
         const parsed = extractJson(raw);
         if (!parsed) return json({ reply: raw.trim() || '（模型没有返回内容）', actions: [] });
         const knownIds = new Set(tasks.map((t) => t && t.id).filter((id) => typeof id === 'string'));
+        const projectList = Array.isArray(body && body.projects) ? body.projects.slice(0, 50) : [];
+        const knownProjectIds = new Set(projectList.map((p) => (p && typeof p.id === 'string' ? p.id : '')).filter(Boolean));
         return json({
           reply: typeof parsed.reply === 'string' && parsed.reply.trim() ? parsed.reply.trim() : '已处理。',
-          actions: sanitizeActions(parsed.actions, knownIds),
+          actions: sanitizeActions(parsed.actions, knownIds, knownProjectIds),
         });
       } catch (error) {
         return json({ error: String((error && error.message) || error) });

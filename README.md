@@ -16,7 +16,7 @@ would change, and only a confirmation applies it — with an undo snapshot.
 
 Safety rules:
 
-- **Action whitelist**: `create`, `update` (whitelisted fields only), `complete`, `reopen`, `log`, `artifact`. Unknown operations, unknown `taskId`s and unsafe links are dropped by the Host before they ever reach the browser.
+- **Action whitelist**: `create`, `update` (whitelisted fields only, including `projectId`), `complete`, `reopen`, `log`, `artifact`. Unknown operations, unknown `taskId`s, unknown `projectId`s and unsafe links are dropped by the Host before they ever reach the browser; the assistant receives the project list so it can file tasks by name without inventing projects, and project moves are previewed as `项目：工作台 → 客户`.
 - **Duplicate guard**: a create whose title duplicates an existing task (same wording, contained wording, or heavy character overlap) is skipped and flagged in the preview; `仍然创建` overrides it. The offline fallback goes through the same guard, fixing the old "AI creates the same task twice" bug.
 - **Advice is not fact**: in-task `AI 建议` returns a summary, a suggested next step, a suspected blocker and risks — all marked `未确认`. Only `采纳` writes them into the task.
 - **Tidying is a proposal**: `AI 整理` rewrites a pasted result into a work record, but the text is placed in the composer; you still press `保存`.
@@ -34,13 +34,14 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Traceability**: every factual sentence carries an inline marker (`[[task:t-…]]`, `[[log:l-…]]`, `[[artifact:a-…]]`). In the preview they render as clickable badges that jump to the source task; a marker whose source disappeared shows `?` instead of vanishing.
 - **Host validation**: markers whose ids are not in the evidence bundle are stripped before the body reaches the browser, and the count is reported back.
 - **Monthly report**: switch `周报 / 月报` in the toolbar. A month uses the natural calendar month and summarises the weeklies that fall inside it; the prompt asks the model to consolidate highlights and to write any repeated achievement only once, instead of concatenating the weekly bodies.
+- **Project-aware reports**: when a report is scoped to a project, its prompt carries the project name and description and is told to ignore unrelated projects.
 - **Paragraph polishing**: in preview mode click a paragraph → `润色`; the rewritten paragraph is shown as an unapplied suggestion alongside its evidence badges, and `替换这一段` applies it. The Host rejects any result that drops, edits or invents an evidence marker, and the client refuses to replace a paragraph whose text changed while the suggestion was open.
 - **Edit / Preview** toggle, `保存草稿`, `复制`, `导出 MD` (markers become numbered footnotes plus a source list). Nothing is sent anywhere.
 - **Snapshot rule**: saving a draft stores both the reference id and a snapshot taken at that moment, so editing a task later never rewrites an existing report.
 
 ## Features
 
-- **Three-column workbench**: views · task list · task detail.
+- **Three-column workbench**: views · task list · task detail. The left sidebar is grouped into 任务 / 项目 / 报告 / 管理 sections.
 - **Smart views**: all tasks, due today, overdue, completed.
 - **Quick add**: type a title, pick a date/time (half-hour steps), press Enter.
 - **Priorities**: high (red), medium (yellow), low (blue), none — reflected on the checkbox frame and the detail flag.
@@ -142,7 +143,8 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.2.1** — monthly report: `周报 / 月报` switch, natural-month period, weeklies inside the month are consolidated (not concatenated), repeated achievements written once.
 - **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
 - **1.2.3** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
-- **1.2.4 (unreleased, in progress)** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
+- **1.2.4** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
+- **1.2.5 (unreleased, in progress)** — AI project awareness (`projectId` in the action protocol, project list in the prompt, unknown ids rejected) and project context in project-scoped reports; the left sidebar is grouped into sections.
 - Decided against: kanban board and a three-state status model.
 
 ## License

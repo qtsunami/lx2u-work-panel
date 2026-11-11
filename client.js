@@ -202,9 +202,9 @@ window.__ModuleLoader__.load({
     };
     const PATCH_FIELD_LABEL = {
       title: '标题', description: '描述', expected: '预期结果', nextStep: '下一步',
-      blockedReason: '阻塞原因', deadline: '截止时间', urgency: '优先级',
+      blockedReason: '阻塞原因', deadline: '截止时间', urgency: '优先级', projectId: '项目',
     };
-    const PATCH_KEYS = ['title', 'description', 'expected', 'nextStep', 'blockedReason', 'deadline', 'urgency'];
+    const PATCH_KEYS = ['title', 'description', 'expected', 'nextStep', 'blockedReason', 'deadline', 'urgency', 'projectId'];
     const SKIP_REASON = {
       duplicate: '与现有任务重复',
       'missing-task': '任务不存在',
@@ -257,14 +257,17 @@ window.__ModuleLoader__.load({
     }
 
     /** Human-readable preview of one action, used by the confirmation card. */
-    function describeAction(tasks, action) {
+    function describeAction(tasks, action, projects) {
       const op = action && action.op;
       const label = ACTION_LABEL[op] || String(op || '');
+      const projectNames = new Map((projects || []).map((project) => [project.id, project.name]));
+      const projectLabel = (id) => (id ? projectNames.get(id) || '未知项目' : '未分组');
       if (op === 'create') {
         const title = String(action.title || '').trim();
         const lines = [];
         if (action.deadline) lines.push('截止：' + formatDeadline(action.deadline));
         lines.push('优先级：' + (URGENCY[action.urgency] || '中'));
+        if (action.projectId) lines.push('项目：' + projectLabel(action.projectId));
         const duplicate = action.force ? null : findDuplicateTask(tasks, title);
         return { op, label, title, lines, duplicateOf: duplicate ? duplicate.title : null };
       }
@@ -277,7 +280,10 @@ window.__ModuleLoader__.load({
           if (!(key in patch)) continue;
           const before = key === 'deadline' ? task.deadline : task[key];
           if (String(before || '') === String(patch[key] || '')) continue;
-          lines.push(PATCH_FIELD_LABEL[key] + '：' + previewValue(key, before) + ' → ' + previewValue(key, patch[key]));
+          const shown = key === 'projectId'
+            ? projectLabel(before) + ' → ' + projectLabel(patch[key])
+            : previewValue(key, before) + ' → ' + previewValue(key, patch[key]);
+          lines.push(PATCH_FIELD_LABEL[key] + '：' + shown);
         }
         return { op, label, title: task.title, lines };
       }
@@ -316,10 +322,15 @@ window.__ModuleLoader__.load({
             outcomes.push({ op, status: 'skipped', reason: 'duplicate', taskId: duplicate.id, title });
             continue;
           }
+          const wantedProject = String(action.projectId || '').trim();
+          const projectOk = !wantedProject
+            || !Array.isArray(state.projects)
+            || state.projects.some((project) => project && project.id === wantedProject);
           const task = newTask({
             title,
             deadline: normalizeDeadline(action.deadline || todayDate()),
             urgency: URGENCY[action.urgency] ? action.urgency : 'medium',
+            projectId: projectOk ? wantedProject : '',
           });
           task.createdAt = stamp;
           task.updatedAt = stamp;
@@ -348,6 +359,11 @@ window.__ModuleLoader__.load({
             } else if (key === 'deadline') {
               const deadline = normalizeDeadline(raw.deadline);
               if (deadline !== (task.deadline || '')) patch.deadline = deadline;
+            } else if (key === 'projectId') {
+              const value = String(raw.projectId == null ? '' : raw.projectId).trim();
+              const known = !Array.isArray(state.projects) || value === ''
+                || state.projects.some((project) => project && project.id === value);
+              if (known && value !== (task.projectId || '')) patch.projectId = value;
             } else {
               const value = String(raw[key] == null ? '' : raw[key]).trim();
               if (value !== (task[key] || '')) patch[key] = value;
@@ -1608,7 +1624,10 @@ window.__ModuleLoader__.load({
       }
       .wp-detail-field { margin: 0 0 14px; }
       .wp-detail-project { height: 30px; padding: 2px 0; }
-      .wp-nav-section { display: flex; align-items: center; gap: 6px; margin: 14px 0 4px; padding: 0 10px; }
+      .wp-nav-group { margin: 0 0 10px; }
+      .wp-nav-group-body { display: flex; flex-direction: column; gap: 2px; }
+      .wp-nav-group:last-of-type { margin-bottom: 4px; }
+      .wp-nav-section { display: flex; align-items: center; gap: 6px; margin: 0 0 3px; padding: 0 10px; }
       .wp-nav-section-label { font-size: 11px; letter-spacing: 0.04em; color: var(--wp-text-tertiary); }
       .wp-nav-section-add {
         margin-left: auto; width: 18px; height: 18px; padding: 0; border: none; border-radius: 4px;
@@ -2310,7 +2329,7 @@ window.__ModuleLoader__.load({
 
       // ---- AI actions: preview -> confirm -> apply -> undo ----------------
       const runActions = (actions) => {
-        const result = applyActions({ tasks, logs, artifacts }, actions);
+        const result = applyActions({ tasks, logs, artifacts, projects }, actions);
         if (result.applied > 0) {
           setTasks(result.next.tasks); saveTasks(result.next.tasks);
           commitLogs(result.next.logs);
@@ -2490,7 +2509,9 @@ window.__ModuleLoader__.load({
               tasks: tasks.slice(0, 50).map((t) => ({
                 id: t.id, title: t.title, status: t.status, urgency: t.urgency,
                 deadline: t.deadline, nextStep: t.nextStep, blockedReason: t.blockedReason,
+                projectId: t.projectId || '',
               })),
+              projects: projects.map((project) => ({ id: project.id, name: project.name, status: project.status })),
             }),
           });
           if (!res.ok) throw new Error('http-' + res.status);
@@ -2720,6 +2741,12 @@ window.__ModuleLoader__.load({
               mode: 'report',
               kind: reportKind,
               projectId: reportScope,
+              project: reportScope
+                ? {
+                    name: projectNameOf(reportScope),
+                    description: (projectById.get(reportScope) || {}).description || '',
+                  }
+                : null,
               period: { start: reportPeriod.start, end: reportPeriod.end },
               // A monthly report summarizes the weeklies inside it instead of
               // concatenating raw records again.
@@ -3257,14 +3284,14 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'wp-mid-body' }, trashList)
           : h('div', { className: 'wp-mid-body' }, projectSettingsPanel, quickAdd, toolbar, groupList);
 
-      const navItems = [
+      const taskNav = [
         { key: 'all', label: '全部任务', count: stats.total },
         { key: 'today', label: '今天到期', count: stats.todayCount },
         { key: 'overdue', label: '已逾期', count: stats.overdue },
         { key: 'done', label: '已完成', count: stats.byStatus.done },
-        { key: 'reports', label: '周报/月报', count: reports.length },
-        { key: 'trash', label: '回收站', count: stats.deletedCount },
       ];
+      const reportNav = [{ key: 'reports', label: '周报/月报', count: reports.length }];
+      const manageNav = [{ key: 'trash', label: '回收站', count: stats.deletedCount }];
       const navButton = (it, extraClass) => h('button', {
         className: 'wp-nav-item' + (extraClass ? ' ' + extraClass : '') + (activeView === it.key ? ' wp-active' : ''),
         key: it.key, type: 'button',
@@ -3301,17 +3328,24 @@ window.__ModuleLoader__.load({
           },
         }, '建')) : null;
 
+      const navGroup = (title, children, action) => h('div', { className: 'wp-nav-group', key: title },
+        h('div', { className: 'wp-nav-section' },
+          h('span', { className: 'wp-nav-section-label' }, title),
+          action || null),
+        h('div', { className: 'wp-nav-group-body' }, (children || []).filter(Boolean)));
+
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
-        navItems.map((it) => navButton(it)),
-        h('div', { className: 'wp-nav-section' },
-          h('span', { className: 'wp-nav-section-label' }, '项目'),
-          h('button', {
-            className: 'wp-nav-section-add', type: 'button', title: '新建项目',
-            onClick: () => setNewProject({ mode: 'sidebar', name: '' }),
-          }, '+')),
-        newProjectRow,
-        projectNav.map((it) => navButton(it, it.archived ? 'wp-nav-item-archived' : '')),
+        navGroup('任务', taskNav.map((it) => navButton(it))),
+        navGroup('项目', [
+          newProjectRow,
+          projectNav.map((it) => navButton(it, it.archived ? 'wp-nav-item-archived' : '')),
+        ], h('button', {
+          className: 'wp-nav-section-add', type: 'button', title: '新建项目',
+          onClick: () => setNewProject({ mode: 'sidebar', name: '' }),
+        }, '+')),
+        navGroup('报告', reportNav.map((it) => navButton(it))),
+        navGroup('管理', manageNav.map((it) => navButton(it))),
         h('div', { className: 'wp-sidenav-spacer' }));
 
       const detailRow = (label, value) => h('div', { className: 'wp-detail-row' },
@@ -3633,7 +3667,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'wp-action-card-title' }, '待确认变更'),
           h('span', { className: 'wp-action-card-count' }, pendingActions.actions.length + ' 项')),
         h('div', { className: 'wp-action-card-list' }, pendingActions.actions.map((action, i) => {
-          const info = describeAction(tasks, action);
+          const info = describeAction(tasks, action, projects);
           return h('div', {
             className: 'wp-action-item' + (info.duplicateOf || info.invalid ? ' wp-action-item-warn' : ''),
             key: i,
