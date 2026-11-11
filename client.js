@@ -62,6 +62,9 @@ window.__ModuleLoader__.load({
     // mutable current state of a task.
     const LOGS_KEY = '@local/work-panel:logs:v1';
     const ARTIFACTS_KEY = '@local/work-panel:artifacts:v1';
+    const PROJECTS_KEY = '@local/work-panel:projects:v1';
+    const PROJECTS_MIGRATION_KEY = '@local/work-panel:migration:projects:v1';
+    const PROJECTS_BACKUP_KEY = '@local/work-panel:migration-backup:projects:v1';
 
     const LOG_KINDS = { progress: '推进', issue: '问题', decision: '决策', ai: 'AI 协作', note: '记录' };
     const LOG_KIND_ORDER = ['progress', 'issue', 'decision', 'ai'];
@@ -82,7 +85,7 @@ window.__ModuleLoader__.load({
         status: done ? 'done' : 'todo',
         progress: done ? 100 : 0,
         description: str(task.description),
-        project: str(task.project),
+        projectId: str(task.projectId),
         expected: str(task.expected),
         nextStep: str(task.nextStep),
         blockedReason: str(task.blockedReason),
@@ -409,18 +412,132 @@ window.__ModuleLoader__.load({
     }
 
     // ---- recycle bin ------------------------------------------------------
-    /** Projects in use, derived from live tasks (no separate project store). */
-    function collectProjects(tasks) {
+    // ---- projects ---------------------------------------------------------
+    // A project is a real record; tasks reference it by id so renaming a
+    // project updates every task at once and never splits it in two.
+    function pid() { return 'p-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); }
+    function projectKey(name) { return String(name || '').trim().toLowerCase(); }
+    function makeProject(fields) {
+      const iso = new Date().toISOString();
+      return {
+        id: pid(), name: '', description: '', color: '', status: 'active',
+        archivedAt: null, createdAt: iso, updatedAt: iso, ...fields,
+      };
+    }
+    function loadProjects() {
+      try {
+        const raw = window.localStorage.getItem(PROJECTS_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((p) => p && typeof p.id === 'string' && typeof p.name === 'string');
+      } catch { return []; }
+    }
+    function saveProjects(projects) { try { window.localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch { /* ignore */ } }
+    function projectsMigrated() { try { return window.localStorage.getItem(PROJECTS_MIGRATION_KEY) === 'v1'; } catch { return false; } }
+    function markProjectsMigrated() { try { window.localStorage.setItem(PROJECTS_MIGRATION_KEY, 'v1'); } catch { /* ignore */ } }
+    function backupBeforeMigration(state) {
+      try { window.localStorage.setItem(PROJECTS_BACKUP_KEY, JSON.stringify({ ...state, at: new Date().toISOString() })); } catch { /* ignore */ }
+    }
+
+    /** Live (non-deleted) task count per project id. */
+    function countProjectTasks(tasks) {
       const counts = new Map();
       for (const task of tasks) {
-        if (!task || task.deletedAt) continue;
-        const name = String(task.project || '').trim();
-        if (!name) continue;
-        counts.set(name, (counts.get(name) || 0) + 1);
+        if (!task || task.deletedAt || !task.projectId) continue;
+        counts.set(task.projectId, (counts.get(task.projectId) || 0) + 1);
       }
-      return Array.from(counts.entries())
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => (a.count === b.count ? a.name.localeCompare(b.name) : b.count - a.count));
+      return counts;
+    }
+
+    /**
+     * One-time migration from the free-text `project` field to `projectId`.
+     * Idempotent: tasks/reports that already carry an id are left untouched.
+     */
+    function migrateProjectRefs(tasks, projects, reports) {
+      let nextProjects = projects.slice();
+      let changed = false;
+      const findByName = (name) => nextProjects.find((p) => projectKey(p.name) === projectKey(name)) || null;
+      const nextTasks = tasks.map((task) => {
+        if (!task || task.projectId) return task;
+        const name = String(task.project || '').trim();
+        if (!name) {
+          if (!('project' in task)) return task;
+          changed = true;
+          const copy = { ...task };
+          delete copy.project;
+          return copy;
+        }
+        let project = findByName(name);
+        if (!project) {
+          project = makeProject({ name });
+          nextProjects = nextProjects.concat([project]);
+        }
+        changed = true;
+        const copy = { ...task };
+        delete copy.project;
+        copy.projectId = project.id;
+        return copy;
+      });
+      const nextReports = reports.map((report) => {
+        if (!report || report.projectId) return report;
+        const name = String(report.projectScope || '').trim();
+        if (!name) {
+          if (!('projectScope' in report)) return report;
+          changed = true;
+          const copy = { ...report };
+          delete copy.projectScope;
+          return copy;
+        }
+        const project = findByName(name);
+        changed = true;
+        const copy = { ...report };
+        delete copy.projectScope;
+        // Keep the name snapshot: an old report must not drift when the project
+        // is renamed later.
+        copy.projectId = project ? project.id : '';
+        copy.projectName = project ? project.name : name;
+        return copy;
+      });
+      return { tasks: nextTasks, projects: nextProjects, reports: nextReports, changed };
+    }
+
+    /** Rename, or merge into an existing project with the same name. */
+    function renameProject(projects, tasks, id, rawName) {
+      const name = String(rawName || '').trim();
+      if (!name) return { projects, tasks, error: 'empty-name' };
+      const target = projects.find((p) => p.id === id);
+      if (!target) return { projects, tasks, error: 'missing-project' };
+      const clash = projects.find((p) => p.id !== id && projectKey(p.name) === projectKey(name));
+      const iso = new Date().toISOString();
+      if (clash) {
+        return {
+          projects: projects.filter((p) => p.id !== id).map((p) => (p.id === clash.id ? { ...p, updatedAt: iso } : p)),
+          tasks: tasks.map((t) => (t.projectId === id ? { ...t, projectId: clash.id } : t)),
+          mergedInto: clash.id,
+          merged: true,
+        };
+      }
+      return {
+        projects: projects.map((p) => (p.id === id ? { ...p, name, updatedAt: iso } : p)),
+        tasks,
+        merged: false,
+      };
+    }
+
+    function setProjectArchived(projects, id, archived, iso) {
+      const stamp = iso || new Date().toISOString();
+      return projects.map((p) => (p.id === id
+        ? { ...p, status: archived ? 'archived' : 'active', archivedAt: archived ? stamp : null, updatedAt: stamp }
+        : p));
+    }
+
+    /** Deleting a project never deletes its tasks: they become ungrouped. */
+    function deleteProject(projects, tasks, id) {
+      return {
+        projects: projects.filter((p) => p.id !== id),
+        tasks: tasks.map((t) => (t.projectId === id ? { ...t, projectId: '' } : t)),
+      };
     }
 
     /** Tasks that are not in the recycle bin. */
@@ -1505,6 +1622,52 @@ window.__ModuleLoader__.load({
         font: inherit; font-size: 12px; cursor: pointer;
       }
       .wp-report-scope:hover { border-color: var(--wp-primary); color: var(--wp-primary); }
+
+      /* ---- projects ---- */
+      .wp-nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .wp-nav-item-archived { opacity: 0.55; }
+      .wp-nav-new { display: flex; gap: 6px; padding: 2px 10px 6px; }
+      .wp-nav-new-input {
+        flex: 1; min-width: 0; height: 26px; padding: 0 8px;
+        border: 1px solid var(--wp-border); border-radius: 6px;
+        background: var(--wp-bg-container); color: var(--wp-text);
+        font: inherit; font-size: 12.5px; outline: none;
+      }
+      .wp-nav-new-input:focus { border-color: var(--wp-primary); }
+      .wp-nav-new-ok {
+        flex-shrink: 0; height: 26px; padding: 0 9px;
+        border: 1px solid var(--wp-primary); border-radius: 6px;
+        background: var(--wp-primary); color: #fff; font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .wp-detail-select {
+        width: 100%; height: 30px; padding: 0 8px;
+        border: 1px solid var(--wp-border); border-radius: 6px;
+        background: var(--wp-bg-container); color: var(--wp-text);
+        font: inherit; font-size: 13px; cursor: pointer;
+      }
+      .wp-detail-select:focus { outline: none; border-color: var(--wp-primary); }
+      .wp-detail-project-select { max-width: 100%; }
+      .wp-inline-new { display: flex; gap: 6px; margin-top: 6px; }
+      .wp-inline-new-input {
+        flex: 1; min-width: 0; height: 28px; padding: 0 8px;
+        border: 1px solid var(--wp-border); border-radius: 6px;
+        background: var(--wp-bg-container); color: var(--wp-text);
+        font: inherit; font-size: 12.5px; outline: none;
+      }
+      .wp-inline-new-input:focus { border-color: var(--wp-primary); }
+      .wp-inline-new-ok, .wp-inline-new-cancel {
+        flex-shrink: 0; height: 28px; padding: 0 10px;
+        border: 1px solid var(--wp-border); border-radius: 6px;
+        background: transparent; color: var(--wp-text-secondary);
+        font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .wp-inline-new-ok { border-color: var(--wp-primary); background: var(--wp-primary); color: #fff; }
+      .wp-project-settings { margin-bottom: 12px; }
+      .wp-project-settings-label { margin-top: 10px; }
+      .wp-project-settings-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      .wp-project-settings-spacer { flex: 1; }
+      .wp-inline-confirm { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--wp-warning); }
+      .wp-danger-text { color: var(--wp-error); }
       .wp-detail-field-label { display: block; margin-bottom: 2px; font-size: 12px; color: var(--wp-text-tertiary); }
       .wp-detail-small { font-size: 13px; line-height: 1.55; min-height: 38px; color: var(--wp-text); }
       .wp-detail-actions { display: flex; gap: 8px; margin: 2px 0 14px; }
@@ -1894,6 +2057,11 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = useState(null);
       const [polish, setPolish] = useState({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
       const [reportScope, setReportScope] = useState('');
+      const [projects, setProjects] = useState(loadProjects);
+      const [newProject, setNewProject] = useState({ mode: '', name: '' });
+      const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+      const [projectEdit, setProjectEdit] = useState({ name: '', description: '' });
+      const [projectDeleteConfirm, setProjectDeleteConfirm] = useState(false);
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1910,6 +2078,27 @@ window.__ModuleLoader__.load({
         const timer = setTimeout(() => setToast(null), 3200);
         return () => clearTimeout(timer);
       }, [toast]);
+
+      // One-time migration: free-text project names become project records.
+      useEffect(() => {
+        if (projectsMigrated()) return;
+        const result = migrateProjectRefs(tasks, projects, reports);
+        if (result.changed) {
+          backupBeforeMigration({ tasks, projects, reports });
+          setTasks(result.tasks); saveTasks(result.tasks);
+          setProjects(result.projects); saveProjects(result.projects);
+          setReports(result.reports); saveReports(result.reports);
+        }
+        markProjectsMigrated();
+      }, []);
+
+      useEffect(() => {
+        // A project can be deleted or merged away while its view is open.
+        if (activeView.indexOf('proj:') === 0 && !projects.some((p) => p.id === activeView.slice(5))) {
+          setActiveView('all');
+          setSelectedId(null);
+        }
+      }, [activeView, projects.length]);
 
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
@@ -2033,6 +2222,72 @@ window.__ModuleLoader__.load({
               className: 'wp-trash-btn wp-trash-btn-danger', type: 'button',
               onClick: (e) => { e.stopPropagation(); setPurgeConfirmId(task.id); },
             }, '彻底删除')));
+
+      // ---- projects ------------------------------------------------------
+      const openProjectSettings = () => {
+        if (!activeProjectEntity) return;
+        setProjectEdit({ name: activeProjectEntity.name, description: activeProjectEntity.description || '' });
+        setProjectDeleteConfirm(false);
+        setProjectSettingsOpen(true);
+      };
+
+      const createProject = (rawName, assignToTaskId) => {
+        const name = String(rawName || '').trim();
+        if (!name) return null;
+        const existing = projects.find((project) => projectKey(project.name) === projectKey(name));
+        const project = existing || makeProject({ name });
+        if (!existing) {
+          const next = projects.concat([project]);
+          setProjects(next);
+          saveProjects(next);
+        }
+        if (assignToTaskId) updateTask(assignToTaskId, { projectId: project.id });
+        setNewProject({ mode: '', name: '' });
+        showToast(existing ? '已归入同名项目「' + project.name + '」' : '已创建项目「' + project.name + '」');
+        return project;
+      };
+
+      const saveProjectSettings = () => {
+        if (!activeProjectEntity) return;
+        const name = projectEdit.name.trim();
+        if (!name) { showToast('项目名不能为空', 'danger'); return; }
+        const result = renameProject(projects, tasks, activeProjectEntity.id, name);
+        if (result.error) { showToast('项目已不存在', 'danger'); return; }
+        if (result.merged) {
+          setTasks(result.tasks); saveTasks(result.tasks);
+          setProjects(result.projects); saveProjects(result.projects);
+          setProjectSettingsOpen(false);
+          setActiveView('proj:' + result.mergedInto);
+          showToast('同名项目已存在，已合并进去');
+          return;
+        }
+        const description = String(projectEdit.description || '').trim();
+        const next = result.projects.map((project) => (project.id === activeProjectEntity.id
+          ? { ...project, description, updatedAt: new Date().toISOString() }
+          : project));
+        setProjects(next); saveProjects(next);
+        setProjectSettingsOpen(false);
+        showToast('项目信息已保存');
+      };
+
+      const toggleProjectArchive = () => {
+        if (!activeProjectEntity) return;
+        const archived = activeProjectEntity.status === 'archived';
+        const next = setProjectArchived(projects, activeProjectEntity.id, !archived);
+        setProjects(next); saveProjects(next);
+        showToast(archived ? '项目已取消归档' : '项目已归档，任务保留');
+      };
+
+      const removeProject = () => {
+        if (!activeProjectEntity) return;
+        const next = deleteProject(projects, tasks, activeProjectEntity.id);
+        setProjects(next.projects); saveProjects(next.projects);
+        setTasks(next.tasks); saveTasks(next.tasks);
+        setProjectDeleteConfirm(false);
+        setProjectSettingsOpen(false);
+        setActiveView('all');
+        showToast('项目已删除，其中的任务已变为未分组', 'danger');
+      };
 
       /** Append one work record. Existing records are never edited or removed. */
       const appendLog = (taskId, text, kind, source) => {
@@ -2178,7 +2433,7 @@ window.__ModuleLoader__.load({
         if (!title) { if (quickInputRef.current) quickInputRef.current.focus(); return; }
         const deadline = quickDeadline.time ? quickDeadline.date + 'T' + quickDeadline.time : quickDeadline.date;
         setLastApply(null);
-        const task = newTask({ title, deadline, project: activeProject || '' });
+        const task = newTask({ title, deadline, projectId: activeProject || '' });
         addTaskToState(task);
         setQuickText('');
         setQuickDeadline({ date: todayDate(), time: '' });
@@ -2285,28 +2540,35 @@ window.__ModuleLoader__.load({
       }, [tasks]);
 
       const activeProject = activeView.indexOf('proj:') === 0 ? activeView.slice(5) : null;
-      const projectCounts = useMemo(() => {
+      const activeProjectStats = useMemo(() => {
         if (!activeProject) return null;
-        const list = liveTasks(tasks).filter((t) => String(t.project || '').trim() === activeProject);
+        const list = liveTasks(tasks).filter((t) => t.projectId === activeProject);
         return { total: list.length, done: list.filter((t) => t.status === 'done').length };
       }, [tasks, activeProject]);
 
-      const projects = collectProjects(tasks);
+      const projectCounts = countProjectTasks(tasks);
+      const projectById = new Map(projects.map((project) => [project.id, project]));
+      const activeProjectEntity = activeProject ? projectById.get(activeProject) || null : null;
+      const sortedProjects = projects.slice().sort((a, b) => {
+        const archA = a.status === 'archived' ? 1 : 0;
+        const archB = b.status === 'archived' ? 1 : 0;
+        if (archA !== archB) return archA - archB;
+        return String(a.name).localeCompare(String(b.name));
+      });
+      const projectNameOf = (id) => (id && projectById.get(id) ? projectById.get(id).name : '');
 
       // Report scope: one draft per kind + period + project.
       const reportDraft = reports.find((r) => r.kind === reportKind
         && periodKey(r.period) === periodKey(reportPeriod)
-        && (r.projectScope || '') === reportScope) || null;
-      const reportTasks = reportScope
-        ? tasks.filter((t) => String(t.project || '').trim() === reportScope)
-        : tasks;
+        && (r.projectId || '') === reportScope) || null;
+      const reportTasks = reportScope ? tasks.filter((t) => t.projectId === reportScope) : tasks;
       const reportEvidenceAll = collectEvidence(reportTasks, logs, artifacts, reportPeriod);
       const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
 
       const viewTasks = useMemo(() => {
         if (activeView === 'trash') return tasks.filter((t) => t.deletedAt);
         const alive = liveTasks(tasks);
-        if (activeProject) return alive.filter((t) => String(t.project || '').trim() === activeProject);
+        if (activeProject) return alive.filter((t) => t.projectId === activeProject);
         if (activeView === 'done') return alive.filter((t) => t.status === 'done');
         if (activeView === 'today') return alive.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
         if (activeView === 'overdue') {
@@ -2348,9 +2610,9 @@ window.__ModuleLoader__.load({
       }, [filteredTasks]);
 
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
-      const viewTitle = activeProject
-        || { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站' }[activeView]
-        || '全部任务';
+      const viewTitle = activeProjectEntity
+        ? activeProjectEntity.name
+        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站' }[activeView] || '全部任务');
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
       const isReportsView = activeView === 'reports';
       const isTrashView = activeView === 'trash';
@@ -2359,8 +2621,8 @@ window.__ModuleLoader__.load({
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
         : isTrashView
           ? stats.deletedCount + ' 条已删除 · 恢复或彻底删除'
-          : projectCounts
-            ? projectCounts.total + ' 项任务 · 已完成 ' + projectCounts.done + ' 项'
+          : activeProjectStats
+            ? activeProjectStats.total + ' 项任务 · 已完成 ' + activeProjectStats.done + ' 项'
             : statsText;
 
       const rowDeadline = (task) => {
@@ -2428,7 +2690,8 @@ window.__ModuleLoader__.load({
           id: existing ? existing.id : 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
           kind: reportKind,
           period: { start: reportPeriod.start, end: reportPeriod.end },
-          projectScope: reportScope,
+          projectId: reportScope,
+          projectName: reportScope ? projectNameOf(reportScope) : '',
           body: text,
           refs,
           excluded: reportExcluded.slice(),
@@ -2456,7 +2719,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({
               mode: 'report',
               kind: reportKind,
-              projectScope: reportScope,
+              projectId: reportScope,
               period: { start: reportPeriod.start, end: reportPeriod.end },
               // A monthly report summarizes the weeklies inside it instead of
               // concatenating raw records again.
@@ -2533,7 +2796,7 @@ window.__ModuleLoader__.load({
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
-          const scopeSuffix = reportScope ? '_' + reportScope : '';
+          const scopeSuffix = reportScope ? '_' + (projectNameOf(reportScope) || '项目') : '';
           link.download = (reportKind === 'month'
             ? '月报_' + reportPeriod.start.slice(0, 7)
             : '周报_' + reportPeriod.start + '_' + reportPeriod.end) + scopeSuffix + '.md';
@@ -2806,7 +3069,8 @@ window.__ModuleLoader__.load({
                   onChange: (e) => { setReportScope(e.target.value); resetPolish(); },
                 },
                   h('option', { value: '' }, '全部项目'),
-                  projects.map((project) => h('option', { value: project.name, key: project.name }, project.name)))
+                  sortedProjects.map((project) => h('option', { value: project.id, key: project.id },
+                    project.name + (project.status === 'archived' ? '（已归档）' : ''))))
               : null),
           h('div', { className: 'wp-report-actions' },
             h('button', {
@@ -2843,7 +3107,7 @@ window.__ModuleLoader__.load({
               : h('div', { className: 'wp-report-preview' }, reportLines))
           : h('div', { className: 'wp-report-empty' },
               h('p', { className: 'wp-report-empty-title' },
-                (reportScope ? reportScope + ' · ' : '')
+                (reportScope ? (projectNameOf(reportScope) || '已删除项目') + ' · ' : '')
                 + (reportKind === 'month' ? '还没有本月报告' : '还没有本周报告')),
               h('p', { className: 'wp-report-empty-desc' }, '点「生成本期报告」会读取本期完成的任务、工作记录和成果，生成五段式周报；之后可以编辑、复制或导出 Markdown。'),
               reportEvidenceAll.length === 0
@@ -2920,6 +3184,10 @@ window.__ModuleLoader__.load({
           h('h1', { className: 'wp-mid-title' }, midTitle),
           h('p', { className: 'wp-mid-stats' }, midStats)),
         h('div', { className: 'wp-mid-head-right' },
+          activeProjectEntity ? h('button', {
+            className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', title: '项目设置',
+            onClick: () => { if (projectSettingsOpen) setProjectSettingsOpen(false); else openProjectSettings(); },
+          }, '项目设置') : null,
           isReportsView ? null : h('div', { className: 'wp-search' },
             h('span', { className: 'wp-search-icon' }, h(SearchIcon)),
             h('input', {
@@ -2946,11 +3214,48 @@ window.__ModuleLoader__.load({
             h('option', { value: 'priority' }, '按优先级'),
             h('option', { value: 'created' }, '按创建时间'))));
 
+      const projectSettingsPanel = (activeProjectEntity && projectSettingsOpen)
+        ? h('div', { className: 'wp-composer-panel wp-project-settings' },
+            h('div', { className: 'wp-detail-section-head' },
+              h('span', { className: 'wp-detail-section-title' }, '项目设置'),
+              h('button', {
+                className: 'wp-ai-close', type: 'button', 'aria-label': '关闭',
+                onClick: () => setProjectSettingsOpen(false),
+              }, '×')),
+            h('label', { className: 'wp-detail-field-label' }, '名称'),
+            h('input', {
+              className: 'wp-composer-panel-input', type: 'text', value: projectEdit.name,
+              onChange: (e) => setProjectEdit({ ...projectEdit, name: e.target.value }),
+              onKeyDown: (e) => { if (e.key === 'Enter') saveProjectSettings(); },
+            }),
+            h('label', { className: 'wp-detail-field-label wp-project-settings-label' }, '描述'),
+            h('input', {
+              className: 'wp-composer-panel-input', type: 'text', value: projectEdit.description,
+              placeholder: '可选', onChange: (e) => setProjectEdit({ ...projectEdit, description: e.target.value }),
+              onKeyDown: (e) => { if (e.key === 'Enter') saveProjectSettings(); },
+            }),
+            h('div', { className: 'wp-project-settings-actions' },
+              h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: saveProjectSettings }, '保存'),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setProjectSettingsOpen(false) }, '取消'),
+              h('span', { className: 'wp-project-settings-spacer' }),
+              h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button', onClick: toggleProjectArchive },
+                activeProjectEntity.status === 'archived' ? '取消归档' : '归档'),
+              projectDeleteConfirm
+                ? h('span', { className: 'wp-inline-confirm' },
+                    h('span', null, '任务会变为未分组'),
+                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn wp-danger-text', type: 'button', onClick: removeProject }, '确认删除'),
+                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setProjectDeleteConfirm(false) }, '取消'))
+                : h('button', {
+                    className: 'wp-btn wp-btn-text wp-act-btn wp-danger-text', type: 'button',
+                    onClick: () => setProjectDeleteConfirm(true),
+                  }, '删除项目')))
+        : null;
+
       const middleBody = isReportsView
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
         : isTrashView
           ? h('div', { className: 'wp-mid-body' }, trashList)
-          : h('div', { className: 'wp-mid-body' }, quickAdd, toolbar, groupList);
+          : h('div', { className: 'wp-mid-body' }, projectSettingsPanel, quickAdd, toolbar, groupList);
 
       const navItems = [
         { key: 'all', label: '全部任务', count: stats.total },
@@ -2960,33 +3265,53 @@ window.__ModuleLoader__.load({
         { key: 'reports', label: '周报/月报', count: reports.length },
         { key: 'trash', label: '回收站', count: stats.deletedCount },
       ];
-      const navButton = (it) => h('button', {
-        className: 'wp-nav-item' + (activeView === it.key ? ' wp-active' : ''),
+      const navButton = (it, extraClass) => h('button', {
+        className: 'wp-nav-item' + (extraClass ? ' ' + extraClass : '') + (activeView === it.key ? ' wp-active' : ''),
         key: it.key, type: 'button',
         onClick: () => { setActiveView(it.key); setSelectedId(null); },
       },
-        h('span', null, it.label),
+        h('span', { className: 'wp-nav-label' }, it.label),
         it.count ? h('span', { className: 'wp-nav-count' }, String(it.count)) : null);
 
-      const projectNav = projects.map((project) => ({
-        key: 'proj:' + project.name,
+      const projectNav = sortedProjects.map((project) => ({
+        key: 'proj:' + project.id,
         label: project.name,
-        count: project.count,
+        count: projectCounts.get(project.id) || 0,
+        archived: project.status === 'archived',
       }));
+
+      const newProjectRow = newProject.mode === 'sidebar' ? h('div', { className: 'wp-nav-new' },
+        h('input', {
+          className: 'wp-nav-new-input', type: 'text', value: newProject.name,
+          placeholder: '新项目名，回车创建',
+          onChange: (e) => setNewProject({ mode: 'sidebar', name: e.target.value }),
+          onKeyDown: (e) => {
+            if (e.key === 'Enter') {
+              const created = createProject(newProject.name);
+              if (created) setActiveView('proj:' + created.id);
+            }
+            if (e.key === 'Escape') setNewProject({ mode: '', name: '' });
+          },
+        }),
+        h('button', {
+          className: 'wp-nav-new-ok', type: 'button',
+          onClick: () => {
+            const created = createProject(newProject.name);
+            if (created) setActiveView('proj:' + created.id);
+          },
+        }, '建')) : null;
 
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
-        navItems.map(navButton),
-        projects.length
-          ? h('div', { className: 'wp-nav-section' },
-              h('span', { className: 'wp-nav-section-label' }, '项目'),
-              h('button', {
-                className: 'wp-nav-section-add', type: 'button',
-                title: '在任务详情的「项目」里填写名称即可新建',
-                onClick: () => showToast('打开任意任务，在「项目」里填写名称即可'),
-              }, '+'))
-          : null,
-        projects.length ? projectNav.map(navButton) : null,
+        navItems.map((it) => navButton(it)),
+        h('div', { className: 'wp-nav-section' },
+          h('span', { className: 'wp-nav-section-label' }, '项目'),
+          h('button', {
+            className: 'wp-nav-section-add', type: 'button', title: '新建项目',
+            onClick: () => setNewProject({ mode: 'sidebar', name: '' }),
+          }, '+')),
+        newProjectRow,
+        projectNav.map((it) => navButton(it, it.archived ? 'wp-nav-item-archived' : '')),
         h('div', { className: 'wp-sidenav-spacer' }));
 
       const detailRow = (label, value) => h('div', { className: 'wp-detail-row' },
@@ -3166,14 +3491,36 @@ window.__ModuleLoader__.load({
           }),
           h('div', { className: 'wp-detail-field' },
             h('label', { className: 'wp-detail-field-label' }, '项目'),
-            h('input', {
-              className: 'wp-detail-input wp-detail-small wp-detail-project',
-              type: 'text', value: selectedTask.project || '', placeholder: '未分组 · 输入项目名',
-              list: 'wp-project-options', spellCheck: false,
-              onChange: (e) => updateTask(selectedTask.id, { project: e.target.value }),
-            }),
-            h('datalist', { id: 'wp-project-options' },
-              projects.map((project) => h('option', { value: project.name, key: project.name })))),
+            h('select', {
+              className: 'wp-detail-select wp-detail-project-select', value: selectedTask.projectId || '',
+              onChange: (e) => {
+                const value = e.target.value;
+                if (value === '__new__') { setNewProject({ mode: 'task', name: '' }); return; }
+                updateTask(selectedTask.id, { projectId: value });
+              },
+            },
+              h('option', { value: '' }, '未分组'),
+              sortedProjects.map((project) => h('option', { value: project.id, key: project.id },
+                project.name + (project.status === 'archived' ? '（已归档）' : ''))),
+              h('option', { value: '__new__' }, '+ 新建项目…')),
+            newProject.mode === 'task' ? h('div', { className: 'wp-inline-new' },
+              h('input', {
+                className: 'wp-inline-new-input', type: 'text', value: newProject.name,
+                placeholder: '新项目名，回车创建',
+                onChange: (e) => setNewProject({ mode: 'task', name: e.target.value }),
+                onKeyDown: (e) => {
+                  if (e.key === 'Enter') createProject(newProject.name, selectedTask.id);
+                  if (e.key === 'Escape') setNewProject({ mode: '', name: '' });
+                },
+              }),
+              h('button', {
+                className: 'wp-inline-new-ok', type: 'button',
+                onClick: () => createProject(newProject.name, selectedTask.id),
+              }, '创建'),
+              h('button', {
+                className: 'wp-inline-new-cancel', type: 'button',
+                onClick: () => setNewProject({ mode: '', name: '' }),
+              }, '取消')) : null),
           h('div', { className: 'wp-detail-field' },
             h('label', { className: 'wp-detail-field-label' }, '预期结果'),
             h('textarea', {
@@ -3358,7 +3705,8 @@ window.__ModuleLoader__.load({
         withV2Fields, newTask, logsOf, latestLog, artifactsOf, parseLinks, safeHref,
         takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
-        liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft, collectProjects,
+        liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft,
+        makeProject, projectKey, migrateProjectRefs, renameProject, setProjectArchived, deleteProject, countProjectTasks,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,

@@ -156,7 +156,7 @@ const legacyDone = dbg.withV2Fields({
 check('legacy done keeps status', legacyDone.status, 'done');
 check('legacy done derives completedAt from updatedAt', legacyDone.completedAt, '2026-03-04T05:06:07.000Z');
 check('v2 defaults filled', [
-  legacyDone.description, legacyDone.project, legacyDone.expected, legacyDone.nextStep,
+  legacyDone.description, legacyDone.projectId, legacyDone.expected, legacyDone.nextStep,
   legacyDone.blockedReason, legacyDone.deletedAt,
 ], ['', '', '', '', '', null]);
 const legacyDoing = dbg.withV2Fields({ id: 't-d', title: 'X', status: 'doing', progress: 40, createdAt: 'a', updatedAt: 'b' });
@@ -428,24 +428,65 @@ check('saved ref label uses snapshot', dbg.refLabel(savedRefs[0]), '任务「已
 const mdDeleted = dbg.markdownWithFootnotes('见 [[task:t-1]]', [], draftRefs);
 check('export still resolves a deleted source', mdDeleted.indexOf('[^1]: 任务「已删任务」') > 0, true);
 
-console.log('\n# projects');
-const projectTasks = [
-  { id: 'p-1', title: 'A', project: ' 工作台 ', deletedAt: null, status: 'todo' },
-  { id: 'p-2', title: 'B', project: '工作台', deletedAt: null, status: 'done' },
-  { id: 'p-3', title: 'C', project: '客户交付', deletedAt: null, status: 'todo' },
-  { id: 'p-4', title: 'D', project: '', deletedAt: null, status: 'todo' },
-  { id: 'p-5', title: 'E', project: '已删项目', deletedAt: '2026-11-10T00:00:00.000Z', status: 'todo' },
+console.log('\n# project entities');
+check('projectKey trims and folds case', dbg.projectKey('  Work '), 'work');
+const p1 = dbg.makeProject({ name: '工作台' });
+check('makeProject defaults', [p1.status, p1.archivedAt, typeof p1.id], ['active', null, 'string']);
+
+const legacyTasks = [
+  { id: 'a', title: 'A', project: '工作台', deletedAt: null },
+  { id: 'b', title: 'B', project: ' 工作台 ', deletedAt: null },
+  { id: 'c', title: 'C', project: '客户', deletedAt: null },
+  { id: 'd', title: 'D', deletedAt: null },
 ];
-const projects = dbg.collectProjects(projectTasks);
-check('projects trimmed and grouped', projects.map((p) => p.name + ':' + p.count), ['工作台:2', '客户交付:1']);
-check('projects skip blanks', projects.some((p) => p.name === ''), false);
-check('projects skip deleted tasks', projects.some((p) => p.name === '已删项目'), false);
-check('projects empty list', dbg.collectProjects([]), []);
-check('projects sort by count then name', dbg.collectProjects([
-  { id: 'x', project: 'B', deletedAt: null },
-  { id: 'y', project: 'A', deletedAt: null },
-  { id: 'z', project: 'A', deletedAt: null },
-]).map((p) => p.name + ':' + p.count), ['A:2', 'B:1']);
+const legacyReports = [
+  { id: 'r1', body: 'x', kind: 'week', projectScope: '工作台' },
+  { id: 'r2', body: 'y', kind: 'week', projectScope: '不存在的项目' },
+  { id: 'r3', body: 'z', kind: 'week' },
+];
+const migrated = dbg.migrateProjectRefs(legacyTasks, [], legacyReports);
+check('migration creates one project per distinct name', migrated.projects.map((p) => p.name), ['工作台', '客户']);
+check('migration removes the legacy field', migrated.tasks.some((t) => 'project' in t), false);
+const wbId = migrated.projects[0].id;
+check('same names share one project id', [migrated.tasks[0].projectId, migrated.tasks[1].projectId], [wbId, wbId]);
+check('distinct projects get distinct ids', migrated.tasks[2].projectId === wbId, false);
+check('tasks without a project stay untouched', 'projectId' in migrated.tasks[3], false);
+check('reports map to id + name snapshot', [migrated.reports[0].projectId, migrated.reports[0].projectName], [wbId, '工作台']);
+check('unmatched report keeps its name', [migrated.reports[1].projectId, migrated.reports[1].projectName], ['', '不存在的项目']);
+check('report without a scope stays untouched', 'projectId' in migrated.reports[2], false);
+check('migration is idempotent', dbg.migrateProjectRefs(migrated.tasks, migrated.projects, migrated.reports).changed, false);
+
+const projBaseProjects = [dbg.makeProject({ name: '工作台' }), dbg.makeProject({ name: '客户' })];
+const projBaseTasks = [
+  { id: 't1', projectId: projBaseProjects[0].id },
+  { id: 't2', projectId: projBaseProjects[1].id },
+];
+const renamed = dbg.renameProject(projBaseProjects, projBaseTasks, projBaseProjects[0].id, '工作台 v2');
+check('rename updates the name once', renamed.projects[0].name, '工作台 v2');
+check('rename keeps task references', renamed.tasks[0].projectId, projBaseProjects[0].id);
+check('rename is not a merge', renamed.merged, false);
+const merged = dbg.renameProject(projBaseProjects, projBaseTasks, projBaseProjects[0].id, '客户');
+check('rename onto an existing name merges', merged.merged, true);
+check('merge moves all tasks', merged.tasks.map((t) => t.projectId), [projBaseProjects[1].id, projBaseProjects[1].id]);
+check('merge drops the source project', merged.projects.map((p) => p.name), ['客户']);
+check('empty rename rejected', dbg.renameProject(projBaseProjects, projBaseTasks, projBaseProjects[0].id, '   ').error, 'empty-name');
+check('missing project rejected', dbg.renameProject(projBaseProjects, projBaseTasks, 'nope', 'x').error, 'missing-project');
+
+const archived = dbg.setProjectArchived(projBaseProjects, projBaseProjects[0].id, true, '2026-11-11T00:00:00.000Z');
+check('archive sets status and stamp', [archived[0].status, archived[0].archivedAt], ['archived', '2026-11-11T00:00:00.000Z']);
+check('unarchive clears the stamp', dbg.setProjectArchived(archived, projBaseProjects[0].id, false, 'x')[0].archivedAt, null);
+
+const deletedProject = dbg.deleteProject(projBaseProjects, projBaseTasks, projBaseProjects[0].id);
+check('delete keeps tasks', deletedProject.tasks.length, 2);
+check('delete ungroups its tasks', deletedProject.tasks[0].projectId, '');
+check('delete removes the project record', deletedProject.projects.map((p) => p.name), ['客户']);
+
+check('counts skip deleted tasks and blanks', JSON.stringify(Array.from(dbg.countProjectTasks([
+  { projectId: 'p1', deletedAt: null },
+  { projectId: 'p1', deletedAt: 'x' },
+  { projectId: 'p2', deletedAt: null },
+  { projectId: '', deletedAt: null },
+]).entries())), JSON.stringify([['p1', 1], ['p2', 1]]));
 
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

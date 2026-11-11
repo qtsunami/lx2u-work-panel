@@ -50,7 +50,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Work records** (`记录进展`): append-only timeline of progress, problems, decisions and AI collaboration. Each record carries its own timestamp; records are never edited, only appended.
 - **Artifacts** (`关联成果`): attach a result summary plus links to docs/files. Saving an artifact never marks the task complete — completion stays an explicit user action.
 - **Recent progress in the list**: each row shows the newest work record (deterministic — no model call at render time).
-- **Projects**: set a project name on any task (the detail field suggests existing ones). The sidebar groups every project in use with a task count, and clicking one filters the list; quick-add inside a project view files the new task into that project. Reports can be scoped to a single project, which also scopes their evidence and export filename.
+- **Projects**: a project is a real record (`id`, name, description, active/archived), not a text label on a task — tasks reference it by id, so renaming a project updates every task at once and never splits it in two. Pick one in the task detail, create it inline (`+ 新建项目…` or the sidebar `+`), or leave the task ungrouped. The sidebar lists every project including empty and archived ones with live task counts; project settings rename, describe, archive and delete (deleting keeps the tasks, they just become ungrouped; renaming onto an existing name merges the two). Reports can be scoped to one project id, which scopes their evidence and export filename, and old reports keep the project name they were generated with.
 - **Recycle bin**: the trash icon in the task detail moves a task to `回收站` (soft delete). The trash view lists what was deleted, when, and offers `恢复` or `彻底删除`; purging asks for confirmation, removes the task with its own records and artifacts, and keeps report snapshots so old reports still resolve. A toast confirms each action and can be left to fade.
 - **Search and sort**: by deadline, priority, or creation time.
 - **AI assistant** (optional): a top-bar button opens a chat drawer that creates, updates, completes and records tasks after confirmation. Requires an LLM provider configured in your profile; without one, chat still parses a simple create locally (with the duplicate guard).
@@ -126,7 +126,9 @@ All state lives in `localStorage`, keyed by the plugin scope:
 | `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (soft delete / recycle bin), `project` (reserved for project views). |
 | `@local/work-panel:logs:v1` | Work records — append-only, keyed by `taskId`. |
 | `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved so a monthly report cannot claim the same result twice. |
-| `@local/work-panel:reports:v1` | Report drafts — `{id, kind: 'week'|'month', period, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. One draft per kind and period. |
+| `@local/work-panel:projects:v1` | Project records — `{id, name, description, color, status: 'active'|'archived', archivedAt}`. Tasks reference them via `projectId`. |
+| `@local/work-panel:reports:v1` | Report drafts — `{id, kind: 'week'|'month', period, projectId, projectName, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. One draft per kind + period + project. |
+| `@local/work-panel:migration:projects:v1` | One-time marker for the project migration; `@local/work-panel:migration-backup:projects:v1` keeps the pre-migration tasks/projects/reports for recovery. |
 | `@local/work-panel:chat:v1` | AI assistant conversation. |
 | `@local/work-panel:theme` | Light/dark preference. |
 
@@ -139,7 +141,8 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.2.0** — weekly report: period-scoped evidence, five-section draft, inline evidence markers with jump-back, snapshot-backed refs, copy and Markdown export.
 - **1.2.1** — monthly report: `周报 / 月报` switch, natural-month period, weeklies inside the month are consolidated (not concatenated), repeated achievements written once.
 - **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
-- **1.2.3 (unreleased, in progress)** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
+- **1.2.3** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
+- **1.2.4 (unreleased, in progress)** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
 - Decided against: kanban board and a three-state status model.
 
 ## License
