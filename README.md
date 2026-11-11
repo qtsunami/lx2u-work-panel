@@ -25,6 +25,18 @@ Safety rules:
 
 `AI 建议` and `AI 整理` require a model; without one the panel says so and leaves data unchanged.
 
+## Backup and restore (v1.3.1)
+
+`管理 → 数据` is the safety net for a local-first tool:
+
+- **Export** writes one JSON file (`work-panel-backup-YYYY-MM-DD.json`) containing tasks, work records, artifacts, projects, reports and the inbox ack list, with a schema number and the producing version.
+- **Import** accepts that file in two modes: `合并` unions by id and keeps the newer record on conflict (nothing is deleted), `覆盖` replaces the workspace. Both run the project migration afterwards, so backups taken before project entities still import cleanly. A pre-import snapshot is always written first.
+- **Restore** offers `撤销上次导入/清空` and a **daily snapshot** the panel writes once per day when it opens.
+- **Clear** removes local data only after an inline confirmation, and keeps the same one-step undo.
+- The sidebar footer shows the running version, and a unit test keeps it in sync with `package.json`, so you can always tell whether a restart actually loaded the new build.
+
+The Host queue and the assistant are unaffected: this is purely the browser's own data.
+
 ## Execution report-back (v1.3)
 
 An executing agent — this session, a subagent, or a local script — can report "what I just did"
@@ -73,6 +85,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Project health**: a project view shows what matters at a glance — todo, done with completion rate, overdue, this week's records and artifacts, plus the last activity time.
 - **Per-project reports**: from the report page, `按项目生成` writes one draft for every project that has evidence in the period (sequential, one model call each); the current editor is left untouched and generating is blocked while the current draft has unsaved edits.
 - **Projects**: a project is a real record (`id`, name, description, active/archived), not a text label on a task — tasks reference it by id, so renaming a project updates every task at once and never splits it in two. Pick one in the task detail, create it inline (`+ 新建项目…` or the sidebar `+`), or leave the task ungrouped. The sidebar lists every project including empty and archived ones with live task counts; project settings rename, describe, archive and delete (deleting keeps the tasks, they just become ungrouped; renaming onto an existing name merges the two). Reports can be scoped to one project id, which scopes their evidence and export filename, and old reports keep the project name they were generated with.
+- **Data safety**: export/import the whole workspace as one JSON file (`合并` or `覆盖`), a daily snapshot, one-step undo after import or clear, storage usage, and the running version shown in the sidebar.
 - **Execution report-back**: an executing agent reports progress through the `work_panel_report` tool (or `POST /api/work-panel/report-back`); the panel queues it under `管理 → 执行回传` and only writes it into the task when you adopt it.
 - **Recycle bin**: the trash icon in the task detail moves a task to `回收站` (soft delete). The trash view lists what was deleted, when, and offers `恢复` or `彻底删除`; purging asks for confirmation, removes the task with its own records and artifacts, and keeps report snapshots so old reports still resolve. A toast confirms each action and can be left to fade.
 - **Search and sort**: by deadline, priority, or creation time.
@@ -139,6 +152,7 @@ node test-report-render.cjs
 node test-trash-render.cjs
 node test-project-render.cjs
 node test-inbox-render.cjs
+node test-data-render.cjs
 ```
 
 ## Data model (v1.x)
@@ -154,6 +168,8 @@ All state lives in `localStorage`, keyed by the plugin scope:
 | `@local/work-panel:reports:v1` | Report drafts — `{id, kind: 'week'|'month', period, projectId, projectName, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. One draft per kind + period + project. |
 | `@local/work-panel:migration:projects:v1` | One-time marker for the project migration; `@local/work-panel:migration-backup:projects:v1` keeps the pre-migration tasks/projects/reports for recovery. |
 | `@local/work-panel:inbox-ack:v1` | Ids of execution reports the user already adopted or ignored (capped at 300). |
+| `@local/work-panel:backup:daily:v1` | One rolling daily snapshot (`{day, at, backup}`) for recovery. |
+| `@local/work-panel:backup:pre-import:v1` | The workspace right before the last import or clear, so it can be undone once. |
 | `@local/work-panel:chat:v1` | AI assistant conversation. |
 | `@local/work-panel:theme` | Light/dark preference. |
 
@@ -168,7 +184,8 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
 - **1.2.3** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
 - **1.2.4** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
-- **1.3.0 (unreleased)** — execution report-back: `work_panel_report` tool and a report-back route, an in-memory Host queue, a panel inbox with adopt/ignore, execution records marked in the timeline, and task matching by id or title.
+- **1.3.1 (unreleased, in progress)** — data safety: JSON export/import with merge and replace modes, daily snapshot, one-step undo, storage usage, visible version, plus `useMemo` around the report evidence/batch/health scans that used to rerun on every keystroke.
+- **1.3.0** — execution report-back: `work_panel_report` tool and a report-back route, an in-memory Host queue, a panel inbox with adopt/ignore, execution records marked in the timeline, and task matching by id or title.
 - **1.2.5** — AI project awareness (`projectId` in the action protocol, project list in the prompt, unknown ids rejected), project context in project-scoped reports, a grouped left sidebar, a project health card, per-project batch report generation, and date-only deadlines now count as overdue from the next day (the overdue view, counts and sorting previously ignored them).
 - Decided against: kanban board and a three-state status model.
 

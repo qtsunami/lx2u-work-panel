@@ -12,6 +12,13 @@ window.__ModuleLoader__.load({
     const INBOX_ENDPOINT = '/api/work-panel/inbox';
     const INBOX_ACK_ENDPOINT = '/api/work-panel/inbox/ack';
     const INBOX_ACK_KEY = '@local/work-panel:inbox-ack:v1';
+    const AUTO_BACKUP_KEY = '@local/work-panel:backup:daily:v1';
+    const PRE_IMPORT_KEY = '@local/work-panel:backup:pre-import:v1';
+    const DATA_PREFIX = '@local/work-panel:';
+    const BACKUP_SCHEMA = 1;
+    // Kept in sync with package.json by a unit test, so the panel can always
+    // tell the user exactly which build they are looking at.
+    const PANEL_VERSION = '1.3.1';
 
     const STATUS = { todo: '待办', done: '已完成' };
     const URGENCY = { high: '高', medium: '中', low: '低', none: '无' };
@@ -605,6 +612,166 @@ window.__ModuleLoader__.load({
       } catch { return []; }
     }
     function saveInboxAck(ids) { try { window.localStorage.setItem(INBOX_ACK_KEY, JSON.stringify(ids.slice(-300))); } catch { /* ignore */ } }
+
+    // ---- backup / restore --------------------------------------------------
+    function buildBackup(state) {
+      return {
+        app: 'work-panel',
+        schema: BACKUP_SCHEMA,
+        version: PANEL_VERSION,
+        exportedAt: new Date().toISOString(),
+        tasks: state.tasks,
+        projects: state.projects,
+        logs: state.logs,
+        artifacts: state.artifacts,
+        reports: state.reports,
+        inboxAck: state.inboxAck || [],
+      };
+    }
+
+    function readBackupSlot(key) {
+      try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch { return null; }
+    }
+    function writeBackupSlot(key, value) {
+      try {
+        window.localStorage.setItem(key, JSON.stringify(value));
+        return true;
+      } catch { return false; }
+    }
+
+    function asArray(value, limit) {
+      return Array.isArray(value) ? value.slice(0, limit) : [];
+    }
+
+    /** Rejects anything that is not a plausible work-panel backup. */
+    function validateBackup(raw) {
+      if (!raw || typeof raw !== 'object') return 'not-an-object';
+      if (raw.app && raw.app !== 'work-panel') return 'wrong-app';
+      if (typeof raw.schema === 'number' && raw.schema > BACKUP_SCHEMA) return 'newer-schema';
+      const hasData = ['tasks', 'projects', 'logs', 'artifacts', 'reports']
+        .some((key) => Array.isArray(raw[key]) && raw[key].length > 0);
+      if (!hasData) return 'empty-backup';
+      return '';
+    }
+
+    function mergeById(current, incoming, limit) {
+      const map = new Map();
+      for (const item of current) if (item && typeof item.id === 'string') map.set(item.id, item);
+      let added = 0;
+      for (const item of incoming) {
+        if (!item || typeof item.id !== 'string') continue;
+        const existing = map.get(item.id);
+        if (!existing) { map.set(item.id, item); added += 1; continue; }
+        const before = String(existing.updatedAt || existing.at || '');
+        const after = String(item.updatedAt || item.at || '');
+        if (after > before) map.set(item.id, item);
+      }
+      return { items: Array.from(map.values()).slice(0, limit), added };
+    }
+
+    function mergeAckIds(current, incoming) {
+      const seen = new Set(current);
+      for (const id of incoming) if (typeof id === 'string') seen.add(id);
+      return Array.from(seen).slice(-300);
+    }
+
+    /**
+     * Applies a validated backup over the current state.
+     * - `replace` swaps the whole workspace.
+     * - `merge` unions by id and keeps the newer record on conflict; legacy
+     *   free-text project names are migrated afterwards in both modes.
+     */
+    function applyImport(current, raw, mode) {
+      const problem = validateBackup(raw);
+      if (problem) return { error: problem };
+      const replace = mode === 'replace';
+      const incomingTasks = asArray(raw.tasks, 5000)
+        .filter((task) => task && typeof task.id === 'string' && typeof task.title === 'string')
+        .map((task) => withV2Fields(task));
+      const incomingProjects = asArray(raw.projects, 500)
+        .filter((project) => project && typeof project.id === 'string' && typeof project.name === 'string')
+        .map((project) => ({ ...makeProject({}), ...project }));
+      const incomingLogs = asArray(raw.logs, 20000)
+        .filter((entry) => entry && typeof entry.id === 'string' && typeof entry.taskId === 'string' && typeof entry.text === 'string');
+      const incomingArtifacts = asArray(raw.artifacts, 5000)
+        .filter((item) => item && typeof item.id === 'string' && typeof item.taskId === 'string');
+      const incomingReports = asArray(raw.reports, 500)
+        .filter((report) => report && typeof report.id === 'string' && typeof report.body === 'string');
+
+      const counts = { tasks: 0, projects: 0, logs: 0, artifacts: 0, reports: 0 };
+      let next;
+      if (replace) {
+        next = {
+          tasks: incomingTasks,
+          projects: incomingProjects,
+          logs: incomingLogs,
+          artifacts: incomingArtifacts,
+          reports: incomingReports,
+          inboxAck: mergeAckIds([], asArray(raw.inboxAck, 300)),
+        };
+        counts.tasks = incomingTasks.length;
+        counts.projects = incomingProjects.length;
+        counts.logs = incomingLogs.length;
+        counts.artifacts = incomingArtifacts.length;
+        counts.reports = incomingReports.length;
+      } else {
+        const mergedTasks = mergeById(current.tasks, incomingTasks, 5000);
+        const mergedProjects = mergeById(current.projects, incomingProjects, 500);
+        const mergedLogs = mergeById(current.logs, incomingLogs, 20000);
+        const mergedArtifacts = mergeById(current.artifacts, incomingArtifacts, 5000);
+        const mergedReports = mergeById(current.reports, incomingReports, 500);
+        next = {
+          tasks: mergedTasks.items,
+          projects: mergedProjects.items,
+          logs: mergedLogs.items,
+          artifacts: mergedArtifacts.items,
+          reports: mergedReports.items,
+          inboxAck: mergeAckIds(current.inboxAck || [], asArray(raw.inboxAck, 300)),
+        };
+        counts.tasks = mergedTasks.added;
+        counts.projects = mergedProjects.added;
+        counts.logs = mergedLogs.added;
+        counts.artifacts = mergedArtifacts.added;
+        counts.reports = mergedReports.added;
+      }
+
+      const migrated = migrateProjectRefs(next.tasks, next.projects, next.reports);
+      return {
+        next: {
+          ...next,
+          tasks: migrated.tasks,
+          projects: migrated.projects,
+          reports: migrated.reports,
+        },
+        counts,
+        replaced: replace,
+      };
+    }
+
+    /** Rough localStorage usage of this plugin's keys, in bytes (UTF-16). */
+    function estimateStorageUsage() {
+      let bytes = 0;
+      try {
+        for (let i = 0; i < window.localStorage.length; i += 1) {
+          const key = window.localStorage.key(i);
+          if (!key || key.indexOf(DATA_PREFIX) !== 0) continue;
+          const value = window.localStorage.getItem(key) || '';
+          bytes += (key.length + value.length) * 2;
+        }
+      } catch { return 0; }
+      return bytes;
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes) return '0 KB';
+      if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
 
     /** Deleting a project never deletes its tasks: they become ungrouped. */
     function deleteProject(projects, tasks, id) {
@@ -1912,6 +2079,18 @@ window.__ModuleLoader__.load({
       .wp-inbox-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .wp-log-exec-tag { background: rgba(250, 173, 20, 0.16); color: var(--wp-warning); }
 
+      /* ---- local data view ---- */
+      .wp-sidenav-foot { padding: 6px 10px 2px; font-size: 11px; color: var(--wp-text-quaternary); }
+      .wp-data { display: flex; flex-direction: column; gap: 10px; }
+      .wp-data-card { display: flex; flex-direction: column; gap: 8px; }
+      .wp-data-row { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+      .wp-data-label { width: 72px; flex-shrink: 0; color: var(--wp-text-secondary); }
+      .wp-data-value { color: var(--wp-text); }
+      .wp-data-section-title { font-size: 13px; font-weight: 600; color: var(--wp-text); }
+      .wp-data-hint { margin: 0; font-size: 12px; line-height: 1.6; color: var(--wp-text-tertiary); }
+      .wp-data-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .wp-data-file { display: none; }
+
       /* ---- weekly report ---- */
       .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
       .wp-report { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -2190,12 +2369,16 @@ window.__ModuleLoader__.load({
       const [inbox, setInbox] = useState([]);
       const [inboxAck, setInboxAck] = useState(loadInboxAck);
       const [inboxPicks, setInboxPicks] = useState({});
+      const [importMode, setImportMode] = useState('merge');
+      const [preImportReady, setPreImportReady] = useState(() => !!readBackupSlot(PRE_IMPORT_KEY));
+      const [clearConfirm, setClearConfirm] = useState(false);
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
       const cmdInputRef = useRef(null);
       const calRef = useRef(null);
       const inboxAckRef = useRef(inboxAck);
+      const dataFileRef = useRef(null);
       useEffect(() => { inboxAckRef.current = inboxAck; }, [inboxAck]);
 
       useEffect(() => {
@@ -2255,6 +2438,22 @@ window.__ModuleLoader__.load({
           setSelectedId(null);
         }
       }, [activeView, projects.length]);
+
+      // Keep one rolling daily snapshot, so a bad import or a mistaken clear
+      // still has yesterday's workspace to fall back to.
+      useEffect(() => {
+        try {
+          const today = todayDate();
+          const slot = readBackupSlot(AUTO_BACKUP_KEY);
+          if (slot && slot.day === today) return;
+          if (!tasks.length && !logs.length && !reports.length) return;
+          writeBackupSlot(AUTO_BACKUP_KEY, {
+            day: today,
+            at: new Date().toISOString(),
+            backup: buildBackup({ tasks, projects, logs, artifacts, reports, inboxAck }),
+          });
+        } catch { /* ignore quota errors: the snapshot is best effort */ }
+      }, []);
 
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
@@ -2697,6 +2896,8 @@ window.__ModuleLoader__.load({
         return { total, byStatus, overdue, todayCount, deletedCount };
       }, [tasks]);
 
+      const storageUsage = estimateStorageUsage();
+
       const activeProject = activeView.indexOf('proj:') === 0 ? activeView.slice(5) : null;
       const activeProjectStats = useMemo(() => {
         if (!activeProject) return null;
@@ -2719,17 +2920,22 @@ window.__ModuleLoader__.load({
       const reportDraft = reports.find((r) => r.kind === reportKind
         && periodKey(r.period) === periodKey(reportPeriod)
         && (r.projectId || '') === reportScope) || null;
-      const reportTasks = reportScope ? tasks.filter((t) => t.projectId === reportScope) : tasks;
-      const reportEvidenceAll = collectEvidence(reportTasks, logs, artifacts, reportPeriod);
+      const reportEvidenceAll = useMemo(() => {
+        const scoped = reportScope ? tasks.filter((t) => t.projectId === reportScope) : tasks;
+        return collectEvidence(scoped, logs, artifacts, reportPeriod);
+      }, [tasks, logs, artifacts, reportScope, reportPeriod.start, reportPeriod.end]);
       const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
       // Projects that have evidence this period, for one-click per-project reports.
-      const batchTargets = projects
+      const batchTargets = useMemo(() => projects
         .filter((project) => project.status !== 'archived')
         .map((project) => ({
           project,
           evidence: collectEvidence(tasks.filter((t) => t.projectId === project.id), logs, artifacts, reportPeriod),
         }))
-        .filter((target) => target.evidence.length > 0);
+        .filter((target) => target.evidence.length > 0),
+        // Recomputing this on every render (typing in the report editor) used to
+        // scan every task once per project.
+        [projects, tasks, logs, artifacts, reportPeriod.start, reportPeriod.end]);
 
       const viewTasks = useMemo(() => {
         if (activeView === 'trash') return tasks.filter((t) => t.deletedAt);
@@ -2778,15 +2984,18 @@ window.__ModuleLoader__.load({
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
       const viewTitle = activeProjectEntity
         ? activeProjectEntity.name
-        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站', inbox: '执行回传' }[activeView] || '全部任务');
+        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站', inbox: '执行回传', data: '本地数据' }[activeView] || '全部任务');
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
       const isReportsView = activeView === 'reports';
       const isTrashView = activeView === 'trash';
       const isInboxView = activeView === 'inbox';
+      const isDataView = activeView === 'data';
       const midTitle = isReportsView ? (reportKind === 'month' ? '月报' : '周报') : viewTitle;
       const midStats = isReportsView
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
-        : isInboxView
+        : isDataView
+          ? formatBytes(storageUsage) + ' · 本地备份与恢复'
+          : isInboxView
           ? inbox.length + ' 条待确认 · 采纳后写入任务记录'
           : isTrashView
           ? stats.deletedCount + ' 条已删除 · 恢复或彻底删除'
@@ -2994,6 +3203,100 @@ window.__ModuleLoader__.load({
           message: '已生成 ' + (done - failed) + ' 份项目报告草稿' + (failed ? '，' + failed + ' 份失败' : ''),
         });
         showToast('按项目生成完成，切换项目范围即可查看各份草稿');
+      };
+
+      // ---- local data: export / import / restore -------------------------
+      const IMPORT_ERRORS = {
+        'not-an-object': '文件内容不是对象',
+        'wrong-app': '不是工作面板的备份文件',
+        'newer-schema': '备份来自更新的版本，请先升级插件',
+        'empty-backup': '备份里没有数据',
+      };
+
+      const applyWorkspace = (next) => {
+        setTasks(next.tasks); saveTasks(next.tasks);
+        setProjects(next.projects); saveProjects(next.projects);
+        commitLogs(next.logs);
+        commitArtifacts(next.artifacts);
+        setReports(next.reports); saveReports(next.reports);
+        setInboxAck(next.inboxAck || []); saveInboxAck(next.inboxAck || []);
+      };
+
+      const currentWorkspace = () => ({ tasks, projects, logs, artifacts, reports, inboxAck });
+
+      const exportBackup = () => {
+        try {
+          const payload = buildBackup(currentWorkspace());
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'work-panel-backup-' + todayDate() + '.json';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(url), 0);
+          showToast('已导出备份文件');
+        } catch {
+          showToast('导出失败', 'danger');
+        }
+      };
+
+      const importBackup = (raw, mode) => {
+        const result = applyImport(currentWorkspace(), raw, mode);
+        if (result.error) {
+          showToast('导入失败：' + (IMPORT_ERRORS[result.error] || result.error), 'danger');
+          return;
+        }
+        writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) });
+        applyWorkspace(result.next);
+        setPreImportReady(true);
+        const c = result.counts;
+        showToast((result.replaced ? '已覆盖导入' : '已合并导入')
+          + '：任务 ' + c.tasks + ' · 记录 ' + c.logs + ' · 成果 ' + c.artifacts + ' · 报告 ' + c.reports);
+      };
+
+      const undoImport = () => {
+        const slot = readBackupSlot(PRE_IMPORT_KEY);
+        if (!slot || !slot.backup) { showToast('没有可撤销的导入', 'danger'); return; }
+        const result = applyImport(currentWorkspace(), slot.backup, 'replace');
+        if (result.error) { showToast('撤销失败', 'danger'); return; }
+        applyWorkspace(result.next);
+        try { window.localStorage.removeItem(PRE_IMPORT_KEY); } catch { /* ignore */ }
+        setPreImportReady(false);
+        showToast('已恢复到导入前的数据');
+      };
+
+      const restoreDailySnapshot = () => {
+        const slot = readBackupSlot(AUTO_BACKUP_KEY);
+        if (!slot || !slot.backup) { showToast('还没有每日快照', 'danger'); return; }
+        const result = applyImport(currentWorkspace(), slot.backup, 'replace');
+        if (result.error) { showToast('恢复失败', 'danger'); return; }
+        writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) });
+        applyWorkspace(result.next);
+        setPreImportReady(true);
+        showToast('已恢复到 ' + (slot.day || '快照') + ' 的数据');
+      };
+
+      const clearAllData = () => {
+        writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) });
+        applyWorkspace({ tasks: [], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [] });
+        setPreImportReady(true);
+        setClearConfirm(false);
+        showToast('已清空本地数据，可用「撤销上次操作」恢复一次', 'danger');
+      };
+
+      const onPickBackupFile = async (event) => {
+        const input = event && event.target;
+        const file = input && input.files && input.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          importBackup(JSON.parse(text), importMode);
+        } catch {
+          showToast('文件不是有效的备份 JSON', 'danger');
+        }
+        if (input) input.value = '';
       };
 
       // ---- execution report-back inbox -----------------------------------
@@ -3486,6 +3789,90 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'wp-group-toggle' }, collapsedGroups[g.status] ? '展开' : '收起')),
               collapsedGroups[g.status] ? null : h('div', { className: 'wp-group-rows' }, g.tasks.map((t) => renderRow(t))))));
 
+      // ---------- local data: export / import / restore ----------
+      const autoSnapshot = readBackupSlot(AUTO_BACKUP_KEY);
+      const dataPanel = h('div', { className: 'wp-data' },
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '版本'),
+            h('span', { className: 'wp-data-value' }, 'v' + PANEL_VERSION)),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '本地占用'),
+            h('span', { className: 'wp-data-value' }, formatBytes(storageUsage))),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '数据量'),
+            h('span', { className: 'wp-data-value' },
+              stats.total + ' 任务 · ' + logs.length + ' 记录 · ' + artifacts.length + ' 成果 · ' + reports.length + ' 报告'))),
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '备份'),
+          h('p', { className: 'wp-data-hint' }, '导出为单个 JSON 文件，包含任务、工作记录、成果、项目与报告。建议定期保存到本地。'),
+          h('div', { className: 'wp-data-actions' },
+            h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: exportBackup }, '导出备份'))),
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '导入'),
+          h('div', { className: 'wp-kind-seg' },
+            h('button', {
+              className: 'wp-status-seg-item', type: 'button',
+              'data-active': importMode === 'merge' ? 'true' : 'false',
+              onClick: () => setImportMode('merge'),
+            }, '合并'),
+            h('button', {
+              className: 'wp-status-seg-item', type: 'button',
+              'data-active': importMode === 'replace' ? 'true' : 'false',
+              onClick: () => setImportMode('replace'),
+            }, '覆盖')),
+          h('p', { className: 'wp-data-hint' }, importMode === 'merge'
+            ? '合并：按 id 去重，冲突时保留更新时间较新的一条，不会删除你现有的数据。'
+            : '覆盖：用备份文件替换当前全部数据。导入前会自动保存一份可撤销快照。'),
+          h('input', {
+            ref: dataFileRef, className: 'wp-data-file', type: 'file',
+            accept: 'application/json,.json', onChange: onPickBackupFile,
+          }),
+          h('div', { className: 'wp-data-actions' },
+            h('button', {
+              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              onClick: () => { if (dataFileRef.current) dataFileRef.current.click(); },
+            }, '选择备份文件'))),
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '恢复'),
+          autoSnapshot && autoSnapshot.backup
+            ? h('div', { className: 'wp-data-row' },
+                h('span', { className: 'wp-data-label' }, '每日快照'),
+                h('span', { className: 'wp-data-value' }, (autoSnapshot.day || '') + ' · 自动'))
+            : h('p', { className: 'wp-data-hint' }, '还没有每日快照。插件每天打开时会自动留一份。'),
+          h('div', { className: 'wp-data-actions' },
+            autoSnapshot && autoSnapshot.backup
+              ? h('button', {
+                  className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                  onClick: restoreDailySnapshot,
+                }, '恢复到每日快照')
+              : null,
+            preImportReady
+              ? h('button', {
+                  className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                  onClick: undoImport,
+                }, '撤销上次导入/清空')
+              : null)),
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '危险操作'),
+          h('p', { className: 'wp-data-hint' }, '清空会删除本机所有工作面板数据（包括报告与项目）。清空前会自动留一份可撤销快照。'),
+          clearConfirm
+            ? h('div', { className: 'wp-data-actions' },
+                h('span', { className: 'wp-inline-confirm' }, '确定清空？'),
+                h('button', {
+                  className: 'wp-btn wp-btn-text wp-act-btn wp-danger-text', type: 'button',
+                  onClick: clearAllData,
+                }, '确认清空'),
+                h('button', {
+                  className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                  onClick: () => setClearConfirm(false),
+                }, '取消'))
+            : h('div', { className: 'wp-data-actions' },
+                h('button', {
+                  className: 'wp-btn wp-btn-text wp-act-btn wp-danger-text', type: 'button',
+                  onClick: () => setClearConfirm(true),
+                }, '清空本地数据'))));
+
       // ---------- execution report-back inbox ----------
       const inboxList = inbox.length === 0
         ? h('div', { className: 'wp-card' },
@@ -3587,8 +3974,10 @@ window.__ModuleLoader__.load({
             h('option', { value: 'priority' }, '按优先级'),
             h('option', { value: 'created' }, '按创建时间'))));
 
-      const healthPeriod = weekRangeOf(new Date());
-      const health = activeProject ? projectHealth(tasks, logs, artifacts, activeProject, healthPeriod) : null;
+      const health = useMemo(
+        () => (activeProject ? projectHealth(tasks, logs, artifacts, activeProject, weekRangeOf(new Date())) : null),
+        [activeProject, tasks, logs, artifacts],
+      );
       const projectHealthCard = (activeProjectEntity && health) ? h('div', { className: 'wp-card wp-project-health' },
         h('div', { className: 'wp-health-items' },
           h('div', { className: 'wp-health-item' },
@@ -3648,7 +4037,9 @@ window.__ModuleLoader__.load({
 
       const middleBody = isReportsView
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
-        : isInboxView
+        : isDataView
+          ? h('div', { className: 'wp-mid-body' }, dataPanel)
+          : isInboxView
           ? h('div', { className: 'wp-mid-body' }, inboxList)
           : isTrashView
           ? h('div', { className: 'wp-mid-body' }, trashList)
@@ -3664,6 +4055,7 @@ window.__ModuleLoader__.load({
       const manageNav = [
         { key: 'inbox', label: '执行回传', count: inbox.length },
         { key: 'trash', label: '回收站', count: stats.deletedCount },
+        { key: 'data', label: '数据', count: 0 },
       ];
       const navButton = (it, extraClass) => h('button', {
         className: 'wp-nav-item' + (extraClass ? ' ' + extraClass : '') + (activeView === it.key ? ' wp-active' : ''),
@@ -3719,7 +4111,8 @@ window.__ModuleLoader__.load({
         }, '+')),
         navGroup('报告', reportNav.map((it) => navButton(it))),
         navGroup('管理', manageNav.map((it) => navButton(it))),
-        h('div', { className: 'wp-sidenav-spacer' }));
+        h('div', { className: 'wp-sidenav-spacer' }),
+        h('div', { className: 'wp-sidenav-foot', title: '当前插件版本' }, 'v' + PANEL_VERSION));
 
       const detailRow = (label, value) => h('div', { className: 'wp-detail-row' },
         h('span', { className: 'wp-detail-label' }, label),
@@ -4089,7 +4482,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-workbench' },
           sidenav,
           h('section', { className: 'wp-mid' }, middleHeader, middleBody),
-          isReportsView ? evidencePanel : isInboxView ? null : (trashDetailPanel || detailPanel)),
+          isReportsView ? evidencePanel : (isInboxView || isDataView) ? null : (trashDetailPanel || detailPanel)),
         toastNode,
         drawer);
     }
@@ -4116,6 +4509,7 @@ window.__ModuleLoader__.load({
         liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft,
         makeProject, projectKey, migrateProjectRefs, renameProject, setProjectArchived, deleteProject, countProjectTasks,
         projectHealth, resolveInboxTask, loadInboxAck, saveInboxAck,
+        buildBackup, validateBackup, applyImport, estimateStorageUsage, formatBytes, PANEL_VERSION, BACKUP_SCHEMA,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,

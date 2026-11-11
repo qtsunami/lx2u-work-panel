@@ -26,6 +26,8 @@ const sandbox = {
       getItem: (key) => (memoryStore.has(key) ? memoryStore.get(key) : null),
       setItem: (key, value) => { memoryStore.set(key, String(value)); },
       removeItem: (key) => { memoryStore.delete(key); },
+      get length() { return memoryStore.size; },
+      key: (index) => Array.from(memoryStore.keys())[index] || null,
     },
   },
   console,
@@ -584,6 +586,66 @@ const executionArtifact = dbg.applyActions(executionState, [{
   op: 'artifact', taskId: 't-1', summary: '报告', links: ['https://a.com'], source: 'execution',
 }], 'now');
 check('execution artifact source', executionArtifact.next.artifacts[0].source, 'execution');
+
+console.log('\n# backup validation and import');
+const emptyWorkspace = { tasks: [], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [] };
+const backupSample = {
+  app: 'work-panel', schema: 1,
+  tasks: [{ id: 't-1', title: '任务A', project: '旧项目', status: 'todo', createdAt: 'a', updatedAt: '2026-11-01T00:00:00.000Z' }],
+  projects: [],
+  logs: [{ id: 'l-1', taskId: 't-1', text: '记录', at: '2026-11-01T00:00:00.000Z' }],
+  artifacts: [{ id: 'a-1', taskId: 't-1', summary: '成果', at: '2026-11-01T00:00:00.000Z' }],
+  reports: [{ id: 'r-1', kind: 'week', period: { start: '2026-11-01', end: '2026-11-07' }, body: '正文', updatedAt: 'x' }],
+  inboxAck: ['rb-1'],
+};
+check('validate accepts a real backup', dbg.validateBackup(backupSample), '');
+check('validate rejects wrong app', dbg.validateBackup({ app: 'other', tasks: [{ id: 't' }] }), 'wrong-app');
+check('validate rejects newer schema', dbg.validateBackup({ app: 'work-panel', schema: 99, tasks: [{ id: 't' }] }), 'newer-schema');
+check('validate rejects empty', dbg.validateBackup({ app: 'work-panel', tasks: [] }), 'empty-backup');
+check('validate rejects non-object', dbg.validateBackup(null), 'not-an-object');
+
+const importedAll = dbg.applyImport(emptyWorkspace, backupSample, 'replace');
+check('replace imports every store', [
+  importedAll.next.tasks.length, importedAll.next.logs.length,
+  importedAll.next.artifacts.length, importedAll.next.reports.length,
+], [1, 1, 1, 1]);
+check('replace migrates the legacy project name', importedAll.next.projects.map((p) => p.name), ['旧项目']);
+check('replace links the task to the new project', importedAll.next.tasks[0].projectId, importedAll.next.projects[0].id);
+check('replace reports the replaced flag', importedAll.replaced, true);
+check('replace imports the ack list', importedAll.next.inboxAck, ['rb-1']);
+
+const localWorkspace = {
+  tasks: [{ id: 't-1', title: '旧标题', updatedAt: '2026-11-05T00:00:00.000Z' }],
+  projects: [], logs: [], artifacts: [], reports: [], inboxAck: [],
+};
+const incoming = {
+  app: 'work-panel',
+  tasks: [
+    { id: 't-1', title: '新标题', updatedAt: '2026-11-09T00:00:00.000Z' },
+    { id: 't-2', title: '新增任务', updatedAt: '2026-11-09T00:00:00.000Z' },
+  ],
+};
+const mergedImport = dbg.applyImport(localWorkspace, incoming, 'merge');
+check('merge adds only new ids', mergedImport.counts.tasks, 1);
+check('merge keeps existing ids', mergedImport.next.tasks.length, 2);
+check('merge prefers the newer copy', mergedImport.next.tasks.find((t) => t.id === 't-1').title, '新标题');
+check('merge is not replace', mergedImport.replaced, false);
+
+const olderIncoming = { app: 'work-panel', tasks: [{ id: 't-1', title: '更旧', updatedAt: '2026-11-01T00:00:00.000Z' }] };
+check('merge keeps the newer local copy', dbg.applyImport(localWorkspace, olderIncoming, 'merge').next.tasks[0].title, '旧标题');
+check('merge rejects empty input', dbg.applyImport(localWorkspace, { app: 'work-panel', tasks: [] }, 'merge').error, 'empty-backup');
+
+console.log('\n# backup envelope and storage estimate');
+const envelope = dbg.buildBackup(emptyWorkspace);
+check('envelope metadata', [envelope.app, envelope.schema, typeof envelope.exportedAt], ['work-panel', 1, 'string']);
+check('envelope carries every store', ['tasks', 'projects', 'logs', 'artifacts', 'reports', 'inboxAck'].every((key) => Array.isArray(envelope[key])), true);
+check('formatBytes kb', dbg.formatBytes(2048), '2 KB');
+check('formatBytes mb', dbg.formatBytes(2 * 1024 * 1024), '2.0 MB');
+check('formatBytes zero', dbg.formatBytes(0), '0 KB');
+dbg.saveInboxAck(['rb-x']);
+check('storage estimate counts our keys', dbg.estimateStorageUsage() > 0, true);
+const pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+check('PANEL_VERSION matches package.json', dbg.PANEL_VERSION, pkgVersion);
 
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Work panel",
-    "description": "A three-column personal workbench: tasks, project entities with health, work records, artifacts, a recycle bin, an execution report-back inbox, and evidence-backed weekly/monthly reports."
+    "description": "A three-column personal workbench: tasks, project health, work records, artifacts, a recycle bin, an execution report-back inbox, JSON backup/restore, and evidence-backed weekly/monthly reports."
   }
 }
