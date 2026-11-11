@@ -387,5 +387,46 @@ check('footnotes appended', md.indexOf('\n\n[^1]: ') > 0, true);
 check('unknown marker dropped from export', md.indexOf('t-9'), -1);
 check('plain body without refs unchanged', dbg.markdownWithFootnotes('纯文本', evidence), '纯文本');
 
+console.log('\n# recycle bin');
+const rbTasks = [
+  { id: 't-1', title: 'A', status: 'todo', deletedAt: null },
+  { id: 't-2', title: 'B', status: 'done', deletedAt: '2026-11-10T00:00:00.000Z' },
+  { id: 't-3', title: 'C', status: 'todo', deletedAt: null },
+];
+check('liveTasks excludes deleted', dbg.liveTasks(rbTasks).map((t) => t.id), ['t-1', 't-3']);
+const softDeleted = dbg.markDeleted(rbTasks, 't-1', '2026-11-11T00:00:00.000Z');
+check('markDeleted stamps deletedAt+updatedAt', [softDeleted[0].deletedAt, softDeleted[0].updatedAt], ['2026-11-11T00:00:00.000Z', '2026-11-11T00:00:00.000Z']);
+check('markDeleted keeps status', softDeleted[0].status, 'todo');
+check('markDeleted is pure', rbTasks[0].deletedAt, null);
+check('soft delete removes from live', dbg.liveTasks(softDeleted).map((t) => t.id), ['t-3']);
+const restored = dbg.markRestored(softDeleted, 't-1', '2026-11-12T00:00:00.000Z');
+check('markRestored clears deletedAt', [restored[0].deletedAt, restored[0].updatedAt], [null, '2026-11-12T00:00:00.000Z']);
+check('restored task is live again', dbg.liveTasks(restored).map((t) => t.id), ['t-1', 't-3']);
+const purged = dbg.purgeTaskData({
+  tasks: [{ id: 't-1' }, { id: 't-2' }],
+  logs: [{ id: 'l-1', taskId: 't-1' }, { id: 'l-2', taskId: 't-2' }],
+  artifacts: [{ id: 'a-1', taskId: 't-1' }, { id: 'a-2', taskId: 't-2' }],
+}, 't-1');
+check('purge removes only that task', purged.tasks.map((t) => t.id), ['t-2']);
+check('purge removes its logs only', purged.logs.map((l) => l.id), ['l-2']);
+check('purge removes its artifacts only', purged.artifacts.map((a) => a.id), ['a-2']);
+
+console.log('\n# report refs survive source deletion');
+const draftRefs = {
+  refs: [
+    { type: 'task', id: 't-1', taskId: 't-1', snapshot: { title: '已删任务', status: 'done' } },
+    { type: 'log', id: 'l-1', taskId: 't-1', snapshot: { title: '已删任务', status: 'done' }, entry: { at: '2026-11-10T00:00:00.000Z', kind: 'progress', text: '完成了' } },
+  ],
+};
+check('fallback resolves from snapshot', dbg.resolveFromDraft(draftRefs, 'task', 't-1').item.title, '已删任务');
+check('fallback unknown id', dbg.resolveFromDraft(draftRefs, 'task', 't-9'), null);
+check('fallback without draft', dbg.resolveFromDraft(null, 'task', 't-1'), null);
+const savedRefs = dbg.parseRefs('见 [[task:t-1]] 和 [[log:l-1]]', [], draftRefs);
+check('refs resolve without live evidence', savedRefs.map((r) => r.type + ':' + r.id), ['task:t-1', 'log:l-1']);
+check('saved ref is flagged', savedRefs[0].saved, true);
+check('saved ref label uses snapshot', dbg.refLabel(savedRefs[0]), '任务「已删任务」（已完成）');
+const mdDeleted = dbg.markdownWithFootnotes('见 [[task:t-1]]', [], draftRefs);
+check('export still resolves a deleted source', mdDeleted.indexOf('[^1]: 任务「已删任务」') > 0, true);
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

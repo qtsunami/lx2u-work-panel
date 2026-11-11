@@ -207,6 +207,33 @@ check('week-prompt-says-week', capWeek.captured.system.indexOf('整理成周报'
 check('week-prompt-no-weeklies-instruction', capWeek.captured.system.indexOf('不要逐条拼接'), -1);
 check('week-prompt-ignores-weeklies', capWeek.captured.user.indexOf('周报 2026-11-09'), -1);
 
+console.log('\n# polish mode');
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({ reply: '更紧凑', polished: '- 上线插件已完成 [[task:t-1]]' }))));
+const pol = await call({ mode: 'polish', kind: 'week', paragraph: '- 上线插件已完成，而且已经收尾了 [[task:t-1]]' });
+check('polish-reply', pol.reply, '更紧凑');
+check('polish-text', pol.polished, '- 上线插件已完成 [[task:t-1]]');
+
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({ reply: 'x', polished: '- 上线插件已完成' }))));
+check('polish-rejects-lost-marker', (await call({ mode: 'polish', paragraph: '- 完成 [[task:t-1]]' })).error, 'lost-evidence');
+
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({ reply: 'x', polished: '新增依据 [[task:t-9]]' }))));
+check('polish-rejects-invented-marker', (await call({ mode: 'polish', paragraph: '没有依据的句子' })).error, 'lost-evidence');
+
+registered = undefined;
+apply(makeCtx(mockLlm('{}')));
+check('polish-empty-paragraph', (await call({ mode: 'polish', paragraph: '   ' })).error, 'empty-paragraph');
+
+registered = undefined;
+apply(makeCtx(mockLlm(JSON.stringify({ reply: '', polished: '  ' }))));
+check('polish-empty-result', (await call({ mode: 'polish', paragraph: '有内容' })).error, 'empty-polish');
+
+registered = undefined;
+apply(makeCtx(undefined));
+check('polish-no-model', (await call({ mode: 'polish', paragraph: 'x' })).error, 'model-unavailable');
+
 console.log('\n# failure paths');
 registered = undefined;
 apply(makeCtx(undefined));

@@ -236,6 +236,56 @@ function buildTidySystemPrompt(today) {
   ].join('\n');
 }
 
+function buildPolishSystemPrompt() {
+  return [
+    '你是一个中文写作助手，负责润色一份工作报告里的一个段落。',
+    '只输出一个 JSON 对象（不要 Markdown 代码块、不要额外解释）：',
+    '{"reply":"一句话说明改了什么","polished":"润色后的段落"}',
+    '规则：',
+    '1. 保持原意与全部事实，不新增事实、数字、结论或评价。',
+    '2. 原样保留段落里的所有依据标记（形如 [[task:id]]、[[log:id]]、[[artifact:id]]），一个都不能删、不能改、不能新增。',
+    '3. 改善表达：去掉重复和口语化措辞，让语气专业、简洁。',
+    '4. 只输出润色后的这一段，不要输出标题，不要加前后解释。',
+  ].join('\n');
+}
+
+function buildPolishUserText(body) {
+  return [
+    '报告类型：' + (body && body.kind === 'month' ? '月报' : '周报'),
+    '报告周期：' + ((body && body.period && body.period.start) || '') + ' ~ ' + ((body && body.period && body.period.end) || ''),
+    '',
+    '待润色段落：',
+    str(body && body.paragraph, 4000),
+    '',
+    '请按要求输出 JSON。',
+  ].join('\n');
+}
+
+const REF_ANY = /\[\[(task|log|artifact):([A-Za-z0-9_-]+)\]\]/g;
+
+function refKeySet(text) {
+  const keys = new Set();
+  const re = new RegExp(REF_ANY.source, 'g');
+  let match = re.exec(String(text || ''));
+  while (match !== null) {
+    keys.add(match[1] + ':' + match[2]);
+    match = re.exec(String(text || ''));
+  }
+  return keys;
+}
+
+/**
+ * A polished paragraph must keep exactly the same evidence markers: dropping a
+ * marker would hide a fact's source, adding one would invent a source.
+ */
+function sameEvidence(original, polished) {
+  const before = refKeySet(original);
+  const after = refKeySet(polished);
+  if (before.size !== after.size) return false;
+  for (const key of before) if (!after.has(key)) return false;
+  return true;
+}
+
 function buildReportSystemPrompt(period, kind) {
   const monthly = kind === 'month';
   const lines = [
@@ -408,9 +458,34 @@ export function apply(ctx, config) {
       if (!llm || typeof preferredProvider !== 'string' || typeof preferredModel !== 'string') {
         return json({ error: 'model-unavailable' });
       }
-      const mode = body && body.mode === 'report' ? 'report' : (body && body.mode === 'task' ? 'task' : 'chat');
+      const mode = body && body.mode === 'report'
+        ? 'report'
+        : body && body.mode === 'polish'
+          ? 'polish'
+          : body && body.mode === 'task'
+            ? 'task'
+            : 'chat';
       const tasks = Array.isArray(body && body.tasks) ? body.tasks : [];
       try {
+        if (mode === 'polish') {
+          const original = str(body && body.paragraph, 4000);
+          if (!original.trim()) return json({ error: 'empty-paragraph' });
+          const raw = await complete(
+            llm, preferredProvider, preferredModel,
+            buildPolishSystemPrompt(),
+            buildPolishUserText(body),
+            700,
+          );
+          const parsed = extractJson(raw);
+          const polished = parsed ? str(parsed.polished, 4000) : '';
+          if (!polished) return json({ error: 'empty-polish' });
+          if (!sameEvidence(original, polished)) return json({ error: 'lost-evidence' });
+          return json({
+            reply: parsed && typeof parsed.reply === 'string' ? parsed.reply.trim() : '',
+            polished,
+          });
+        }
+
         if (mode === 'report') {
           const evidence = Array.isArray(body && body.evidence) ? body.evidence : [];
           const knownRefs = new Set();

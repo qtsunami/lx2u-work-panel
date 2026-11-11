@@ -34,6 +34,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Traceability**: every factual sentence carries an inline marker (`[[task:t-…]]`, `[[log:l-…]]`, `[[artifact:a-…]]`). In the preview they render as clickable badges that jump to the source task; a marker whose source disappeared shows `?` instead of vanishing.
 - **Host validation**: markers whose ids are not in the evidence bundle are stripped before the body reaches the browser, and the count is reported back.
 - **Monthly report**: switch `周报 / 月报` in the toolbar. A month uses the natural calendar month and summarises the weeklies that fall inside it; the prompt asks the model to consolidate highlights and to write any repeated achievement only once, instead of concatenating the weekly bodies.
+- **Paragraph polishing**: in preview mode click a paragraph → `润色`; the rewritten paragraph is shown as an unapplied suggestion alongside its evidence badges, and `替换这一段` applies it. The Host rejects any result that drops, edits or invents an evidence marker, and the client refuses to replace a paragraph whose text changed while the suggestion was open.
 - **Edit / Preview** toggle, `保存草稿`, `复制`, `导出 MD` (markers become numbered footnotes plus a source list). Nothing is sent anywhere.
 - **Snapshot rule**: saving a draft stores both the reference id and a snapshot taken at that moment, so editing a task later never rewrites an existing report.
 
@@ -49,6 +50,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Work records** (`记录进展`): append-only timeline of progress, problems, decisions and AI collaboration. Each record carries its own timestamp; records are never edited, only appended.
 - **Artifacts** (`关联成果`): attach a result summary plus links to docs/files. Saving an artifact never marks the task complete — completion stays an explicit user action.
 - **Recent progress in the list**: each row shows the newest work record (deterministic — no model call at render time).
+- **Recycle bin**: the trash icon in the task detail moves a task to `回收站` (soft delete). The trash view lists what was deleted, when, and offers `恢复` or `彻底删除`; purging asks for confirmation, removes the task with its own records and artifacts, and keeps report snapshots so old reports still resolve. A toast confirms each action and can be left to fade.
 - **Search and sort**: by deadline, priority, or creation time.
 - **AI assistant** (optional): a top-bar button opens a chat drawer that creates, updates, completes and records tasks after confirmation. Requires an LLM provider configured in your profile; without one, chat still parses a simple create locally (with the duplicate guard).
 - **Light/dark theme**.
@@ -110,6 +112,7 @@ node test-render.cjs       # empty panel smoke
 node test-detail-render.cjs
 node test-actions-render.cjs
 node test-report-render.cjs
+node test-trash-render.cjs
 ```
 
 ## Data model (v1.x)
@@ -118,7 +121,7 @@ All state lives in `localStorage`, keyed by the plugin scope:
 
 | Key | Content |
 | --- | --- |
-| `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (reserved for the recycle bin), `project` (reserved for project views). |
+| `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (soft delete / recycle bin), `project` (reserved for project views). |
 | `@local/work-panel:logs:v1` | Work records — append-only, keyed by `taskId`. |
 | `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved so a monthly report cannot claim the same result twice. |
 | `@local/work-panel:reports:v1` | Report drafts — `{id, kind: 'week'|'month', period, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. One draft per kind and period. |
@@ -132,8 +135,9 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.0.0** (released) — the original three-column workbench (tasks, smart views, priorities, deadlines, assistant).
 - **1.1.0** — data foundation (expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper) plus confirm-before-write AI collaboration (preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, attribution).
 - **1.2.0** — weekly report: period-scoped evidence, five-section draft, inline evidence markers with jump-back, snapshot-backed refs, copy and Markdown export.
-- **1.2.1 (this release)** — monthly report: `周报 / 月报` switch, natural-month period, weeklies inside the month are consolidated (not concatenated), repeated achievements written once.
-- **1.2.2** — project views, recycle-bin UI, paragraph-level polishing.
+- **1.2.1** — monthly report: `周报 / 月报` switch, natural-month period, weeklies inside the month are consolidated (not concatenated), repeated achievements written once.
+- **1.2.2 (unreleased, in progress)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
+- **1.2.3** — project views.
 - Decided against: kanban board and a three-state status model.
 
 ## License

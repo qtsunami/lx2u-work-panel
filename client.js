@@ -408,6 +408,56 @@ window.__ModuleLoader__.load({
       };
     }
 
+    // ---- recycle bin ------------------------------------------------------
+    /** Tasks that are not in the recycle bin. */
+    function liveTasks(tasks) {
+      return tasks.filter((task) => task && !task.deletedAt);
+    }
+    function markDeleted(tasks, taskId, iso) {
+      const stamp = iso || new Date().toISOString();
+      return tasks.map((task) => (task && task.id === taskId
+        ? { ...task, deletedAt: stamp, updatedAt: stamp }
+        : task));
+    }
+    function markRestored(tasks, taskId, iso) {
+      const stamp = iso || new Date().toISOString();
+      return tasks.map((task) => (task && task.id === taskId
+        ? { ...task, deletedAt: null, updatedAt: stamp }
+        : task));
+    }
+    /** Hard delete: the task and its own records/artifacts disappear. */
+    function purgeTaskData(state, taskId) {
+      return {
+        tasks: state.tasks.filter((task) => task && task.id !== taskId),
+        logs: state.logs.filter((entry) => entry.taskId !== taskId),
+        artifacts: state.artifacts.filter((artifact) => artifact.taskId !== taskId),
+      };
+    }
+
+    /**
+     * Fallback for report refs whose source task is gone: the saved snapshot is
+     * what the report promised to show, so history still renders instead of
+     * turning into a broken marker.
+     */
+    function resolveFromDraft(draft, type, id) {
+      if (!draft || !Array.isArray(draft.refs)) return null;
+      const saved = draft.refs.find((ref) => ref && ref.type === type && ref.id === id);
+      if (!saved) return null;
+      const snapshot = saved.snapshot || {};
+      return {
+        type,
+        id,
+        saved: true,
+        item: {
+          taskId: saved.taskId,
+          title: snapshot.title || '（已删除的任务）',
+          status: snapshot.status || 'todo',
+        },
+        entry: saved.entry || null,
+        artifact: saved.artifact || null,
+      };
+    }
+
     /** One-line human summary of what an applied batch did. */
     function summarizeOutcomes(result) {
       let text = '已应用 ' + result.applied + ' 项变更。';
@@ -550,8 +600,11 @@ window.__ModuleLoader__.load({
       return null;
     }
 
-    /** Unique, resolvable refs in document order. Unknown markers are ignored. */
-    function parseRefs(body, evidence) {
+    /**
+     * Unique, resolvable refs in document order. Unknown markers are ignored.
+     * `draft` (optional) supplies snapshots for sources deleted after saving.
+     */
+    function parseRefs(body, evidence, draft) {
       const index = buildEvidenceIndex(evidence);
       const out = [];
       const seen = new Set();
@@ -559,7 +612,7 @@ window.__ModuleLoader__.load({
       let match = re.exec(String(body || ''));
       while (match !== null) {
         const key = match[1] + ':' + match[2];
-        const found = resolveRef(index, match[1], match[2]);
+        const found = resolveRef(index, match[1], match[2]) || resolveFromDraft(draft, match[1], match[2]);
         if (found && !seen.has(key)) {
           seen.add(key);
           out.push(found);
@@ -581,8 +634,8 @@ window.__ModuleLoader__.load({
     }
 
     /** Markdown export: inline markers become numbered footnotes. */
-    function markdownWithFootnotes(body, evidence) {
-      const refs = parseRefs(body, evidence);
+    function markdownWithFootnotes(body, evidence, draft) {
+      const refs = parseRefs(body, evidence, draft);
       const numbers = new Map();
       const numbered = refs.map((ref) => {
         numbers.set(ref.type + ':' + ref.id, numbers.size + 1);
@@ -1506,6 +1559,44 @@ window.__ModuleLoader__.load({
       .wp-action-force { margin-left: 6px; padding: 0 5px; border: 1px solid var(--wp-border); border-radius: 3px; background: var(--wp-bg-container); color: var(--wp-text-secondary); font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; }
       .wp-action-force:hover { color: var(--wp-primary); border-color: var(--wp-primary); }
 
+      /* ---- recycle bin ---- */
+      .wp-row-trash { align-items: center; }
+      .wp-trash-actions { display: flex; gap: 6px; flex-shrink: 0; }
+      .wp-trash-btn {
+        padding: 3px 9px; border: 1px solid var(--wp-border); border-radius: 5px;
+        background: transparent; color: var(--wp-text-secondary);
+        font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .wp-trash-btn:hover { color: var(--wp-primary); border-color: var(--wp-primary); }
+      .wp-trash-btn-danger { color: var(--wp-error); border-color: rgba(255, 77, 79, 0.35); }
+      .wp-trash-btn-danger:hover { color: #fff; background: var(--wp-error); border-color: var(--wp-error); }
+      .wp-trash-confirm { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+      .wp-trash-confirm-text { font-size: 11.5px; color: var(--wp-warning); white-space: nowrap; }
+      .wp-detail-del {
+        display: flex; align-items: center; justify-content: center;
+        width: 32px; height: 32px; padding: 0; border: none; border-radius: 8px;
+        background: transparent; color: var(--wp-text-tertiary); cursor: pointer;
+        transition: color 0.15s, background 0.15s;
+      }
+      .wp-detail-del:hover { color: var(--wp-error); background: var(--wp-fill); }
+      .wp-detail-trash { display: flex; flex-direction: column; gap: 10px; }
+      .wp-detail-trash-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--wp-text); overflow-wrap: anywhere; }
+      .wp-detail-trash-desc { margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--wp-text-secondary); }
+
+      /* ---- toast ---- */
+      .wp-toast {
+        position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 400;
+        padding: 8px 14px; border-radius: 8px;
+        background: rgba(0, 0, 0, 0.82); color: #fff; font-size: 12.5px; line-height: 1.4;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+        animation: wp-toast-in 0.18s ease;
+      }
+      .wp-toast-danger { background: rgba(207, 19, 34, 0.92); }
+      @keyframes wp-toast-in {
+        from { opacity: 0; transform: translate(-50%, 8px); }
+        to { opacity: 1; transform: translate(-50%, 0); }
+      }
+
       /* ---- weekly report ---- */
       .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
       .wp-report { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -1535,6 +1626,38 @@ window.__ModuleLoader__.load({
       .wp-report-h:first-child { margin-top: 0; }
       .wp-report-line { font-size: 13.5px; line-height: 1.85; color: var(--wp-text); overflow-wrap: anywhere; }
       .wp-report-gap { height: 4px; }
+      .wp-report-line-pick { cursor: pointer; border-radius: 6px; padding: 1px 6px; margin-left: -6px; }
+      .wp-report-line-pick:hover { background: var(--wp-fill); }
+      .wp-report-line-selected { background: rgba(22, 119, 255, 0.08); box-shadow: inset 2px 0 0 var(--wp-primary); }
+      .wp-line-polish {
+        margin-left: 8px; padding: 0 6px; border: 1px solid var(--wp-border); border-radius: 4px;
+        background: var(--wp-bg-container); color: var(--wp-primary);
+        font: inherit; font-size: 11px; line-height: 16px; cursor: pointer; vertical-align: 1px;
+      }
+      .wp-line-polish:hover { border-color: var(--wp-primary); }
+      .wp-line-polish:disabled { color: var(--wp-text-tertiary); border-color: var(--wp-border-secondary); cursor: default; }
+      .wp-polish-panel {
+        flex-shrink: 0; display: flex; flex-direction: column; gap: 8px;
+        max-height: 38vh; overflow-y: auto; padding: 12px;
+        border: 1px dashed var(--wp-border); border-radius: 10px; background: var(--wp-fill);
+      }
+      .wp-polish-head { display: flex; align-items: center; gap: 6px; }
+      .wp-polish-title { font-size: 12.5px; font-weight: 600; color: var(--wp-text-secondary); }
+      .wp-polish-tag { padding: 0 5px; border-radius: 3px; background: rgba(250, 173, 20, 0.16); font-size: 11px; line-height: 16px; color: var(--wp-warning); }
+      .wp-polish-close {
+        margin-left: auto; width: 22px; height: 22px; padding: 0; border: none; border-radius: 4px;
+        background: transparent; color: var(--wp-text-tertiary); font-size: 16px; line-height: 1; cursor: pointer;
+      }
+      .wp-polish-close:hover { color: var(--wp-text); background: var(--wp-bg-container); }
+      .wp-polish-loading { margin: 0; font-size: 12.5px; color: var(--wp-text-tertiary); }
+      .wp-polish-error { margin: 0; font-size: 12.5px; color: var(--wp-error); }
+      .wp-polish-result { display: flex; flex-direction: column; gap: 8px; }
+      .wp-polish-text {
+        padding: 10px; border-radius: 8px; background: var(--wp-bg-container);
+        font-size: 13px; line-height: 1.7; color: var(--wp-text); overflow-wrap: anywhere;
+      }
+      .wp-polish-reply { margin: 0; font-size: 11.5px; color: var(--wp-text-tertiary); }
+      .wp-polish-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .wp-ref {
         display: inline-flex; align-items: center; justify-content: center;
         min-width: 15px; height: 15px; margin: 0 2px; padding: 0 3px;
@@ -1683,6 +1806,12 @@ window.__ModuleLoader__.load({
       return h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', 'aria-hidden': true, style: { flexShrink: 0 } },
         h('path', { fill: 'currentColor', d: 'M6 3h2v18H6V3Zm2 1h10l-2.5 4 2.5 4H8V4Z' }));
     }
+    function TrashIcon() {
+      return h('svg', { width: 17, height: 17, viewBox: '0 0 24 24', 'aria-hidden': true },
+        h('path', { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round',
+          d: 'M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6m4-6v6' }));
+    }
+
     const INITIAL_ASSISTANT_MESSAGE = {
       role: 'assistant',
       text: '你好，我是任务助手 👋\n我可以帮你创建、修改、完成和记录任务，例如「明天10点前完成季度报告，紧急」「把报告改到周五」「逾期那几条顺延到下周」。\n涉及改动时，我会先列出要改什么，你确认后才执行，也能撤销。',
@@ -1732,6 +1861,9 @@ window.__ModuleLoader__.load({
       const [reportGenerating, setReportGenerating] = useState(false);
       const [reportNotice, setReportNotice] = useState(null);
       const [reportKind, setReportKind] = useState('week');
+      const [purgeConfirmId, setPurgeConfirmId] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [polish, setPolish] = useState({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1743,6 +1875,12 @@ window.__ModuleLoader__.load({
         if (el) el.scrollTop = el.scrollHeight;
       }, [messages, sending, assistantOpen]);
 
+      useEffect(() => {
+        if (!toast) return undefined;
+        const timer = setTimeout(() => setToast(null), 3200);
+        return () => clearTimeout(timer);
+      }, [toast]);
+
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
       useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
@@ -1753,6 +1891,7 @@ window.__ModuleLoader__.load({
         setReportExcluded(draft && Array.isArray(draft.excluded) ? draft.excluded : []);
         setReportDirty(false);
         setReportNotice(null);
+        setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
       }, [reportPeriod.start, reportPeriod.end, reportKind, reports.length]);
 
       useEffect(() => {
@@ -1812,6 +1951,58 @@ window.__ModuleLoader__.load({
         setLastApply(null);
         commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
       };
+
+      const showToast = (text, kind) => setToast({ text, kind: kind || 'ok', id: Date.now() });
+
+      // ---- recycle bin ---------------------------------------------------
+      /** Soft delete: recoverable from the recycle bin. */
+      const softDeleteTask = (task) => {
+        setLastApply(null);
+        commit(markDeleted(tasks, task.id));
+        if (selectedId === task.id) setSelectedId(null);
+        setPurgeConfirmId(null);
+        showToast('已移入回收站，可在左侧「回收站」恢复');
+      };
+      const restoreTask = (task) => {
+        setLastApply(null);
+        commit(markRestored(tasks, task.id));
+        setPurgeConfirmId(null);
+        showToast('已恢复到任务列表');
+      };
+      const purgeTask = (task) => {
+        // Hard delete removes the task and its records; reports that cited it
+        // keep their snapshots, so their history still resolves.
+        setLastApply(null);
+        const next = purgeTaskData({ tasks, logs, artifacts }, task.id);
+        setTasks(next.tasks);
+        saveTasks(next.tasks);
+        commitLogs(next.logs);
+        commitArtifacts(next.artifacts);
+        if (selectedId === task.id) setSelectedId(null);
+        setPurgeConfirmId(null);
+        showToast('已彻底删除，关联记录与成果一并移除', 'danger');
+      };
+
+      const trashActions = (task) => (purgeConfirmId === task.id
+        ? h('div', { className: 'wp-trash-confirm' },
+            h('span', { className: 'wp-trash-confirm-text' }, '彻底删除后不可恢复'),
+            h('button', {
+              className: 'wp-trash-btn wp-trash-btn-danger', type: 'button',
+              onClick: (e) => { e.stopPropagation(); purgeTask(task); },
+            }, '确认删除'),
+            h('button', {
+              className: 'wp-trash-btn', type: 'button',
+              onClick: (e) => { e.stopPropagation(); setPurgeConfirmId(null); },
+            }, '取消'))
+        : h('div', { className: 'wp-trash-actions' },
+            h('button', {
+              className: 'wp-trash-btn', type: 'button',
+              onClick: (e) => { e.stopPropagation(); restoreTask(task); },
+            }, '恢复'),
+            h('button', {
+              className: 'wp-trash-btn wp-trash-btn-danger', type: 'button',
+              onClick: (e) => { e.stopPropagation(); setPurgeConfirmId(task.id); },
+            }, '彻底删除')));
 
       /** Append one work record. Existing records are never edited or removed. */
       const appendLog = (taskId, text, kind, source) => {
@@ -2048,9 +2239,11 @@ window.__ModuleLoader__.load({
 
       const stats = useMemo(() => {
         const byStatus = { todo: 0, done: 0 };
-        let overdue = 0; let todayCount = 0;
+        let overdue = 0; let todayCount = 0; let deletedCount = 0; let total = 0;
         const nowMs = Date.now();
         for (const t of tasks) {
+          if (t.deletedAt) { deletedCount += 1; continue; }
+          total += 1;
           if (byStatus[t.status] !== undefined) byStatus[t.status] += 1;
           if (t.status !== 'done') {
             const dl = deadlineMs(t.deadline);
@@ -2058,7 +2251,7 @@ window.__ModuleLoader__.load({
             if (isTodayDeadline(t.deadline)) todayCount += 1;
           }
         }
-        return { total: tasks.length, byStatus, overdue, todayCount };
+        return { total, byStatus, overdue, todayCount, deletedCount };
       }, [tasks]);
 
       // Report scope: one draft per week, built from this period's evidence.
@@ -2067,13 +2260,15 @@ window.__ModuleLoader__.load({
       const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
 
       const viewTasks = useMemo(() => {
-        if (activeView === 'done') return tasks.filter((t) => t.status === 'done');
-        if (activeView === 'today') return tasks.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
+        if (activeView === 'trash') return tasks.filter((t) => t.deletedAt);
+        const alive = liveTasks(tasks);
+        if (activeView === 'done') return alive.filter((t) => t.status === 'done');
+        if (activeView === 'today') return alive.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
         if (activeView === 'overdue') {
           const nowMs = Date.now();
-          return tasks.filter((t) => t.status !== 'done' && t.deadline && deadlineMs(t.deadline) !== null && deadlineMs(t.deadline) < nowMs);
+          return alive.filter((t) => t.status !== 'done' && t.deadline && deadlineMs(t.deadline) !== null && deadlineMs(t.deadline) < nowMs);
         }
-        return tasks;
+        return alive;
       }, [tasks, activeView]);
 
       const filteredTasks = useMemo(() => {
@@ -2108,13 +2303,16 @@ window.__ModuleLoader__.load({
       }, [filteredTasks]);
 
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
-      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报' }[activeView] || '全部任务';
+      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站' }[activeView] || '全部任务';
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
       const isReportsView = activeView === 'reports';
+      const isTrashView = activeView === 'trash';
       const midTitle = isReportsView ? (reportKind === 'month' ? '月报' : '周报') : viewTitle;
       const midStats = isReportsView
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
-        : statsText;
+        : isTrashView
+          ? stats.deletedCount + ' 条已删除 · 恢复或彻底删除'
+          : statsText;
 
       const rowDeadline = (task) => {
         if (!task.deadline) return null;
@@ -2236,6 +2434,8 @@ window.__ModuleLoader__.load({
           const body = data.report && typeof data.report.body === 'string' ? data.report.body.trim() : '';
           if (!body) throw new Error('empty-report');
           saveReport(body);
+          resetPolish();
+          setReportMode('preview');
           const notices = [];
           if (data.droppedRefs) notices.push('已移除 ' + data.droppedRefs + ' 个无法核对的依据标记');
           if (parseRefs(body, reportEvidenceAll).length === 0) notices.push('正文没有引用任何依据，请人工核对');
@@ -2250,7 +2450,7 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll);
+      const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll, reportDraft);
 
       const copyReport = () => {
         const text = reportMarkdown();
@@ -2312,6 +2512,70 @@ window.__ModuleLoader__.load({
         setReportKind(kind);
         setReportPeriod(periodFor(kind, new Date()));
         setReportNotice(null);
+        setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+      };
+
+      // ---- paragraph polishing -------------------------------------------
+      const resetPolish = () => setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+
+      const selectParagraph = (index) => {
+        const line = String(reportBody).split('\n')[index] || '';
+        if (!line.trim() || /^#{1,4}\s+/.test(line)) return;
+        setPolish({ index, source: line, loading: false, error: '', result: '', reply: '' });
+      };
+
+      const polishParagraph = async () => {
+        if (polish.index < 0 || polish.loading || !polish.source.trim()) return;
+        setPolish((prev) => ({ ...prev, loading: true, error: '', result: '', reply: '' }));
+        try {
+          const res = await fetch(CHAT_ENDPOINT, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'polish',
+              kind: reportKind,
+              period: { start: reportPeriod.start, end: reportPeriod.end },
+              paragraph: polish.source,
+            }),
+          });
+          if (!res.ok) throw new Error('http-' + res.status);
+          const data = await res.json();
+          if (!data || data.error) {
+            if (data && data.error === 'lost-evidence') throw new Error('lost-evidence');
+            throw new Error((data && data.error) || 'model-error');
+          }
+          const polished = typeof data.polished === 'string' ? data.polished.trim() : '';
+          if (!polished) throw new Error('empty-polish');
+          setPolish((prev) => ({
+            ...prev, loading: false, result: polished,
+            reply: typeof data.reply === 'string' ? data.reply : '',
+          }));
+        } catch (error) {
+          const lost = String((error && error.message) || '') === 'lost-evidence';
+          setPolish((prev) => ({
+            ...prev,
+            loading: false,
+            error: lost
+              ? '润色结果改动了依据标记，已拒绝。再试一次即可。'
+              : '润色失败：模型暂时不可用或返回无法解析。',
+          }));
+        }
+      };
+
+      const acceptPolish = () => {
+        if (polish.index < 0 || !polish.result) return;
+        const lines = String(reportBody).split('\n');
+        // Guard against the body changing while the suggestion was open.
+        if (lines[polish.index] !== polish.source) {
+          resetPolish();
+          showToast('正文已变化，请重新选择段落', 'danger');
+          return;
+        }
+        lines[polish.index] = polish.result;
+        setReportBody(lines.join('\n'));
+        setReportDirty(true);
+        resetPolish();
+        showToast('已替换这一段，记得保存草稿');
       };
 
       // ---------- calendar popover (shared by quick-add and detail) ----------
@@ -2389,7 +2653,7 @@ window.__ModuleLoader__.load({
         let n = 0;
         while (match !== null) {
           if (match.index > cursor) parts.push(text.slice(cursor, match.index));
-          const ref = resolveRef(index, match[1], match[2]);
+          const ref = resolveRef(index, match[1], match[2]) || resolveFromDraft(reportDraft, match[1], match[2]);
           if (ref) {
             n += 1;
             parts.push(h('button', {
@@ -2414,11 +2678,47 @@ window.__ModuleLoader__.load({
       const reportLines = reportBody.trim()
         ? String(reportBody).split('\n').map((line, i) => {
             if (!line.trim()) return h('div', { className: 'wp-report-gap', key: i });
-            const heading = /^#{1,4}\s+/.test(line);
             const content = line.replace(/^#{1,4}\s+/, '');
-            return h('div', { className: heading ? 'wp-report-h' : 'wp-report-line', key: i }, renderRefs(content));
+            if (/^#{1,4}\s+/.test(line)) {
+              return h('div', { className: 'wp-report-h', key: i }, renderRefs(content));
+            }
+            const selected = polish.index === i;
+            return h('div', {
+              className: 'wp-report-line wp-report-line-pick' + (selected ? ' wp-report-line-selected' : ''),
+              key: i,
+              title: '点击选中这一段，可让 AI 润色',
+              onClick: () => selectParagraph(i),
+            },
+              renderRefs(content),
+              selected ? h('button', {
+                className: 'wp-line-polish', type: 'button',
+                disabled: polish.loading ? 'true' : undefined,
+                onClick: (e) => { e.stopPropagation(); polishParagraph(); },
+              }, polish.loading ? '润色中…' : '润色') : null);
           })
         : [];
+
+      const polishPanel = polish.index >= 0 ? h('div', { className: 'wp-polish-panel' },
+        h('div', { className: 'wp-polish-head' },
+          h('span', { className: 'wp-polish-title' }, '润色段落'),
+          h('span', { className: 'wp-polish-tag' }, 'AI 建议 · 未应用'),
+          h('button', {
+            className: 'wp-polish-close', type: 'button', 'aria-label': '关闭',
+            onClick: resetPolish,
+          }, '×')),
+        polish.error ? h('p', { className: 'wp-polish-error' }, polish.error) : null,
+        polish.loading ? h('p', { className: 'wp-polish-loading' }, '正在润色这一段…') : null,
+        polish.result
+          ? h('div', { className: 'wp-polish-result' },
+              h('div', { className: 'wp-polish-text' }, renderRefs(polish.result)),
+              polish.reply ? h('p', { className: 'wp-polish-reply' }, polish.reply) : null,
+              h('div', { className: 'wp-polish-actions' },
+                h('button', { className: 'wp-btn wp-btn-text', type: 'button', onClick: resetPolish }, '取消'),
+                h('button', {
+                  className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+                  onClick: acceptPolish,
+                }, '替换这一段')))
+          : null) : null;
 
       const reportPanel = h('div', { className: 'wp-report' },
         h('div', { className: 'wp-report-toolbar' },
@@ -2456,7 +2756,7 @@ window.__ModuleLoader__.load({
               onClick: generateReport,
             }, reportGenerating ? '生成中…' : (reportDraft ? '重新生成' : '生成本期报告')),
             h('div', { className: 'wp-kind-seg' },
-              h('button', { className: 'wp-status-seg-item', type: 'button', 'data-active': reportMode === 'edit' ? 'true' : 'false', onClick: () => setReportMode('edit') }, '编辑'),
+              h('button', { className: 'wp-status-seg-item', type: 'button', 'data-active': reportMode === 'edit' ? 'true' : 'false', onClick: () => { setReportMode('edit'); resetPolish(); } }, '编辑'),
               h('button', { className: 'wp-status-seg-item', type: 'button', 'data-active': reportMode === 'preview' ? 'true' : 'false', onClick: () => setReportMode('preview') }, '预览')),
             h('span', { className: 'wp-report-dirty' }, reportDirty ? '未保存' : (reportDraft ? '已保存' : '')),
             h('button', {
@@ -2473,6 +2773,7 @@ window.__ModuleLoader__.load({
               disabled: reportBody.trim() ? undefined : 'true', onClick: exportReport,
             }, '导出 MD'))),
         reportNotice ? h('p', { className: 'wp-report-notice wp-report-notice-' + reportNotice.kind }, reportNotice.text) : null,
+        polishPanel,
         reportBody.trim()
           ? (reportMode === 'edit'
               ? h('textarea', {
@@ -2535,6 +2836,23 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'wp-group-toggle' }, collapsedGroups[g.status] ? '展开' : '收起')),
               collapsedGroups[g.status] ? null : h('div', { className: 'wp-group-rows' }, g.tasks.map((t) => renderRow(t))))));
 
+      // ---------- recycle bin list ----------
+      const trashList = filteredTasks.length === 0
+        ? h('div', { className: 'wp-card' },
+            h('div', { className: 'wp-empty' },
+              h(EmptyIcon),
+              h('p', { className: 'wp-empty-desc' }, search.trim() ? '没有匹配的已删除任务。' : '回收站是空的。删除的任务会先放在这里，可随时恢复。')))
+        : h('div', { className: 'wp-task-list' }, filteredTasks.map((task) =>
+            h('div', {
+              className: 'wp-row wp-row-trash',
+              key: task.id,
+              onClick: () => setSelectedId(selectedId === task.id ? null : task.id),
+            },
+              h('div', { className: 'wp-row-main' },
+                h('div', { className: 'wp-row-title' }, task.title),
+                h('div', { className: 'wp-row-desc' }, '删除于 ' + formatDateTime(task.deletedAt))),
+              trashActions(task))));
+
       // ---------- header / sidenav / detail ----------
       const middleHeader = h('div', { className: 'wp-mid-head' },
         h('div', { className: 'wp-mid-head-left' },
@@ -2569,7 +2887,9 @@ window.__ModuleLoader__.load({
 
       const middleBody = isReportsView
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
-        : h('div', { className: 'wp-mid-body' }, quickAdd, toolbar, groupList);
+        : isTrashView
+          ? h('div', { className: 'wp-mid-body' }, trashList)
+          : h('div', { className: 'wp-mid-body' }, quickAdd, toolbar, groupList);
 
       const navItems = [
         { key: 'all', label: '全部任务', count: stats.total },
@@ -2577,6 +2897,7 @@ window.__ModuleLoader__.load({
         { key: 'overdue', label: '已逾期', count: stats.overdue },
         { key: 'done', label: '已完成', count: stats.byStatus.done },
         { key: 'reports', label: '周报/月报', count: reports.length },
+        { key: 'trash', label: '回收站', count: stats.deletedCount },
       ];
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
@@ -2708,7 +3029,7 @@ window.__ModuleLoader__.load({
                   : null) : null),
         h('p', { className: 'wp-ai-hint' }, '以上是 AI 建议，只有点「采纳」才会写入任务。')) : null;
 
-      const detailPanel = selectedTask ? h('aside', { className: 'wp-detail' },
+      const detailPanel = (selectedTask && !selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-meta' },
             h('button', {
@@ -2748,7 +3069,12 @@ window.__ModuleLoader__.load({
               URGENCY_ORDER.map((u) => h('button', {
                 className: 'wp-prio-menu-item', key: u, type: 'button',
                 onClick: () => { updateTask(selectedTask.id, { urgency: u }); setFlagOpen(false); },
-              }, h('span', { className: 'wp-prio-dot wp-prio-dot-' + u }), URGENCY_FULL[u]))) : null),
+              }, h('span', { className: 'wp-prio-dot wp-prio-dot-' + u }), URGENCY_FULL[u]))) : null,
+            h('button', {
+              className: 'wp-detail-del', type: 'button',
+              title: '移入回收站', 'aria-label': '移入回收站',
+              onClick: () => softDeleteTask(selectedTask),
+            }, h(TrashIcon))),
           h('textarea', {
             className: 'wp-detail-input wp-detail-title-input', rows: 2, value: selectedTask.title,
             placeholder: '任务标题', spellCheck: false,
@@ -2837,6 +3163,18 @@ window.__ModuleLoader__.load({
             detailRow('创建时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.createdAt))),
             detailRow('更新时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.updatedAt)))))) : null;
 
+      const trashDetailPanel = (selectedTask && selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
+        h('div', { className: 'wp-detail-body' },
+          h('div', { className: 'wp-detail-trash' },
+            h('p', { className: 'wp-detail-trash-title' }, selectedTask.title),
+            h('p', { className: 'wp-detail-trash-desc' },
+              '这条任务在回收站里，删除于 ' + formatDateTime(selectedTask.deletedAt) + '。恢复后会回到原来的分组。'),
+            trashActions(selectedTask)))) : null;
+
+      const toastNode = toast ? h('div', {
+        className: 'wp-toast wp-toast-' + toast.kind, role: 'status',
+      }, toast.text) : null;
+
       // ---------- right assistant drawer ----------
       const composerInput = h('textarea', {
         ref: cmdInputRef, className: 'wp-composer-input', rows: 1, value: cmdInput,
@@ -2907,7 +3245,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-workbench' },
           sidenav,
           h('section', { className: 'wp-mid' }, middleHeader, middleBody),
-          isReportsView ? evidencePanel : detailPanel),
+          isReportsView ? evidencePanel : (trashDetailPanel || detailPanel)),
+        toastNode,
         drawer);
     }
 
@@ -2930,6 +3269,7 @@ window.__ModuleLoader__.load({
         withV2Fields, newTask, logsOf, latestLog, artifactsOf, parseLinks, safeHref,
         takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
+        liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,

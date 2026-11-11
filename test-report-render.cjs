@@ -164,4 +164,31 @@ const empty = render({ 4: 'reports', 36: { start: '2026-11-01', end: '2026-11-30
 assert(empty.has('wp-report-empty'), 'empty state should render');
 assert(JSON.stringify(empty.tree).indexOf('还没有本月报告') !== -1, 'empty monthly copy should say 本月');
 
-console.log('REPORT RENDER OK · ' + (want.length + 6) + ' classes · weekly + monthly + empty');
+// ---- paragraph polishing ----
+const polishing = render({
+  4: 'reports',
+  37: 'preview',
+  38: BODY,
+  46: {
+    index: 1,
+    source: '- 上线插件已完成 [[task:t-1]]',
+    loading: false,
+    error: '',
+    result: '- 上线插件已完成并发布 [[task:t-1]]',
+    reply: '更紧凑',
+  },
+});
+assert(polishing.has('wp-report-line-selected'), 'selected paragraph should be highlighted');
+assert(polishing.has('wp-line-polish'), 'selected paragraph should offer the polish action');
+assert(polishing.has('wp-polish-panel'), 'polish panel should render');
+assert(polishing.has('wp-polish-text'), 'polish result should render');
+assert(polishing.labels.indexOf('替换这一段') !== -1, 'accept button missing');
+assert(JSON.stringify(polishing.tree).indexOf('未应用') !== -1, 'polish result must be marked unapplied');
+// The polished paragraph keeps its evidence marker, rendered as a badge (2 in body + 1 in panel).
+assert(polishing.refButtons.length === 3, 'polished paragraph should keep its ref badge, got ' + polishing.refButtons.length);
+
+// A failed polish shows the error, never a silent no-op.
+const polishError = render({ 4: 'reports', 37: 'preview', 38: BODY, 46: { index: 1, source: '- 上线插件已完成 [[task:t-1]]', loading: false, error: '润色结果改动了依据标记，已拒绝。再试一次即可。', result: '', reply: '' } });
+assert(polishError.has('wp-polish-error'), 'polish rejection must be surfaced');
+
+console.log('REPORT RENDER OK · ' + (want.length + 6) + ' classes · weekly + monthly + empty + polish');
