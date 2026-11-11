@@ -18,8 +18,16 @@ const mockRequire = (spec) => {
 };
 
 let captured;
+const memoryStore = new Map();
 const sandbox = {
-  window: { __ModuleLoader__: { load: (reg) => { captured = reg; } } },
+  window: {
+    __ModuleLoader__: { load: (reg) => { captured = reg; } },
+    localStorage: {
+      getItem: (key) => (memoryStore.has(key) ? memoryStore.get(key) : null),
+      setItem: (key, value) => { memoryStore.set(key, String(value)); },
+      removeItem: (key) => { memoryStore.delete(key); },
+    },
+  },
   console,
   Date,
   JSON,
@@ -538,6 +546,44 @@ check('health computes completion rate', health.rate, 50);
 check('health tracks last activity', health.lastAt.length > 0, true);
 const emptyHealth = dbg.projectHealth([], [], [], 'p-9', healthWeek);
 check('empty project health', [emptyHealth.total, emptyHealth.rate, emptyHealth.lastAt], [0, 0, '']);
+
+console.log('\n# execution report routing');
+const inboxTasks = [
+  { id: 't-1', title: '完成报告', deletedAt: null },
+  { id: 't-2', title: '整理会议纪要', deletedAt: null },
+  { id: 't-3', title: '已删任务', deletedAt: '2026-11-10T00:00:00.000Z' },
+];
+check('routes by id', dbg.resolveInboxTask(inboxTasks, { taskId: 't-1' }).id, 't-1');
+check('ignores a deleted task id', dbg.resolveInboxTask(inboxTasks, { taskId: 't-3' }), null);
+check('routes by exact title', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完成 报告' }).id, 't-1');
+check('routes by fuzzy title', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完成季度报告' }).id, 't-1');
+check('unmatched title', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完全无关的事情' }), null);
+check('empty report has no target', dbg.resolveInboxTask(inboxTasks, {}), null);
+
+console.log('\n# inbox ack storage');
+check('ack starts empty', dbg.loadInboxAck(), []);
+dbg.saveInboxAck(['rb-1', 'rb-2']);
+check('ack round-trips', dbg.loadInboxAck(), ['rb-1', 'rb-2']);
+const manyAck = [];
+for (let i = 0; i < 320; i += 1) manyAck.push('rb-' + i);
+dbg.saveInboxAck(manyAck);
+check('ack list is capped', dbg.loadInboxAck().length, 300);
+check('ack keeps the newest', dbg.loadInboxAck()[299], 'rb-319');
+
+console.log('\n# execution records carry their source');
+const executionState = {
+  tasks: [{ id: 't-1', title: 'A', status: 'todo', projectId: '', urgency: 'medium', description: '', expected: '', nextStep: '', blockedReason: '', deadline: '2026-11-12', completedAt: null, deletedAt: null, progress: 0 }],
+  logs: [], artifacts: [], projects: [],
+};
+const executionApplied = dbg.applyActions(executionState, [{
+  op: 'log', taskId: 't-1', kind: 'progress', text: '脚本跑完了', source: 'execution',
+}], 'now');
+check('execution log source', executionApplied.next.logs[0].source, 'execution');
+check('execution log does not complete the task', executionApplied.next.tasks[0].status, 'todo');
+const executionArtifact = dbg.applyActions(executionState, [{
+  op: 'artifact', taskId: 't-1', summary: '报告', links: ['https://a.com'], source: 'execution',
+}], 'now');
+check('execution artifact source', executionArtifact.next.artifacts[0].source, 'execution');
 
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

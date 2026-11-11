@@ -2,15 +2,23 @@
 import { apply } from './index.js';
 
 let registered;
-function makeCtx(llm) {
+let routes = [];
+function makeCtx(llm, options = {}) {
+  const captured = [];
+  routes = captured;
   return {
     effect: (fn) => fn(),
     get: (name) => {
       if (name === 'llm') return llm;
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test-provider', model: 'test-model' }) };
+      if (name === 'tools') return options.tools;
       return undefined;
     },
-    connection: { fetch: { register: (route) => { registered = route; return () => {}; } } },
+    connection: {
+      fetch: {
+        register: (route) => { captured.push(route); registered = route; return () => {}; },
+      },
+    },
   };
 }
 
@@ -46,6 +54,15 @@ function check(name, actual, expected) {
 }
 async function call(body) {
   const res = await registered.fetch({ json: async () => body });
+  return res.json();
+}
+function routeFor(path) {
+  const route = routes.find((item) => item.path === path);
+  if (!route) throw new Error('missing route: ' + path);
+  return route;
+}
+async function callRoute(path, body) {
+  const res = await routeFor(path).fetch({ json: async () => body });
   return res.json();
 }
 
@@ -287,6 +304,62 @@ check('bad-json', await res5.json(), { error: 'bad-json' });
 registered = undefined;
 apply(makeCtx({ stream: async function* () { throw new Error('boom'); } }));
 check('llm-error', await call({ messages: [], tasks: [] }), { error: 'boom' });
+
+console.log('\n# execution report-back inbox');
+registered = undefined;
+apply(makeCtx(mockLlm('{}')));
+check('inbox-route', routeFor('/api/work-panel/inbox').methods, ['GET']);
+check('report-back-route', routeFor('/api/work-panel/report-back').methods, ['POST']);
+check('ack-route', routeFor('/api/work-panel/inbox/ack').methods, ['POST']);
+
+const emptyReport = await callRoute('/api/work-panel/report-back', { taskId: 't-1' });
+check('report-back-requires-text', emptyReport.error, 'empty-report');
+
+const queued = await callRoute('/api/work-panel/report-back', {
+  taskId: 't-1',
+  text: '  写完了方案初稿  ',
+  kind: 'bogus',
+  artifacts: [
+    { summary: '方案 v1', links: ['https://a.com', 'javascript:alert(1)'] },
+    { summary: '', links: [] },
+  ],
+});
+check('report-back-accepted', [queued.ok, queued.pending], [true, 1]);
+
+const inboxAfter = await callRoute('/api/work-panel/inbox', {});
+check('inbox-lists-item', inboxAfter.items.length, 1);
+check('item-text-trimmed', inboxAfter.items[0].text, '写完了方案初稿');
+check('item-unknown-kind-defaults', inboxAfter.items[0].kind, 'progress');
+check('item-links-filtered', inboxAfter.items[0].artifacts.length, 1);
+check('item-links-safe', inboxAfter.items[0].artifacts[0].links, ['https://a.com']);
+check('item-has-timestamp', typeof inboxAfter.items[0].receivedAt, 'string');
+
+const acked = await callRoute('/api/work-panel/inbox/ack', { ids: [inboxAfter.items[0].id] });
+check('ack-removes-item', [acked.ok, acked.removed], [true, 1]);
+check('inbox-empty-after-ack', (await callRoute('/api/work-panel/inbox', {})).items.length, 0);
+
+console.log('\n# execution report tool');
+const toolDefs = [];
+registered = undefined;
+apply(makeCtx(mockLlm('{}'), { tools: { register: (definition) => { toolDefs.push(definition); return () => {}; } } }));
+check('tool-registered', toolDefs.length, 1);
+const tool = toolDefs[0];
+check('tool-name', tool.name, 'work_panel_report');
+check('tool-requires-text', (tool.description || '').length > 20, true);
+check('tool-params-require-text', tool.parameters.required, ['text']);
+const toolCall = await tool.execute({ taskId: 't-1', text: '用脚本生成周报草稿' });
+check('tool-enqueues', [toolCall.ok, toolCall.pending], [true, 1]);
+const inboxFromTool = await callRoute('/api/work-panel/inbox', {});
+check('tool-item-visible', inboxFromTool.items[0].text, '用脚本生成周报草稿');
+check('tool-item-source', inboxFromTool.items[0].source, 'execution');
+let toolThrew = '';
+try { await tool.execute({}); } catch (error) { toolThrew = String(error && error.message); }
+check('tool-rejects-empty', toolThrew, 'text is required');
+
+// A profile without the tool registry still loads: routes work, no tool.
+registered = undefined;
+apply(makeCtx(mockLlm('{}')));
+check('no-tool-without-registry', routeFor('/api/work-panel/inbox') !== undefined, true);
 
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

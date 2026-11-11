@@ -397,6 +397,36 @@ function sanitizeReport(raw, knownRefs) {
   return { body, droppedRefs: dropped };
 }
 
+// ---- execution report-back inbox ---------------------------------------
+// An executing agent (or a local script) pushes "what I just did" here. Nothing
+// is written into the panel directly: the browser shows the item and the user
+// confirms it into the task's work record.
+const INBOX_LIMIT = 200;
+
+function makeReportItem(body) {
+  if (!body || typeof body !== 'object') return null;
+  const text = str(body.text, 4000);
+  if (!text) return null;
+  const artifacts = Array.isArray(body.artifacts)
+    ? body.artifacts.slice(0, 5).map((raw) => ({
+        summary: str(raw && raw.summary, 1000),
+        links: Array.isArray(raw && raw.links)
+          ? raw.links.filter((link) => typeof link === 'string' && /^https?:\/\//i.test(link)).slice(0, 5)
+          : [],
+      })).filter((item) => item.summary || item.links.length)
+    : [];
+  return {
+    id: 'rb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    taskId: typeof body.taskId === 'string' ? body.taskId.trim().slice(0, 120) : '',
+    taskTitle: str(body.taskTitle, 200),
+    source: str(body.source, 40) || 'execution',
+    kind: LOG_KINDS.includes(body.kind) ? body.kind : 'progress',
+    text,
+    artifacts,
+    receivedAt: new Date().toISOString(),
+  };
+}
+
 function countText(body, max) {
   return Array.isArray(body) ? body.slice(0, max) : [];
 }
@@ -576,5 +606,122 @@ export function apply(ctx, config) {
       }
     },
   };
+  const inbox = [];
+  const enqueue = (item) => {
+    inbox.push(item);
+    while (inbox.length > INBOX_LIMIT) inbox.shift();
+    return item;
+  };
+
+  const inboxRoute = {
+    path: '/api/work-panel/inbox',
+    methods: ['GET'],
+    fetch: async () => json({ items: inbox }),
+  };
+
+  const reportBackRoute = {
+    path: '/api/work-panel/report-back',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: 'bad-json' });
+      }
+      const item = makeReportItem(body);
+      if (!item) return json({ error: 'empty-report' });
+      enqueue(item);
+      return json({ ok: true, id: item.id, pending: inbox.length });
+    },
+  };
+
+  const ackRoute = {
+    path: '/api/work-panel/inbox/ack',
+    methods: ['POST'],
+    requestBody: 'buffered',
+    fetch: async (request) => {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ error: 'bad-json' });
+      }
+      const ids = new Set(Array.isArray(body && body.ids) ? body.ids.filter((id) => typeof id === 'string') : []);
+      const before = inbox.length;
+      for (let i = inbox.length - 1; i >= 0; i -= 1) {
+        if (ids.has(inbox[i].id)) inbox.splice(i, 1);
+      }
+      return json({ ok: true, removed: before - inbox.length });
+    },
+  };
+
+  ctx.effect(() => ctx.connection.fetch.register(reportBackRoute), 'work-panel: report-back route');
+  ctx.effect(() => ctx.connection.fetch.register(inboxRoute), 'work-panel: inbox route');
+  ctx.effect(() => ctx.connection.fetch.register(ackRoute), 'work-panel: inbox ack route');
+
+  // Expose the same channel as a model tool so an executing agent can report
+  // progress without knowing any HTTP details. Optional: skipped when the
+  // profile has no tool registry.
+  const tools = typeof ctx.get === 'function' ? ctx.get('tools') : undefined;
+  if (tools && typeof tools.register === 'function') {
+    ctx.effect(() => {
+      try {
+        return tools.register({
+          name: 'work_panel_report',
+          description: [
+            '把刚完成的工作回传到用户的工作面板收件箱。',
+            '在为一个工作面板任务执行完一段工作（写代码、查资料、产出文档等）之后调用它。',
+            '回传只是排队等待用户确认，不会修改任务，也不会把任务标记为完成。',
+            'taskId 优先；不知道 id 时可以给 taskTitle，面板会按标题匹配。',
+          ].join(''),
+          parameters: {
+            type: 'object',
+            properties: {
+              taskId: { type: 'string', description: '工作面板任务 id（优先使用）' },
+              taskTitle: { type: 'string', description: '任务标题，用于没有 id 时匹配' },
+              text: { type: 'string', description: '这次推进做了什么、结果如何（一到三句）' },
+              kind: { type: 'string', enum: ['progress', 'issue', 'decision', 'ai'], description: '记录类型，默认 progress' },
+              artifacts: {
+                type: 'array',
+                description: '产出摘要与链接（可选）',
+                items: {
+                  type: 'object',
+                  properties: {
+                    summary: { type: 'string' },
+                    links: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+            required: ['text'],
+            additionalProperties: false,
+          },
+          output: {
+            schema: {
+              type: 'object',
+              properties: {
+                ok: { type: 'boolean' },
+                id: { type: 'string' },
+                pending: { type: 'number' },
+              },
+              required: ['ok'],
+            },
+            render: () => [{ type: 'text', text: '已回传到工作面板收件箱，等待用户确认。' }],
+          },
+          execute: async (args) => {
+            const item = makeReportItem(args);
+            if (!item) throw new Error('text is required');
+            enqueue(item);
+            return { ok: true, id: item.id, pending: inbox.length };
+          },
+        });
+      } catch {
+        return () => {};
+      }
+    }, 'work-panel: report tool');
+  }
+
   ctx.effect(() => ctx.connection.fetch.register(route), 'work-panel: chat route');
 }

@@ -9,6 +9,9 @@ window.__ModuleLoader__.load({
     const CHAT_KEY = '@local/work-panel:chat:v1';
     const THEME_KEY = '@local/work-panel:theme';
     const CHAT_ENDPOINT = '/api/work-panel/chat';
+    const INBOX_ENDPOINT = '/api/work-panel/inbox';
+    const INBOX_ACK_ENDPOINT = '/api/work-panel/inbox/ack';
+    const INBOX_ACK_KEY = '@local/work-panel:inbox-ack:v1';
 
     const STATUS = { todo: '待办', done: '已完成' };
     const URGENCY = { high: '高', medium: '中', low: '低', none: '无' };
@@ -163,13 +166,13 @@ window.__ModuleLoader__.load({
      * One artifact reference. Deliberately carries no status field: attaching
      * an artifact can never complete the task.
      */
-    function makeArtifact(taskId, summary, links, at) {
+    function makeArtifact(taskId, summary, links, at, source) {
       return {
         id: aid(), taskId,
         summary: String(summary || '').trim(),
         links: parseLinks(links),
         at: at || new Date().toISOString(),
-        source: 'manual',
+        source: source || 'manual',
         claimedIn: [],
       };
     }
@@ -399,7 +402,7 @@ window.__ModuleLoader__.load({
             outcomes.push({ op, status: 'skipped', reason: 'empty-text', taskId: task.id });
             continue;
           }
-          logs = logs.concat([makeLogEntry(task.id, body, action.kind, 'ai', stamp)]);
+          logs = logs.concat([makeLogEntry(task.id, body, action.kind, action.source || 'ai', stamp)]);
           tasks[index] = { ...task, updatedAt: stamp };
           outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
           continue;
@@ -411,7 +414,7 @@ window.__ModuleLoader__.load({
             outcomes.push({ op, status: 'skipped', reason: 'empty', taskId: task.id });
             continue;
           }
-          artifacts = artifacts.concat([makeArtifact(task.id, summary, links.join('\n'), stamp)]);
+          artifacts = artifacts.concat([makeArtifact(task.id, summary, links.join('\n'), stamp, action.source)]);
           tasks[index] = { ...task, updatedAt: stamp };
           outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
           continue;
@@ -580,6 +583,28 @@ window.__ModuleLoader__.load({
         rate: list.length ? Math.round((done / list.length) * 100) : 0,
       };
     }
+
+    /** Match an execution report to a live task: id first, then exact/fuzzy title. */
+    function resolveInboxTask(tasks, item) {
+      if (!item) return null;
+      if (item.taskId) {
+        const byId = tasks.find((task) => task && task.id === item.taskId && !task.deletedAt);
+        if (byId) return byId;
+      }
+      const title = String(item.taskTitle || '').trim();
+      if (!title) return null;
+      const exact = tasks.find((task) => task && !task.deletedAt && normalizeTitle(task.title) === normalizeTitle(title));
+      return exact || findDuplicateTask(liveTasks(tasks), title);
+    }
+
+    function loadInboxAck() {
+      try {
+        const raw = window.localStorage.getItem(INBOX_ACK_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+      } catch { return []; }
+    }
+    function saveInboxAck(ids) { try { window.localStorage.setItem(INBOX_ACK_KEY, JSON.stringify(ids.slice(-300))); } catch { /* ignore */ } }
 
     /** Deleting a project never deletes its tasks: they become ungrouped. */
     function deleteProject(projects, tasks, id) {
@@ -1863,6 +1888,30 @@ window.__ModuleLoader__.load({
         to { opacity: 1; transform: translate(-50%, 0); }
       }
 
+      /* ---- execution report-back inbox ---- */
+      .wp-inbox-list { display: flex; flex-direction: column; gap: 10px; }
+      .wp-inbox-toolbar { display: flex; justify-content: flex-end; gap: 8px; }
+      .wp-inbox-item { display: flex; flex-direction: column; gap: 8px; }
+      .wp-inbox-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .wp-inbox-source {
+        padding: 0 5px; border-radius: 3px; background: rgba(22, 119, 255, 0.1);
+        font-size: 11px; line-height: 16px; color: var(--wp-primary);
+      }
+      .wp-inbox-time { font-size: 11.5px; color: var(--wp-text-quaternary); }
+      .wp-inbox-task { margin-left: auto; font-size: 12.5px; font-weight: 500; color: var(--wp-text); }
+      .wp-inbox-pick {
+        margin-left: auto; height: 26px; padding: 0 6px;
+        border: 1px solid var(--wp-warning); border-radius: 6px;
+        background: var(--wp-bg-container); color: var(--wp-text);
+        font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .wp-inbox-text { margin: 0; font-size: 13.5px; line-height: 1.7; color: var(--wp-text); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .wp-inbox-artifacts { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 8px; background: var(--wp-fill); }
+      .wp-inbox-artifact { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12.5px; color: var(--wp-text-secondary); }
+      .wp-inbox-artifact-summary { color: var(--wp-text); }
+      .wp-inbox-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .wp-log-exec-tag { background: rgba(250, 173, 20, 0.16); color: var(--wp-warning); }
+
       /* ---- weekly report ---- */
       .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
       .wp-report { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -2138,11 +2187,16 @@ window.__ModuleLoader__.load({
       const [projectDeleteConfirm, setProjectDeleteConfirm] = useState(false);
       const [batch, setBatch] = useState({ running: false, total: 0, done: 0, failed: 0, message: '' });
       const [batchConfirm, setBatchConfirm] = useState(false);
+      const [inbox, setInbox] = useState([]);
+      const [inboxAck, setInboxAck] = useState(loadInboxAck);
+      const [inboxPicks, setInboxPicks] = useState({});
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
       const cmdInputRef = useRef(null);
       const calRef = useRef(null);
+      const inboxAckRef = useRef(inboxAck);
+      useEffect(() => { inboxAckRef.current = inboxAck; }, [inboxAck]);
 
       useEffect(() => {
         const el = chatScrollRef.current;
@@ -2154,6 +2208,32 @@ window.__ModuleLoader__.load({
         const timer = setTimeout(() => setToast(null), 3200);
         return () => clearTimeout(timer);
       }, [toast]);
+
+      // Execution report-back: the Host queues items, the panel polls for them.
+      // Nothing is written until the user adopts an item.
+      useEffect(() => {
+        let stopped = false;
+        let known = new Set();
+        const poll = async () => {
+          try {
+            const res = await fetch(INBOX_ENDPOINT);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (stopped) return;
+            const items = (Array.isArray(data && data.items) ? data.items : [])
+              .filter((item) => item && typeof item.id === 'string' && inboxAckRef.current.indexOf(item.id) === -1);
+            const added = items.filter((item) => !known.has(item.id));
+            known = new Set(items.map((item) => item.id));
+            setInbox(items);
+            if (added.length && inboxAckRef.current.length >= 0) {
+              showToast('收到 ' + added.length + ' 条执行回传，待确认');
+            }
+          } catch { /* Host offline: keep the previous list */ }
+        };
+        poll();
+        const timer = setInterval(poll, 5000);
+        return () => { stopped = true; clearInterval(timer); };
+      }, []);
 
       // One-time migration: free-text project names become project records.
       useEffect(() => {
@@ -2698,14 +2778,17 @@ window.__ModuleLoader__.load({
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
       const viewTitle = activeProjectEntity
         ? activeProjectEntity.name
-        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站' }[activeView] || '全部任务');
+        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站', inbox: '执行回传' }[activeView] || '全部任务');
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
       const isReportsView = activeView === 'reports';
       const isTrashView = activeView === 'trash';
+      const isInboxView = activeView === 'inbox';
       const midTitle = isReportsView ? (reportKind === 'month' ? '月报' : '周报') : viewTitle;
       const midStats = isReportsView
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
-        : isTrashView
+        : isInboxView
+          ? inbox.length + ' 条待确认 · 采纳后写入任务记录'
+          : isTrashView
           ? stats.deletedCount + ' 条已删除 · 恢复或彻底删除'
           : activeProjectStats
             ? activeProjectStats.total + ' 项任务 · 已完成 ' + activeProjectStats.done + ' 项'
@@ -2911,6 +2994,80 @@ window.__ModuleLoader__.load({
           message: '已生成 ' + (done - failed) + ' 份项目报告草稿' + (failed ? '，' + failed + ' 份失败' : ''),
         });
         showToast('按项目生成完成，切换项目范围即可查看各份草稿');
+      };
+
+      // ---- execution report-back inbox -----------------------------------
+      const ackInbox = (ids) => {
+        setInboxAck((prev) => {
+          const next = prev.concat(ids).slice(-300);
+          inboxAckRef.current = next;
+          saveInboxAck(next);
+          return next;
+        });
+        setInbox((prev) => prev.filter((item) => ids.indexOf(item.id) === -1));
+        fetch(INBOX_ACK_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        }).catch(() => { /* the Host may have restarted; local ack still holds */ });
+      };
+
+      /**
+       * Adopting writes execution records into the task. It never completes a
+       * task, and it batches the whole list into one state write.
+       */
+      const adoptInboxItems = (list) => {
+        let state = { tasks, logs, artifacts };
+        const accepted = [];
+        for (const item of list) {
+          const task = resolveInboxTask(state.tasks, item)
+            || state.tasks.find((t) => t.id === inboxPicks[item.id])
+            || null;
+          if (!task) continue;
+          const actions = [{
+            op: 'log', taskId: task.id, kind: item.kind || 'progress',
+            text: item.text, source: 'execution',
+          }];
+          for (const artifact of item.artifacts || []) {
+            actions.push({
+              op: 'artifact', taskId: task.id, source: 'execution',
+              summary: artifact.summary || '', links: artifact.links || [],
+            });
+          }
+          const result = applyActions({ ...state, projects }, actions);
+          if (result.applied > 0) state = result.next;
+          accepted.push(item.id);
+        }
+        if (accepted.length) {
+          setTasks(state.tasks); saveTasks(state.tasks);
+          commitLogs(state.logs);
+          commitArtifacts(state.artifacts);
+          ackInbox(accepted);
+        }
+        return accepted.length;
+      };
+
+      const adoptInboxItem = (item) => {
+        const count = adoptInboxItems([item]);
+        if (count === 0) showToast('请先为这条回传选择任务', 'danger');
+        else showToast('已采纳为工作记录');
+      };
+
+      const ignoreInboxItem = (item) => {
+        ackInbox([item.id]);
+        showToast('已忽略这条回传');
+      };
+
+      const adoptAllInbox = () => {
+        const count = adoptInboxItems(inbox);
+        showToast(count ? '已采纳 ' + count + ' 条回传' : '没有可采纳的回传，请先选择任务');
+      };
+
+      const ignoreAllInbox = () => {
+        const ids = inbox.map((item) => item.id);
+        if (!ids.length) return;
+        ackInbox(ids);
+        showToast('已清空 ' + ids.length + ' 条回传');
       };
 
       const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll, reportDraft);
@@ -3329,6 +3486,54 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'wp-group-toggle' }, collapsedGroups[g.status] ? '展开' : '收起')),
               collapsedGroups[g.status] ? null : h('div', { className: 'wp-group-rows' }, g.tasks.map((t) => renderRow(t))))));
 
+      // ---------- execution report-back inbox ----------
+      const inboxList = inbox.length === 0
+        ? h('div', { className: 'wp-card' },
+            h('div', { className: 'wp-empty' },
+              h(EmptyIcon),
+              h('p', { className: 'wp-empty-desc' }, '还没有执行回传。执行 AI 完成任务后会把进展写到这里，等你确认后才会进入任务记录。')))
+        : h('div', { className: 'wp-inbox-list' },
+            h('div', { className: 'wp-inbox-toolbar' },
+              h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: adoptAllInbox }, '全部采纳'),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: ignoreAllInbox }, '全部忽略')),
+            inbox.map((item) => {
+              const target = resolveInboxTask(tasks, item);
+              const picked = inboxPicks[item.id] || '';
+              return h('div', { className: 'wp-card wp-inbox-item', key: item.id },
+                h('div', { className: 'wp-inbox-head' },
+                  h('span', { className: 'wp-inbox-source' }, item.source === 'execution' ? '执行回传' : item.source),
+                  h('span', { className: 'wp-inbox-time' }, formatDateTime(item.receivedAt)),
+                  target
+                    ? h('span', { className: 'wp-inbox-task' }, target.title)
+                    : h('select', {
+                        className: 'wp-inbox-pick', value: picked,
+                        onChange: (e) => setInboxPicks({ ...inboxPicks, [item.id]: e.target.value }),
+                      },
+                        h('option', { value: '' }, '选择任务…'),
+                        liveTasks(tasks).map((task) => h('option', { value: task.id, key: task.id }, task.title)))),
+                h('p', { className: 'wp-inbox-text' }, item.text),
+                (item.artifacts || []).length
+                  ? h('div', { className: 'wp-inbox-artifacts' }, item.artifacts.map((artifact, i) =>
+                      h('div', { className: 'wp-inbox-artifact', key: i },
+                        artifact.summary ? h('span', { className: 'wp-inbox-artifact-summary' }, artifact.summary) : null,
+                        (artifact.links || []).map((url, j) => {
+                          const href = safeHref(url);
+                          return href
+                            ? h('a', { className: 'wp-artifact-link', key: j, href, target: '_blank', rel: 'noreferrer noopener' }, url)
+                            : h('span', { className: 'wp-artifact-url', key: j }, url);
+                        }))))
+                  : null,
+                h('div', { className: 'wp-inbox-actions' },
+                  h('button', {
+                    className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                    onClick: () => ignoreInboxItem(item),
+                  }, '忽略'),
+                  h('button', {
+                    className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+                    onClick: () => adoptInboxItem(item),
+                  }, '采纳为记录')));
+            }));
+
       // ---------- recycle bin list ----------
       const trashList = filteredTasks.length === 0
         ? h('div', { className: 'wp-card' },
@@ -3443,7 +3648,9 @@ window.__ModuleLoader__.load({
 
       const middleBody = isReportsView
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
-        : isTrashView
+        : isInboxView
+          ? h('div', { className: 'wp-mid-body' }, inboxList)
+          : isTrashView
           ? h('div', { className: 'wp-mid-body' }, trashList)
           : h('div', { className: 'wp-mid-body' }, projectSettingsPanel, projectHealthCard, quickAdd, toolbar, groupList);
 
@@ -3454,7 +3661,10 @@ window.__ModuleLoader__.load({
         { key: 'done', label: '已完成', count: stats.byStatus.done },
       ];
       const reportNav = [{ key: 'reports', label: '周报/月报', count: reports.length }];
-      const manageNav = [{ key: 'trash', label: '回收站', count: stats.deletedCount }];
+      const manageNav = [
+        { key: 'inbox', label: '执行回传', count: inbox.length },
+        { key: 'trash', label: '回收站', count: stats.deletedCount },
+      ];
       const navButton = (it, extraClass) => h('button', {
         className: 'wp-nav-item' + (extraClass ? ' ' + extraClass : '') + (activeView === it.key ? ' wp-active' : ''),
         key: it.key, type: 'button',
@@ -3772,7 +3982,8 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'wp-log-item', key: entry.id },
                     h('div', { className: 'wp-log-meta' },
                       h('span', { className: 'wp-log-kind wp-log-kind-' + entry.kind }, LOG_KINDS[entry.kind] || '记录'),
-                      entry.source === 'ai' ? h('span', { className: 'wp-log-ai-tag' }, 'AI') : null,
+                      entry.source === 'ai' ? h('span', { className: 'wp-log-ai-tag' }, 'AI')
+                        : entry.source === 'execution' ? h('span', { className: 'wp-log-ai-tag wp-log-exec-tag' }, '回传') : null,
                       h('span', { className: 'wp-log-time' }, formatDateTime(entry.at))),
                     h('div', { className: 'wp-log-text' }, entry.text))))
               : h('p', { className: 'wp-detail-empty' }, '还没有记录。点「记录进展」写下这一次推进。')),
@@ -3878,7 +4089,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-workbench' },
           sidenav,
           h('section', { className: 'wp-mid' }, middleHeader, middleBody),
-          isReportsView ? evidencePanel : (trashDetailPanel || detailPanel)),
+          isReportsView ? evidencePanel : isInboxView ? null : (trashDetailPanel || detailPanel)),
         toastNode,
         drawer);
     }
@@ -3904,7 +4115,7 @@ window.__ModuleLoader__.load({
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
         liveTasks, markDeleted, markRestored, purgeTaskData, resolveFromDraft,
         makeProject, projectKey, migrateProjectRefs, renameProject, setProjectArchived, deleteProject, countProjectTasks,
-        projectHealth,
+        projectHealth, resolveInboxTask, loadInboxAck, saveInboxAck,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,
