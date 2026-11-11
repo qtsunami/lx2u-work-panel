@@ -457,6 +457,28 @@ window.__ModuleLoader__.load({
     }
     function periodKey(period) { return (period && period.start) + '_' + (period && period.end); }
 
+    function monthRangeOf(date) {
+      const start = new Date(date.getFullYear(), date.getMonth(), 1);
+      const end = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+      return { start: ymd(start), end: ymd(end) };
+    }
+    function shiftMonthPeriod(period, delta) {
+      const start = dateOnlyToDate(period && period.start) || new Date();
+      return monthRangeOf(new Date(start.getFullYear(), start.getMonth() + delta, 1));
+    }
+    /** Report periods differ only by granularity: week (Mon-Sun) or calendar month. */
+    function periodFor(kind, date) {
+      return kind === 'month' ? monthRangeOf(date || new Date()) : weekRangeOf(date || new Date());
+    }
+    function shiftPeriod(kind, period, delta) {
+      return kind === 'month' ? shiftMonthPeriod(period, delta) : shiftWeek(period, delta);
+    }
+    function periodLabelFor(kind, period) {
+      if (kind !== 'month') return periodLabel(period);
+      const start = dateOnlyToDate(period && period.start);
+      return start ? start.getFullYear() + '年' + (start.getMonth() + 1) + '月' : periodLabel(period);
+    }
+
     function loadReports() {
       try {
         const raw = window.localStorage.getItem(REPORTS_KEY);
@@ -1489,6 +1511,7 @@ window.__ModuleLoader__.load({
       .wp-report { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
       .wp-report-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
       .wp-report-period { display: flex; align-items: center; gap: 6px; }
+      .wp-report-kind { flex-shrink: 0; }
       .wp-report-nav {
         width: 24px; height: 24px; padding: 0; border: 1px solid var(--wp-border); border-radius: 6px;
         background: transparent; color: var(--wp-text-secondary); font: inherit; line-height: 1; cursor: pointer;
@@ -1708,6 +1731,7 @@ window.__ModuleLoader__.load({
       const [reportExcluded, setReportExcluded] = useState([]);
       const [reportGenerating, setReportGenerating] = useState(false);
       const [reportNotice, setReportNotice] = useState(null);
+      const [reportKind, setReportKind] = useState('week');
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -1724,12 +1748,12 @@ window.__ModuleLoader__.load({
       useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
       // Load the draft that belongs to the selected period (one draft per week).
       useEffect(() => {
-        const draft = reports.find((r) => r.kind === 'week' && periodKey(r.period) === periodKey(reportPeriod)) || null;
+        const draft = reports.find((r) => r.kind === reportKind && periodKey(r.period) === periodKey(reportPeriod)) || null;
         setReportBody(draft ? draft.body : '');
         setReportExcluded(draft && Array.isArray(draft.excluded) ? draft.excluded : []);
         setReportDirty(false);
         setReportNotice(null);
-      }, [reportPeriod.start, reportPeriod.end, reports.length]);
+      }, [reportPeriod.start, reportPeriod.end, reportKind, reports.length]);
 
       useEffect(() => {
         // Switching tasks closes the inline composers so a draft never leaks
@@ -2038,7 +2062,7 @@ window.__ModuleLoader__.load({
       }, [tasks]);
 
       // Report scope: one draft per week, built from this period's evidence.
-      const reportDraft = reports.find((r) => r.kind === 'week' && periodKey(r.period) === periodKey(reportPeriod)) || null;
+      const reportDraft = reports.find((r) => r.kind === reportKind && periodKey(r.period) === periodKey(reportPeriod)) || null;
       const reportEvidenceAll = collectEvidence(tasks, logs, artifacts, reportPeriod);
       const reportEvidence = reportEvidenceAll.filter((item) => reportExcluded.indexOf(item.taskId) === -1);
 
@@ -2084,12 +2108,12 @@ window.__ModuleLoader__.load({
       }, [filteredTasks]);
 
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
-      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报' }[activeView] || '全部任务';
+      const viewTitle = { all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报' }[activeView] || '全部任务';
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
       const isReportsView = activeView === 'reports';
-      const midTitle = isReportsView ? '周报' : viewTitle;
+      const midTitle = isReportsView ? (reportKind === 'month' ? '月报' : '周报') : viewTitle;
       const midStats = isReportsView
-        ? periodLabel(reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
+        ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
         : statsText;
 
       const rowDeadline = (task) => {
@@ -2142,7 +2166,7 @@ window.__ModuleLoader__.load({
       const saveReport = (body) => {
         const text = String(body == null ? reportBody : body);
         const now = new Date().toISOString();
-        const existing = reports.find((r) => r.kind === 'week' && periodKey(r.period) === periodKey(reportPeriod)) || null;
+        const existing = reports.find((r) => r.kind === reportKind && periodKey(r.period) === periodKey(reportPeriod)) || null;
         // A+B decision: refs keep the id (navigation) and the snapshot captured
         // now (so editing a task later never rewrites this report).
         const refs = parseRefs(text, reportEvidenceAll).map((ref) => ({
@@ -2155,7 +2179,7 @@ window.__ModuleLoader__.load({
         }));
         const record = {
           id: existing ? existing.id : 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
-          kind: 'week',
+          kind: reportKind,
           period: { start: reportPeriod.start, end: reportPeriod.end },
           projectScope: '',
           body: text,
@@ -2184,8 +2208,15 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               mode: 'report',
-              kind: 'week',
+              kind: reportKind,
               period: { start: reportPeriod.start, end: reportPeriod.end },
+              // A monthly report summarizes the weeklies inside it instead of
+              // concatenating raw records again.
+              weeklies: reportKind === 'month'
+                ? reports
+                    .filter((r) => r.kind === 'week' && r.period.start >= reportPeriod.start && r.period.start <= reportPeriod.end)
+                    .map((r) => ({ period: r.period.start + ' ~ ' + r.period.end, body: r.body }))
+                : [],
               evidence: reportEvidence.map((item) => ({
                 taskId: item.taskId,
                 title: item.title,
@@ -2252,7 +2283,9 @@ window.__ModuleLoader__.load({
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
-          link.download = '周报_' + reportPeriod.start + '_' + reportPeriod.end + '.md';
+          link.download = (reportKind === 'month'
+            ? '月报_' + reportPeriod.start.slice(0, 7)
+            : '周报_' + reportPeriod.start + '_' + reportPeriod.end) + '.md';
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
@@ -2273,6 +2306,12 @@ window.__ModuleLoader__.load({
       };
       const toggleAllEvidence = () => {
         setReportExcluded(reportExcluded.length ? [] : reportEvidenceAll.map((item) => item.taskId));
+      };
+      const switchReportKind = (kind) => {
+        if (kind === reportKind) return;
+        setReportKind(kind);
+        setReportPeriod(periodFor(kind, new Date()));
+        setReportNotice(null);
       };
 
       // ---------- calendar popover (shared by quick-add and detail) ----------
@@ -2384,10 +2423,32 @@ window.__ModuleLoader__.load({
       const reportPanel = h('div', { className: 'wp-report' },
         h('div', { className: 'wp-report-toolbar' },
           h('div', { className: 'wp-report-period' },
-            h('button', { className: 'wp-report-nav', type: 'button', 'aria-label': '上一周', onClick: () => setReportPeriod((p) => shiftWeek(p, -1)) }, '‹'),
-            h('span', { className: 'wp-report-period-label' }, periodLabel(reportPeriod)),
-            h('button', { className: 'wp-report-nav', type: 'button', 'aria-label': '下一周', onClick: () => setReportPeriod((p) => shiftWeek(p, 1)) }, '›'),
-            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setReportPeriod(weekRangeOf(new Date())) }, '本周')),
+            h('div', { className: 'wp-kind-seg wp-report-kind' },
+              h('button', {
+                className: 'wp-status-seg-item', type: 'button',
+                'data-active': reportKind === 'week' ? 'true' : 'false',
+                onClick: () => switchReportKind('week'),
+              }, '周报'),
+              h('button', {
+                className: 'wp-status-seg-item', type: 'button',
+                'data-active': reportKind === 'month' ? 'true' : 'false',
+                onClick: () => switchReportKind('month'),
+              }, '月报')),
+            h('button', {
+              className: 'wp-report-nav', type: 'button',
+              'aria-label': reportKind === 'month' ? '上个月' : '上一周',
+              onClick: () => setReportPeriod((p) => shiftPeriod(reportKind, p, -1)),
+            }, '‹'),
+            h('span', { className: 'wp-report-period-label' }, periodLabelFor(reportKind, reportPeriod)),
+            h('button', {
+              className: 'wp-report-nav', type: 'button',
+              'aria-label': reportKind === 'month' ? '下个月' : '下一周',
+              onClick: () => setReportPeriod((p) => shiftPeriod(reportKind, p, 1)),
+            }, '›'),
+            h('button', {
+              className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+              onClick: () => setReportPeriod(periodFor(reportKind, new Date())),
+            }, reportKind === 'month' ? '本月' : '本周')),
           h('div', { className: 'wp-report-actions' },
             h('button', {
               className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
@@ -2421,7 +2482,7 @@ window.__ModuleLoader__.load({
                 })
               : h('div', { className: 'wp-report-preview' }, reportLines))
           : h('div', { className: 'wp-report-empty' },
-              h('p', { className: 'wp-report-empty-title' }, '还没有本周报告'),
+              h('p', { className: 'wp-report-empty-title' }, reportKind === 'month' ? '还没有本月报告' : '还没有本周报告'),
               h('p', { className: 'wp-report-empty-desc' }, '点「生成本期报告」会读取本期完成的任务、工作记录和成果，生成五段式周报；之后可以编辑、复制或导出 Markdown。'),
               reportEvidenceAll.length === 0
                 ? h('p', { className: 'wp-report-empty-warn' }, '本期还没有任何工作记录，生成的内容只会指出资料不足。')
@@ -2515,7 +2576,7 @@ window.__ModuleLoader__.load({
         { key: 'today', label: '今天到期', count: stats.todayCount },
         { key: 'overdue', label: '已逾期', count: stats.overdue },
         { key: 'done', label: '已完成', count: stats.byStatus.done },
-        { key: 'reports', label: '周报', count: reports.length },
+        { key: 'reports', label: '周报/月报', count: reports.length },
       ];
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
@@ -2870,6 +2931,7 @@ window.__ModuleLoader__.load({
         takeTaskSnapshot, makeLogEntry, makeArtifact, LOG_KINDS,
         normalizeTitle, findDuplicateTask, describeAction, applyActions, summarizeOutcomes,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
+        monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,
         REPORT_SECTIONS,
       },

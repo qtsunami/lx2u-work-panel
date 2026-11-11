@@ -322,6 +322,18 @@ check('in period last day', dbg.inPeriod('2026-11-15T23:00', P), true);
 check('outside period', dbg.inPeriod('2026-11-16T00:00', P), false);
 check('empty timestamp', dbg.inPeriod('', P), false);
 
+console.log('\n# month period');
+check('month range', dbg.monthRangeOf(new Date(2026, 10, 11)), { start: '2026-11-01', end: '2026-11-30' });
+check('month range leap year', dbg.monthRangeOf(new Date(2028, 1, 5)), { start: '2028-02-01', end: '2028-02-29' });
+check('shift month prev', dbg.shiftMonthPeriod({ start: '2026-11-01', end: '2026-11-30' }, -1), { start: '2026-10-01', end: '2026-10-31' });
+check('shift month wraps year', dbg.shiftMonthPeriod({ start: '2026-12-01', end: '2026-12-31' }, 1), { start: '2027-01-01', end: '2027-01-31' });
+check('periodFor week', dbg.periodFor('week', new Date(2026, 10, 11)), P);
+check('periodFor month', dbg.periodFor('month', new Date(2026, 10, 11)), { start: '2026-11-01', end: '2026-11-30' });
+check('shiftPeriod month', dbg.shiftPeriod('month', { start: '2026-11-01', end: '2026-11-30' }, -1), { start: '2026-10-01', end: '2026-10-31' });
+check('shiftPeriod week', dbg.shiftPeriod('week', P, 1), { start: '2026-11-16', end: '2026-11-22' });
+check('month label', dbg.periodLabelFor('month', { start: '2026-11-01', end: '2026-11-30' }), '2026年11月');
+check('week label unchanged', dbg.periodLabelFor('week', P), '11月9日 - 11月15日');
+
 console.log('\n# evidence collection');
 const evTasks = [
   { id: 't-1', title: '上线插件', status: 'done', completedAt: '2026-11-10T04:00:00.000Z', deletedAt: null, expected: '', nextStep: '', blockedReason: '', urgency: 'high', deadline: '', description: '', createdAt: 'x', updatedAt: 'y' },
@@ -346,6 +358,10 @@ check('completed last month excluded', evidence.some((e) => e.taskId === 't-3'),
 check('deleted task excluded', evidence.some((e) => e.taskId === 't-4'), false);
 check('task without evidence excluded', evidence.some((e) => e.taskId === 't-5'), false);
 check('evidence carries a snapshot', [typeof evidence[0].snapshot.title, evidence[0].snapshot.completedAt], ['string', '2026-11-10T04:00:00.000Z']);
+
+const monthEvidence = dbg.collectEvidence(evTasks, evLogs, evArtifacts, { start: '2026-11-01', end: '2026-11-30' });
+check('monthly evidence spans the weeks', monthEvidence.map((e) => e.taskId), ['t-1', 't-2']);
+check('monthly evidence still excludes last month', monthEvidence.some((e) => e.taskId === 't-3'), false);
 
 console.log('\n# report refs');
 const body = [

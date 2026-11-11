@@ -1,6 +1,6 @@
-// Smoke test: render the weekly report page and its evidence sidebar.
-// The report view is a whole separate layout, so this walks the real tree to
-// catch structural errors in the editor, preview and reference badges.
+// Smoke test: render the report page (weekly and monthly) plus the evidence sidebar.
+// The report view is a whole separate layout, so this walks the real tree to catch
+// structural errors in the editor, preview, reference badges and period controls.
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
@@ -39,18 +39,14 @@ const BODY = [
 // 24 artifactComposerOpen, 25 artifactSummary, 26 artifactLinks, 27 pendingActions,
 // 28 lastApply, 29 aiPanelOpen, 30 aiLoading, 31 aiResult, 32 aiAdopted,
 // 33 tidyLoading, 34 tidyNote, 35 reports, 36 reportPeriod, 37 reportMode,
-// 38 reportBody, 39 reportDirty, 40 reportExcluded, 41 reportGenerating, 42 reportNotice
-const OVERRIDES = {
-  4: 'reports',
-  37: 'preview',
-  38: BODY,
-};
-
+// 38 reportBody, 39 reportDirty, 40 reportExcluded, 41 reportGenerating,
+// 42 reportNotice, 43 reportKind
+let overrides = {};
 let call = 0;
 const React = {
   useState: (init) => {
     call += 1;
-    if (Object.prototype.hasOwnProperty.call(OVERRIDES, call)) return [OVERRIDES[call], () => {}];
+    if (Object.prototype.hasOwnProperty.call(overrides, call)) return [overrides[call], () => {}];
     const v = typeof init === 'function' ? init() : init;
     return [v, () => {}];
   },
@@ -80,55 +76,92 @@ plugin.apply({
   },
 });
 const WorkPanel = registered['work-panel'];
-const tree = WorkPanel();
 
-const classes = [];
-const refButtons = [];
-(function walk(node) {
-  if (!node) return;
-  if (Array.isArray(node)) { node.forEach(walk); return; }
-  if (typeof node !== 'object') return;
-  if (node.props && typeof node.props.className === 'string') {
-    classes.push(node.props.className);
-    if (node.props.className === 'wp-ref') refButtons.push(node);
-  }
-  (node.children || []).forEach(walk);
-})(tree);
+function render(over) {
+  overrides = over || {};
+  call = 0;
+  const tree = WorkPanel();
+  const classes = [];
+  const refButtons = [];
+  (function walk(node) {
+    if (!node) return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    if (typeof node !== 'object') return;
+    if (node.props && typeof node.props.className === 'string') {
+      classes.push(node.props.className);
+      if (node.props.className === 'wp-ref') refButtons.push(node);
+    }
+    (node.children || []).forEach(walk);
+  })(tree);
+  const has = (name) => classes.some((c) => c.split(' ').includes(name));
+  const labels = [];
+  (function collectLabels(node) {
+    if (!node) return;
+    if (Array.isArray(node)) { node.forEach(collectLabels); return; }
+    if (typeof node !== 'object') return;
+    const cls = node.props && node.props.className;
+    if (typeof cls === 'string' && (cls.indexOf('wp-act-btn') !== -1 || cls.indexOf('wp-status-seg-item') !== -1)) {
+      (node.children || []).forEach((c) => { if (typeof c === 'string') labels.push(c); });
+    }
+    (node.children || []).forEach(collectLabels);
+  })(tree);
+  const titleNode = (function findTitle(node) {
+    if (!node) return null;
+    if (Array.isArray(node)) { for (const child of node) { const hit = findTitle(child); if (hit) return hit; } return null; }
+    if (typeof node !== 'object') return null;
+    if (node.props && node.props.className === 'wp-mid-title') return node;
+    for (const child of (node.children || [])) { const hit = findTitle(child); if (hit) return hit; }
+    return null;
+  })(tree);
+  return { tree, classes, has, refButtons, labels, title: titleNode ? (titleNode.children || []).join('') : '' };
+}
 
-const has = (name) => classes.some((c) => c.split(' ').includes(name));
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+// ---- weekly report ----
+const week = render({ 4: 'reports', 37: 'preview', 38: BODY });
 const want = [
-  'wp-report', 'wp-report-toolbar', 'wp-report-period', 'wp-report-nav',
+  'wp-report', 'wp-report-toolbar', 'wp-report-period', 'wp-report-kind', 'wp-report-nav',
   'wp-report-period-label', 'wp-report-actions', 'wp-report-preview',
   'wp-report-h', 'wp-report-line', 'wp-ref',
   'wp-evidence', 'wp-evidence-title', 'wp-evidence-count', 'wp-evidence-item',
   'wp-evidence-check', 'wp-evidence-task', 'wp-evidence-meta',
 ];
-const missing = want.filter((c) => !has(c));
-if (missing.length) throw new Error('missing classes: ' + missing.join(','));
+const missing = want.filter((c) => !week.has(c));
+assert(!missing.length, 'missing classes: ' + missing.join(','));
+assert(week.title === '周报', 'weekly header title should be 周报, got ' + week.title);
 
 // Only resolvable refs become badges: t-1 and l-1 are real, t-404 is not.
-if (refButtons.length !== 2) throw new Error('expected 2 ref badges, got ' + refButtons.length);
-const titles = refButtons.map((b) => b.props.title || '');
-if (!titles.some((t) => t.indexOf('任务「上线插件」') === 0)) throw new Error('task ref badge missing title');
-if (!titles.some((t) => t.indexOf('工作记录「完成发布」') === 0)) throw new Error('log ref badge missing title');
-
+assert(week.refButtons.length === 2, 'expected 2 ref badges, got ' + week.refButtons.length);
+const titles = week.refButtons.map((b) => b.props.title || '');
+assert(titles.some((t) => t.indexOf('任务「上线插件」') === 0), 'task ref badge missing title');
+assert(titles.some((t) => t.indexOf('工作记录「完成发布」') === 0), 'log ref badge missing title');
 // The fake ref becomes a visible "broken evidence" placeholder, not a silent drop.
-if (!has('wp-ref-broken')) throw new Error('unresolvable marker should render as a broken ref');
-if (JSON.stringify(tree).indexOf('[[task:t-404]]') !== -1) throw new Error('raw marker should not leak into the preview');
+assert(week.has('wp-ref-broken'), 'unresolvable marker should render as a broken ref');
+assert(JSON.stringify(week.tree).indexOf('[[task:t-404]]') === -1, 'raw marker should not leak into the preview');
 
-// The period toolbar must offer navigation and generation.
-const labels = [];
-(function collect(node) {
-  if (!node) return;
-  if (Array.isArray(node)) { node.forEach(collect); return; }
-  if (typeof node !== 'object') return;
-  if (node.props && typeof node.props.className === 'string' && node.props.className.indexOf('wp-act-btn') !== -1) {
-    (node.children || []).forEach((c) => { if (typeof c === 'string') labels.push(c); });
-  }
-  (node.children || []).forEach(collect);
-})(tree);
-['生成本期报告', '保存草稿', '复制', '导出 MD'].forEach((label) => {
-  if (labels.indexOf(label) === -1) throw new Error('missing report action: ' + label);
+['生成本期报告', '保存草稿', '复制', '导出 MD', '周报', '月报'].forEach((label) => {
+  assert(week.labels.indexOf(label) !== -1, 'missing report control: ' + label);
 });
 
-console.log('REPORT RENDER OK · ' + want.length + ' classes · ' + refButtons.length + ' ref badges');
+// ---- monthly report ----
+const month = render({
+  4: 'reports',
+  36: { start: '2026-11-01', end: '2026-11-30' },
+  38: BODY,
+  43: 'month',
+});
+assert(month.has('wp-report'), 'monthly view must render the report page');
+assert(month.title === '月报', 'monthly header title should be 月报, got ' + month.title);
+assert(month.refButtons.length === 2, 'monthly view should resolve the same refs');
+assert(month.labels.indexOf('本月') !== -1, 'monthly view should offer 本月');
+assert(month.labels.indexOf('本周') === -1, 'monthly view should not offer 本周');
+
+// ---- empty monthly state ----
+const empty = render({ 4: 'reports', 36: { start: '2026-11-01', end: '2026-11-30' }, 43: 'month' });
+assert(empty.has('wp-report-empty'), 'empty state should render');
+assert(JSON.stringify(empty.tree).indexOf('还没有本月报告') !== -1, 'empty monthly copy should say 本月');
+
+console.log('REPORT RENDER OK · ' + (want.length + 6) + ' classes · weekly + monthly + empty');

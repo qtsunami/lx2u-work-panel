@@ -2,7 +2,7 @@
 
 A personal workbench panel for DeepSeek Harness (DSH): a three-column layout with a left view navigator, a task list, and a right task-detail editor.
 
-## AI collaboration (v5.1)
+## AI collaboration (v1.1)
 
 The model never writes data. It returns a typed action list, the panel shows exactly what
 would change, and only a confirmation applies it — with an undo snapshot.
@@ -25,7 +25,7 @@ Safety rules:
 
 `AI 建议` and `AI 整理` require a model; without one the panel says so and leaves data unchanged.
 
-## Weekly report (v1.2)
+## Weekly and monthly report (v1.2.1)
 
 Left nav `周报` opens a report page: period selector on the left, editor in the middle, evidence sidebar on the right.
 
@@ -33,6 +33,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Generate** → a five-section draft (`本期主要成果` / `重点工作进展` / `问题、风险与阻塞` / `AI 辅助分析与建议` / `下期计划`), saved as a draft automatically.
 - **Traceability**: every factual sentence carries an inline marker (`[[task:t-…]]`, `[[log:l-…]]`, `[[artifact:a-…]]`). In the preview they render as clickable badges that jump to the source task; a marker whose source disappeared shows `?` instead of vanishing.
 - **Host validation**: markers whose ids are not in the evidence bundle are stripped before the body reaches the browser, and the count is reported back.
+- **Monthly report**: switch `周报 / 月报` in the toolbar. A month uses the natural calendar month and summarises the weeklies that fall inside it; the prompt asks the model to consolidate highlights and to write any repeated achievement only once, instead of concatenating the weekly bodies.
 - **Edit / Preview** toggle, `保存草稿`, `复制`, `导出 MD` (markers become numbered footnotes plus a source list). Nothing is sent anywhere.
 - **Snapshot rule**: saving a draft stores both the reference id and a snapshot taken at that moment, so editing a task later never rewrites an existing report.
 
@@ -120,7 +121,7 @@ All state lives in `localStorage`, keyed by the plugin scope:
 | `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (reserved for the recycle bin), `project` (reserved for project views). |
 | `@local/work-panel:logs:v1` | Work records — append-only, keyed by `taskId`. |
 | `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved so a monthly report cannot claim the same result twice. |
-| `@local/work-panel:reports:v1` | Report drafts — `{id, kind, period, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. |
+| `@local/work-panel:reports:v1` | Report drafts — `{id, kind: 'week'|'month', period, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. One draft per kind and period. |
 | `@local/work-panel:chat:v1` | AI assistant conversation. |
 | `@local/work-panel:theme` | Light/dark preference. |
 
@@ -130,8 +131,9 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 
 - **1.0.0** (released) — the original three-column workbench (tasks, smart views, priorities, deadlines, assistant).
 - **1.1.0** — data foundation (expected result, next step, blocker, `completedAt`, append-only work records, artifacts, recent-progress row, snapshot helper) plus confirm-before-write AI collaboration (preview → confirm → undo, duplicate guard, task-scoped advice, record tidying, attribution).
-- **1.2.0 (this release)** — weekly report: period-scoped evidence, five-section draft, inline evidence markers with jump-back, snapshot-backed refs, copy and Markdown export.
-- **1.3.0** — monthly report (built from weekly reports), project views, recycle-bin UI, paragraph-level polishing.
+- **1.2.0** — weekly report: period-scoped evidence, five-section draft, inline evidence markers with jump-back, snapshot-backed refs, copy and Markdown export.
+- **1.2.1 (this release)** — monthly report: `周报 / 月报` switch, natural-month period, weeklies inside the month are consolidated (not concatenated), repeated achievements written once.
+- **1.2.2** — project views, recycle-bin UI, paragraph-level polishing.
 - Decided against: kanban board and a three-state status model.
 
 ## License

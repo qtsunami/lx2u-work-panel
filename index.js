@@ -236,11 +236,18 @@ function buildTidySystemPrompt(today) {
   ].join('\n');
 }
 
-function buildReportSystemPrompt(period) {
-  return [
-    '你是一个中文工作报告助手，负责把一个人本期的工作记录整理成周报。',
+function buildReportSystemPrompt(period, kind) {
+  const monthly = kind === 'month';
+  const lines = [
+    '你是一个中文工作报告助手，负责把一个人本期的工作记录整理成' + (monthly ? '月报' : '周报') + '。',
     `报告周期：${(period && period.start) || ''} ~ ${(period && period.end) || ''}。`,
     '你会收到本期依据：任务、任务下的工作记录、已关联的成果。每条记录和成果都有 id。',
+  ];
+  if (monthly) {
+    lines.push('如果还提供了当月已有的周报正文，请归纳其中的重点与变化，不要逐条拼接、不要整段照抄。');
+    lines.push('同一成果在多份周报里出现过，在月报中只写一次。');
+  }
+  return lines.concat([
     '只输出一个 JSON 对象（不要 Markdown 代码块、不要额外解释）：',
     '{"reply":"给用户的简短说明","body":"Markdown 正文"}',
     '正文必须使用以下五段结构（用 ## 开头）：',
@@ -257,12 +264,14 @@ function buildReportSystemPrompt(period) {
     '5. 依据不足时，在对应段落直接写「本期缺少相关记录」，不要补写成事实。',
     '6. 某一段完全没有内容时写「本期无」。正文里不要使用 ``` 代码块。',
     '7. reply 用一句话说明这份报告依据了多少条任务与记录。',
-  ].join('\n');
+  ]).join('\n');
 }
 
 function buildReportUserText(body) {
   const period = (body && body.period) || {};
   const evidence = Array.isArray(body && body.evidence) ? body.evidence.slice(0, 40) : [];
+  // Only a monthly report consumes weeklies; a weekly one never does.
+  const weeklies = body && body.kind === 'month' && Array.isArray(body.weeklies) ? body.weeklies.slice(0, 6) : [];
   const lines = [];
   for (const item of evidence) {
     const taskId = typeof item.taskId === 'string' ? item.taskId : '';
@@ -282,14 +291,21 @@ function buildReportUserText(body) {
       lines.push('- 成果 [' + artifact.id + '] ' + str(artifact.summary, 500) + (links.length ? ' 链接：' + links.join(' ') : ''));
     }
   }
-  return [
+  const parts = [
     '报告周期：' + (period.start || '') + ' ~ ' + (period.end || ''),
     '',
     evidence.length ? '本期依据：' : '本期依据：空（没有任何任务、记录或成果）',
     ...lines,
-    '',
-    '请按要求输出 JSON。',
-  ].join('\n');
+  ];
+  if (weeklies.length) {
+    parts.push('', '当月已有周报（请归纳重点，不要简单拼接）：');
+    for (const weekly of weeklies) {
+      parts.push('### 周报 ' + str(weekly && weekly.period, 60));
+      parts.push(str(weekly && weekly.body, 6000));
+    }
+  }
+  parts.push('', '请按要求输出 JSON。');
+  return parts.join('\n');
 }
 
 const REPORT_REF = /\[\[(task|log|artifact):([A-Za-z0-9_-]+)\]\]/g;
@@ -410,7 +426,7 @@ export function apply(ctx, config) {
           }
           const raw = await complete(
             llm, preferredProvider, preferredModel,
-            buildReportSystemPrompt(body && body.period),
+            buildReportSystemPrompt(body && body.period, body && body.kind === 'month' ? 'month' : 'week'),
             buildReportUserText(body),
             2200,
           );

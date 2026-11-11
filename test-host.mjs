@@ -23,6 +23,19 @@ function mockLlm(payload) {
   };
 }
 
+// mock llm that records the prompt it was given
+function captureLlm(payload) {
+  const captured = {};
+  return {
+    captured,
+    stream: async function* (args) {
+      captured.system = args && args.system;
+      captured.user = args && args.messages && args.messages[0] && args.messages[0].content && args.messages[0].content[0] && args.messages[0].content[0].text;
+      yield { type: 'text-delta', text: payload };
+    },
+  };
+}
+
 let pass = 0;
 let fail = 0;
 function check(name, actual, expected) {
@@ -172,6 +185,27 @@ apply(makeCtx(mockLlm(JSON.stringify({ reply: '', body: '## 一、本期主要�
 const rpEmpty = await call({ mode: 'report', evidence: [] });
 check('report-empty-evidence-ok', rpEmpty.report.body.indexOf('缺少相关记录') > 0, true);
 check('report-no-refs-zero-dropped', rpEmpty.droppedRefs, 0);
+
+console.log('\n# report mode: monthly prompt');
+const WEEKLY = [{ period: '2026-11-09 ~ 2026-11-15', body: '本周完成了发布 [[task:t-1]]' }];
+const capMonth = captureLlm(JSON.stringify({ reply: 'ok', body: '## 一、本期主要成果\n- 月度完成 [[task:t-1]]' }));
+registered = undefined;
+apply(makeCtx(capMonth));
+await call({ mode: 'report', kind: 'month', period: { start: '2026-11-01', end: '2026-11-30' }, evidence: EVIDENCE, weeklies: WEEKLY });
+check('month-prompt-says-month', capMonth.captured.system.indexOf('月报') > 0, true);
+check('month-prompt-demands-summary', capMonth.captured.system.indexOf('不要逐条拼接') > 0, true);
+check('month-prompt-asks-dedupe', capMonth.captured.system.indexOf('只写一次') > 0, true);
+check('month-prompt-carries-weeklies', capMonth.captured.user.indexOf('2026-11-09 ~ 2026-11-15') > 0, true);
+check('month-prompt-has-weekly-body', capMonth.captured.user.indexOf('本周完成了发布') > 0, true);
+check('month-prompt-has-period', capMonth.captured.user.indexOf('2026-11-01 ~ 2026-11-30') > 0, true);
+
+const capWeek = captureLlm(JSON.stringify({ reply: 'ok', body: '## 一、本期主要成果\n- 周度完成 [[task:t-1]]' }));
+registered = undefined;
+apply(makeCtx(capWeek));
+await call({ mode: 'report', kind: 'week', period: { start: '2026-11-09', end: '2026-11-15' }, evidence: EVIDENCE, weeklies: WEEKLY });
+check('week-prompt-says-week', capWeek.captured.system.indexOf('整理成周报') > 0, true);
+check('week-prompt-no-weeklies-instruction', capWeek.captured.system.indexOf('不要逐条拼接'), -1);
+check('week-prompt-ignores-weeklies', capWeek.captured.user.indexOf('周报 2026-11-09'), -1);
 
 console.log('\n# failure paths');
 registered = undefined;
