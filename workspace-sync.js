@@ -77,15 +77,7 @@ export class WorkspaceSync {
         this._conflict('主存已有数据，不能自动用本页覆盖；请先导出本页备份，再明确选择加载主存。');
         return;
       }
-      const local = this._local();
-      if (!this._backup(local)) return;
-      const requestId = this.d.makeId();
-      if (typeof requestId !== 'string' || !requestId) { this._fail('无法生成稳定事务编号，迁移已停止。'); return; }
-      const pending = { action: 'initialize', baseRevision: 0, requestId, workspace: local, storeId: null };
-      if (!this._persistPending(pending)) return;
-      this.meta = { revision: 0, storeId: null, dirty: false, lastSyncedDigest: null };
-      if (!this._persistMeta()) return;
-      return this._drain();
+      return this._adoptEmptyHost(server);
     });
   }
 
@@ -116,6 +108,18 @@ export class WorkspaceSync {
         || (phase === 'local' && this.localOnly),
     };
     this.d.onStatus(this.getStatus());
+  }
+
+  async _adoptEmptyHost(server) {
+    const local = this._local();
+    if (!this._backup(local)) return;
+    const requestId = this.d.makeId();
+    if (typeof requestId !== 'string' || !requestId) { this._fail('无法生成稳定事务编号，迁移已停止。'); return; }
+    const pending = { action: 'initialize', baseRevision: 0, requestId, workspace: local, storeId: null };
+    if (!this._persistPending(pending)) return;
+    this.meta = { revision: 0, storeId: null, dirty: false, lastSyncedDigest: null };
+    if (!this._persistMeta()) return;
+    await this._drain();
   }
 
   _clearLocalOnly() {
@@ -269,7 +273,15 @@ export class WorkspaceSync {
   async _connect(explicitReload) {
     this._readState();
     if (this.localOnly && !explicitReload) {
-      this._set('local', '仅本页保存：主存未同步。本机编辑可用；修复主存后先导出，再明确选择加载主存。');
+      // Once the Host answers again, adopting this page into an EMPTY Host is
+      // the intended first-run migration; an occupied Host still needs an
+      // explicit decision, so it only informs here.
+      this._set('local', '仅本页保存：正在确认主存是否为空。');
+      const server = await this._request('GET');
+      if (!server || this.disposed) return;
+      if (!this._validServer(server)) { this._fail('主存缺少合法版本或身份，已停止迁移。'); return; }
+      if (!server.initialized) { await this._adoptEmptyHost(server); return; }
+      this._set('local', '仅本页保存：主存已有数据，不能自动覆盖。请先导出本页备份，再明确选择加载主存。');
       return;
     }
     // Retrying must first make all in-memory metadata durable, including a

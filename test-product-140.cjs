@@ -241,7 +241,7 @@ test('restart cannot silently hydrate over tasks edited during Host load failure
     assert.equal(next.storage.json(TASK_KEY).length, 2);
     assert.equal(next.server.workspace.tasks.length, 1);
     assert.equal(next.byClass('wp-sync-guard').props.disabled, false);
-    assert.ok(next.text().includes('未同步'));
+    assert.ok(next.text().includes('仅本页保存') && next.text().includes('主存已有数据'));
     next.click('备份后加载主存');
     assert.equal(next.storage.json(TASK_KEY).length, 2, 'first click must only show confirmation');
     next.click('取消'); assert.equal(next.storage.json(TASK_KEY).length, 2);

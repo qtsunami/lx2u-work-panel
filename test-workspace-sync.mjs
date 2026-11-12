@@ -119,6 +119,22 @@ test('corrupt local-only marker blocks both editing and migration without overwr
   assert.equal(r.status().phase, 'error'); assert.equal(r.status().canEdit, false); assert.equal(r.state.calls.length, 0);
   assert.deepEqual(r.state.local, ws('local'));
 });
+test('a later mount adopts local-only data automatically once the Host is reachable and empty', async () => {
+  const r = rig({ initialized: false, revision: 0, storeId: null, failures: { networkGET: 1 } });
+  await r.sync.start(); assert.equal(r.status().phase, 'local'); assert.equal(r.state.posts, undefined);
+  r.state.failures = {}; r.edit('kept while the Host was down');
+  r.remount(); await r.sync.start();
+  assert.equal(r.status().phase, 'ready'); assert.equal(r.state.localOnly, null);
+  assert.equal(r.posts().length, 1); assert.equal(r.posts()[0].action, 'initialize');
+  assert.deepEqual(r.state.remote.tasks.map(t => t.title), ['kept while the Host was down']);
+});
+test('a later mount keeps local-only mode when the Host already holds another store', async () => {
+  const r = rig({ failures: { networkGET: 1 } }); await r.sync.start();
+  assert.equal(r.status().phase, 'local'); r.state.failures = {};
+  r.remount(); await r.sync.start();
+  assert.equal(r.status().phase, 'local'); assert.equal(r.status().canEdit, true);
+  assert.equal(r.posts().length, 0); assert.deepEqual(r.state.local.tasks.map(t => t.id), ['local']);
+});
 test('user-triggered resume adopts local data into an empty Host and clears the marker', async () => {
   const r = rig({ initialized: false, revision: 0, storeId: null, failures: { networkGET: 1 } });
   await r.sync.start();
