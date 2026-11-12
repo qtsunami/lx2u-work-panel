@@ -392,7 +392,10 @@ export class WorkspaceSync {
         if (!this._persistMeta()) return;
       }
       const request = this.pending;
-      this._set(this._known() ? 'syncing' : 'loading', '正在向主存提交已持久记录的事务。');
+      // Submitting a routine commit is background work too: mark it quiet so the
+      // UI is not re-rendered once per write. Only the pre-identity initial step
+      // stays visible.
+      this._set(this._known() ? 'syncing' : 'loading', '正在向主存提交已持久记录的事务。', this._known());
       const result = await this._request('POST', request);
       if (!result || this.disposed) return;
       if (!Number.isSafeInteger(result.revision) || result.revision !== request.baseRevision + 1 || !Number.isSafeInteger(result.currentRevision)

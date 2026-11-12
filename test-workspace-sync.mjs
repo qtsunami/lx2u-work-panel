@@ -88,6 +88,14 @@ test('an edit-triggered sync is quiet so callers need not reflow their layout', 
   assert.equal(r.status().phase, 'ready');
   assert.equal(r.status().quiet, false, 'a completed sync is not quiet');
 });
+test('the commit phase is quiet as well, so a write causes no UI render', async () => {
+  const r = rig({ meta: known() }); await r.sync.start();
+  r.edit('one write');
+  await r.tick();
+  const quietPhases = r.state.statuses.filter(s => s.quiet).map(s => s.phase);
+  assert.ok(quietPhases.includes('syncing'), 'both the debounce and the commit are quiet');
+  assert.equal(r.status().phase, 'ready');
+});
 test('a user-visible phase is never marked quiet', async () => {
   const r = rig({ meta: known(), failures: { networkGET: 1 } }); await r.sync.start();
   assert.equal(r.status().phase, 'offline');

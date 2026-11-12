@@ -172,10 +172,9 @@ test('quiet background sync never re-renders the panel or shows warning UI', asy
     assert.equal(ui.nodes().filter(n => has(n, 'wp-host-sync')).length, 0, 'no banner while typing');
     ui.timers.advance(600); await ui.settle();
     assert.equal(ui.nodes().filter(n => has(n, 'wp-host-sync')).length, 0, 'no banner after the debounce and sync');
-    // The quiet indicator exists as a fixed-position element, not a layout row.
-    const dots = ui.nodes().filter(n => has(n, 'wp-sync-dot'));
-    assert.equal(dots.length, 1, 'exactly one non-layout indicator');
-    assert.equal(dots[0].props['data-active'], 'false');
+    // No per-write indicator at all: nothing in the header changes while typing.
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-sync-dot')).length, 0, 'no sync indicator element');
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-host-sync')).length, 0, 'no sync banner element');
   } finally { ui.close(); }
 });
 

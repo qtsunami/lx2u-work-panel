@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.3';
+    const PANEL_VERSION = '1.5.4';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -439,7 +439,10 @@ window.__ModuleLoader__.load({
             if (!this._persistMeta()) return;
           }
           const request = this.pending;
-          this._set(this._known() ? 'syncing' : 'loading', '正在向主存提交已持久记录的事务。');
+          // Submitting a routine commit is background work too: mark it quiet so the
+          // UI is not re-rendered once per write. Only the pre-identity initial step
+          // stays visible.
+          this._set(this._known() ? 'syncing' : 'loading', '正在向主存提交已持久记录的事务。', this._known());
           const result = await this._request('POST', request);
           if (!result || this.disposed) return;
           if (!Number.isSafeInteger(result.revision) || result.revision !== request.baseRevision + 1 || !Number.isSafeInteger(result.currentRevision)
@@ -4001,10 +4004,6 @@ window.__ModuleLoader__.load({
       .wp-sync-guard { display: flex; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; border: 0; }
       .wp-host-sync { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; background: var(--wp-fill-secondary); color: var(--wp-text-secondary); font-size: 12px; }
       .wp-host-sync > span { flex: 1; min-width: 160px; }
-      .wp-sync-dot { position: absolute; top: 6px; right: 10px; width: 6px; height: 6px; border-radius: 50%;
-        background: var(--wp-primary); opacity: 0; transition: opacity .25s ease; pointer-events: none; z-index: 5; }
-      .wp-sync-dot[data-active='true'] { opacity: .5; animation: wp-sync-pulse 1.2s ease-in-out infinite; }
-      @keyframes wp-sync-pulse { 0%, 100% { opacity: .2; } 50% { opacity: .6; } }
       .wp-root { position: relative; }
 
       /* ---- weekly report ---- */
@@ -4299,7 +4298,6 @@ window.__ModuleLoader__.load({
       const [reloadHostConfirm, setReloadHostConfirm] = useState(false);
       const hostSyncRef = useRef(null);
       const suppressSyncRef = useRef(false);
-      const syncDotRef = useRef(null);
       const lastSyncRenderRef = useRef('');
       const extrasRef = useRef(null);
       if (!extrasRef.current) extrasRef.current = readWorkspaceExtras();
@@ -4519,12 +4517,6 @@ window.__ModuleLoader__.load({
           // know about reach React, and only when something actually changed.
           onStatus: (status) => {
             if (stopped) return;
-            // Guarded: a host without this element (or a DOM stub) must not break
-            // the status pipeline.
-            const dot = syncDotRef.current;
-            if (dot && typeof dot.setAttribute === 'function') {
-              try { dot.setAttribute('data-active', status.phase === 'syncing' ? 'true' : 'false'); } catch { /* cosmetic only */ }
-            }
             if (status.quiet) return;
             const last = lastSyncRenderRef.current;
             const key = [status.phase, status.message, status.canEdit, status.revision].join('\u0000');
@@ -4675,15 +4667,16 @@ window.__ModuleLoader__.load({
       // Free-text fields update the visible value immediately but write to storage
       // once the typing pauses. Per-keystroke writes made the sync status flicker
       // on every character and re-serialized the whole workspace needlessly.
+      const [draftText, setDraftText] = useState({});
       const draftTimers = useRef({});
       const draftValues = useRef({});
       const flushDraftsRef = useRef(() => 0);
       const updateTaskDebounced = (id, patch) => {
-        setLastApply(null);
-        const text = String(patch.title !== undefined ? patch.title : patch.description);
-        // Keep the field responsive: the local value changes now.
-        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
         const field = patch.title !== undefined ? 'title' : 'description';
+        // The field owns its own echo while typing. Keeping the keystroke out of
+        // the workspace state means the panel does not re-render (and the header
+        // does not repaint) once per character.
+        setDraftText((prev) => ({ ...prev, [id + ':' + field]: String(patch[field]) }));
         const key = id + ':' + field;
         draftValues.current[key] = { id, patch };
         if (draftTimers.current[key]) clearTimeout(draftTimers.current[key]);
@@ -4692,10 +4685,15 @@ window.__ModuleLoader__.load({
           const pending = draftValues.current[key];
           delete draftValues.current[key];
           if (!pending) return;
+          setLastApply(null);
           commit(tasksRef.current.map((t) => (t.id === pending.id
             ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t)));
+          setDraftText((prev) => {
+            const next = { ...prev };
+            delete next[id + ':' + (pending.patch.title !== undefined ? 'title' : 'description')];
+            return next;
+          });
         }, 500);
-        return text;
       };
       const flushDrafts = () => {
         const keys = Object.keys(draftTimers.current);
@@ -4709,6 +4707,11 @@ window.__ModuleLoader__.load({
             ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t));
         }
         commit(next);
+        if (keys.length) setDraftText((prev) => {
+          const nextEcho = { ...prev };
+          for (const key of keys) delete nextEcho[key];
+          return nextEcho;
+        });
         return keys.length;
       };
       flushDraftsRef.current = flushDrafts;
@@ -6824,6 +6827,10 @@ window.__ModuleLoader__.load({
                   }, '删除项目')))
         : null;
 
+      // Created once for the lifetime of this component: a fresh <style> element
+      // on every render forces a style recalculation and shows up as flicker.
+      const styleNode = useMemo(() => h('style', null, CSS), []);
+
       const middleBody = isReportsView
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
         : isRadarView
@@ -7072,12 +7079,14 @@ window.__ModuleLoader__.load({
               onClick: () => softDeleteTask(selectedTask),
             }, h(TrashIcon))),
           h('textarea', {
-            className: 'wp-detail-input wp-detail-title-input', rows: 2, value: selectedTask.title,
+            className: 'wp-detail-input wp-detail-title-input', rows: 2,
+            value: draftText[selectedTask.id + ':title'] !== undefined ? draftText[selectedTask.id + ':title'] : selectedTask.title,
             placeholder: '任务标题', spellCheck: false,
             onChange: (e) => updateTaskDebounced(selectedTask.id, { title: e.target.value }),
           }),
           h('textarea', {
-            className: 'wp-detail-input wp-detail-desc-input', rows: 4, value: selectedTask.description || '',
+            className: 'wp-detail-input wp-detail-desc-input', rows: 4,
+            value: draftText[selectedTask.id + ':description'] !== undefined ? draftText[selectedTask.id + ':description'] : (selectedTask.description || ''),
             placeholder: '添加任务描述',
             onChange: (e) => updateTaskDebounced(selectedTask.id, { description: e.target.value }),
           }),
@@ -7290,16 +7299,7 @@ window.__ModuleLoader__.load({
         composer) : null;
 
       return h('div', { className: 'wp-root', 'data-theme': theme },
-        h('style', null, CSS),
-        // Routine background sync: one absolutely-positioned dot, so typing never
-        // reflows the page and the header never jumps.
-        // Rendered once and toggled through the DOM: its activity never causes a
-        // React render, so typing cannot produce a re-render loop.
-        h('span', {
-          className: 'wp-sync-dot', role: 'status', 'aria-live': 'off',
-          'aria-label': '正在同步到本机主存', title: '正在同步到本机主存',
-          ref: syncDotRef, 'data-active': 'false',
-        }),
+        styleNode,
         hostSyncStatus.phase !== 'ready' && !hostSyncStatus.quiet ? h('div', { className: 'wp-host-sync', role: 'status' },
           h('span', null, hostSyncStatus.message),
           hostSyncStatus.phase === 'local'
