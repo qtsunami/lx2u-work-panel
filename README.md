@@ -38,7 +38,7 @@ The source and test tooling are repository development files, not additional run
 
 Host restart and real DSH navigation/visual acceptance are still required before treating this build as live-verified. The VM service adapters verify the contract and interaction logic, not a real window launch.
 
-- **Task row right-click menu**: priority (高/中/低/无), move to a project (or 未分组), toggle done, open detail, and move to the recycle bin. It uses the same operations as the detail panel and closes on outside click, Escape, resize or selection change.
+- **Task row right-click menu**: opens at the pointer and extends to its right, flipping left only when it would clip. Priority is a row of four colored flags (高 red / 中 amber / 低 blue / 无 grey) with the current level highlighted. `移动到 ›` opens a submenu: `未分组` first, then the current project pinned next and marked with a check, then the rest; with more than six projects a search box filters by name. Also offers toggle done, open detail and move to the recycle bin; closes on outside click, Escape, resize or selection change.
 - **Project binding moved out of the detail panel**: the task detail no longer carries a project selector; assignment happens from the row's right-click menu so the detail stays focused on the task itself.
 
 ## Proactive and automatic (v1.5.0)

@@ -14,6 +14,13 @@ function task(id, patch = {}) {
 function state(tasks = [], patch = {}) {
   return { tasks, projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {}, ...patch };
 }
+const openMoveSubmenu = (ui) => {
+  const parent = ui.nodes().find(n => n.type === 'button' && has(n, 'wp-row-menu-parent'));
+  assert.ok(parent, 'the move parent entry exists');
+  assert.ok(text(parent).includes('移动到'), 'parent is labelled 移动到');
+  ui.fire(parent, 'onClick');
+};
+
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
 const radarView = (ui) => { ui.click('需要注意'); return ui; };
@@ -191,48 +198,119 @@ test('a debounced edit is not lost when the selection changes immediately', asyn
   } finally { ui.close(); }
 });
 
-test('right-clicking a task offers priority, project move and delete', async () => {
-  const seeded = state([task('a'), task('b')],
-    { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] });
-  const ui = harness(seeded); await ui.settle();
+test('the row menu opens at the pointer and to its right', async () => {
+  const ui = harness(state([task('a')])); await ui.settle();
   try {
     const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
-    ui.fire(row, 'onContextMenu', { clientX: 40, clientY: 60, preventDefault() {} });
-    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 1, 'menu opens');
-    const body = ui.text();
-    for (const label of ['优先级', '移动到项目', '未分组', '项目一', '标记为已完成', '移到回收站']) {
-      assert.ok(body.includes(label), 'menu offers ' + label);
-    }
-    // Priority is applied through the same operation the detail panel uses.
-    ui.click('高'); await ui.settle();
-    assert.equal(Object.keys(ui.nodes().filter(n => has(n, 'wp-row-menu'))).length, 0, 'menu closes after acting');
-    const after = ui.storage.json('@local/work-panel:tasks:v1').find(t => t.id === 'a');
-    assert.equal(after.urgency, 'high', 'priority changed');
-    assert.equal(after.projectId, '', 'moving was not implied by a priority change');
+    ui.fire(row, 'onContextMenu', { clientX: 120, clientY: 80, preventDefault() {} });
+    const menu = ui.nodes().find(n => has(n, 'wp-row-menu'));
+    assert.ok(menu, 'menu opens');
+    const left = Number(String(menu.props.style.left).replace('px', ''));
+    const top = Number(String(menu.props.style.top).replace('px', ''));
+    assert.ok(left >= 120, 'never placed left of the pointer, got ' + left);
+    assert.ok(left > 120 && left < 120 + 260, 'placed just to the right, got ' + left);
+    assert.ok(top >= 80, 'never above the pointer');
   } finally { ui.close(); }
 });
 
-test('the row menu moves a task into a project and to the recycle bin', async () => {
-  const seeded = state([task('a')],
-    { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] });
+test('priority is a colored flag row with the current level highlighted', async () => {
+  const ui = harness(state([task('a', { urgency: 'high' })])); await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 20, clientY: 20, preventDefault() {} });
+    const flags = ui.nodes().filter(n => has(n, 'wp-row-menu-flag'));
+    assert.equal(flags.length, 4, 'four priority flags');
+    assert.ok(flags.every(f => has(f, 'wp-flag-high') || has(f, 'wp-flag-medium') || has(f, 'wp-flag-low') || has(f, 'wp-flag-none')),
+      'each flag carries its own color class');
+    assert.ok(flags.some(f => has(f, 'wp-flag-high') && has(f, 'wp-active')), 'current priority is highlighted');
+    const low = flags.find(f => has(f, 'wp-flag-low'));
+    ui.fire(low, 'onClick'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].urgency, 'low', 'clicking a flag applies it');
+  } finally { ui.close(); }
+});
+
+test('moving opens a submenu that pins and checks the current project', async () => {
+  const seeded = state([task('a', { projectId: 'p2' })],
+    { projects: [
+      { id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO },
+      { id: 'p2', name: '项目二', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO },
+      { id: 'p3', name: '项目三', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO },
+    ] });
   const ui = harness(seeded); await ui.settle();
   try {
-    const open = () => ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onContextMenu', { clientX: 10, clientY: 10, preventDefault() {} });
-    open();
-    const menu = ui.nodes().find(n => has(n, 'wp-row-menu'));
-    const walk = (node, out = []) => {
-      if (Array.isArray(node)) { node.forEach(child => walk(child, out)); return out; }
-      if (!node || typeof node !== 'object') return out;
-      out.push(node); walk(node.children || [], out); return out;
-    };
-    const moveBtn = walk(menu).find(n => n.type === 'button' && text(n) === '项目一');
-    assert.ok(moveBtn, 'the project entry inside the menu');
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 20, clientY: 20, preventDefault() {} });
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-submenu')).length, 0, 'submenu is collapsed first');
+    openMoveSubmenu(ui); await ui.settle();
+    const sub = ui.nodes().find(n => has(n, 'wp-row-submenu'));
+    assert.ok(sub, 'submenu opens on demand');
+    const items = ui.nodes().filter(n => has(n, 'wp-row-submenu-item'));
+    const names = items.map(n => {
+      const span = (n.children || []).find(c => c && has(c, 'wp-row-submenu-name'));
+      return span ? text(span) : '';
+    });
+    // 未分组 first, then the current project immediately after it.
+    assert.equal(names[0], '未分组', 'ungrouped is always offered');
+    assert.equal(names[1], '项目二', 'current project is pinned to the front, got ' + JSON.stringify(names));
+    const current = items[1];
+    assert.ok(has(current, 'wp-active'), 'current project is highlighted');
+    assert.ok((current.children || []).some(c => c && has(c, 'wp-row-submenu-check')), 'current project is checked');
+  } finally { ui.close(); }
+});
+
+test('the project submenu is searchable when there are many projects', async () => {
+  const many = Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, name: '项目' + i, status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }));
+  const ui = harness(state([task('a')], { projects: many })); await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 20, clientY: 20, preventDefault() {} });
+    openMoveSubmenu(ui); await ui.settle();
+    const search = ui.nodes().find(n => has(n, 'wp-row-submenu-search'));
+    assert.ok(search, 'search field appears for a long list');
+    ui.fire(search, 'onChange', { target: { value: '项目7' } }); await ui.settle();
+    const names = ui.nodes().filter(n => has(n, 'wp-row-submenu-item')).map(n => {
+      const span = (n.children || []).find(c => c && has(c, 'wp-row-submenu-name'));
+      return span ? text(span) : '';
+    });
+    assert.ok(names.includes('项目7'), 'the match stays');
+    assert.ok(!names.includes('项目1'), 'non-matches are filtered out, got ' + JSON.stringify(names));
+    const target = ui.nodes().filter(n => has(n, 'wp-row-submenu-item')).find(n => {
+      const span = (n.children || []).find(c => c && has(c, 'wp-row-submenu-name'));
+      return span && text(span) === '项目7';
+    });
+    ui.fire(target, 'onClick'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].projectId, 'p7', 'the filtered choice applies');
+  } finally { ui.close(); }
+});
+
+test('a short project list needs no search field', async () => {
+  const ui = harness(state([task('a')], { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] }));
+  await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 20, clientY: 20, preventDefault() {} });
+    openMoveSubmenu(ui); await ui.settle();
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-submenu-search')).length, 0, 'no search field for a short list');
+    assert.ok(ui.nodes().filter(n => has(n, 'wp-row-submenu-item')).length >= 2, 'options still listed');
+  } finally { ui.close(); }
+});
+
+test('the row menu still moves a task and soft-deletes it', async () => {
+  const ui = harness(state([task('a')], { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] }));
+  await ui.settle();
+  try {
+    const row = () => ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row(), 'onContextMenu', { clientX: 10, clientY: 10, preventDefault() {} });
+    openMoveSubmenu(ui); await ui.settle();
+    const moveBtn = ui.nodes().filter(n => has(n, 'wp-row-submenu-item')).find(n => {
+      const span = (n.children || []).find(c => c && has(c, 'wp-row-submenu-name'));
+      return span && text(span) === '项目一';
+    });
     ui.fire(moveBtn, 'onClick'); await ui.settle();
-    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].projectId, 'p1', 'moved into the project');
-    open(); ui.click('移到回收站'); await ui.settle();
-    const stored = ui.storage.json('@local/work-panel:tasks:v1')[0];
-    assert.ok(stored.deletedAt, 'soft-deleted, recoverable');
-    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 0, 'menu closed');
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].projectId, 'p1');
+    ui.fire(row(), 'onContextMenu', { clientX: 10, clientY: 10, preventDefault() {} });
+    ui.click('移到回收站'); await ui.settle();
+    assert.ok(ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, 'soft-deleted');
   } finally { ui.close(); }
 });
 

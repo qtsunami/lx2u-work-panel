@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.5';
+    const PANEL_VERSION = '1.5.6';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -3757,24 +3757,43 @@ window.__ModuleLoader__.load({
       }
       .wp-detail-select:focus { outline: none; border-color: var(--wp-primary); }
       .wp-detail-project-select { max-width: 100%; }
-      .wp-row-menu { position: fixed; z-index: 60; min-width: 190px; max-width: 260px; padding: 6px;
+      .wp-row-menu { position: fixed; z-index: 60; width: 224px; padding: 6px;
         border: 1px solid var(--wp-border); border-radius: 8px; background: var(--wp-bg-container);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 12.5px; }
-      .wp-row-menu-title { padding: 2px 6px 6px; color: var(--wp-text-tertiary); font-size: 11px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, .20); font-size: 12.5px; }
+      .wp-row-menu-title { padding: 2px 6px 8px; color: var(--wp-text-tertiary); font-size: 11px;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .wp-row-menu-section { padding: 2px 6px; color: var(--wp-text-tertiary); font-size: 11px; }
-      .wp-row-menu-row { display: flex; gap: 4px; padding: 2px 4px 4px; }
-      .wp-row-menu-chip { flex: 1; height: 24px; padding: 0 6px; border: 1px solid var(--wp-border); border-radius: 6px;
-        background: transparent; color: var(--wp-text-secondary); font: inherit; cursor: pointer; }
-      .wp-row-menu-chip.wp-active { border-color: var(--wp-primary); color: var(--wp-primary); }
-      .wp-row-menu-list { display: flex; flex-direction: column; max-height: 160px; overflow: auto; }
-      .wp-row-menu-item { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px;
+      .wp-row-menu-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 2px 4px; }
+      .wp-row-menu-flag { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 5px 2px;
+        border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--wp-text-secondary);
+        font: inherit; font-size: 10.5px; cursor: pointer; }
+      .wp-row-menu-flag svg { width: 16px; height: 16px; }
+      .wp-row-menu-flag.wp-flag-high { color: var(--wp-error); }
+      .wp-row-menu-flag.wp-flag-medium { color: var(--wp-warning); }
+      .wp-row-menu-flag.wp-flag-low { color: var(--wp-primary); }
+      .wp-row-menu-flag.wp-flag-none { color: var(--wp-text-tertiary); }
+      .wp-row-menu-flag:hover { background: var(--wp-fill-secondary); }
+      .wp-row-menu-flag.wp-active { border-color: currentColor; background: var(--wp-fill-secondary); font-weight: 600; }
+      .wp-row-menu-item { display: flex; align-items: center; justify-content: space-between; gap: 6px;
+        width: 100%; padding: 7px 8px; border: 0; border-radius: 5px;
         background: transparent; color: var(--wp-text); font: inherit; text-align: left; cursor: pointer; }
       .wp-row-menu-item:hover { background: var(--wp-fill-secondary); }
-      .wp-row-menu-item.wp-active { color: var(--wp-primary); }
-      .wp-row-menu-empty { padding: 4px 8px; color: var(--wp-text-tertiary); font-size: 11px; }
+      .wp-row-menu-parent.wp-open { background: var(--wp-fill-secondary); }
+      .wp-row-menu-chevron { color: var(--wp-text-tertiary); font-size: 14px; line-height: 1; }
+      .wp-row-submenu { margin: 2px 0 4px; padding: 4px; border-radius: 6px; background: var(--wp-fill-secondary); }
+      .wp-row-submenu-search { width: 100%; height: 26px; padding: 0 8px; margin-bottom: 4px;
+        border: 1px solid var(--wp-border); border-radius: 5px; background: var(--wp-bg-container);
+        color: var(--wp-text); font: inherit; font-size: 12px; outline: none; }
+      .wp-row-submenu-search:focus { border-color: var(--wp-primary); }
+      .wp-row-submenu-item { display: flex; align-items: center; justify-content: space-between; gap: 6px;
+        width: 100%; max-height: 160px; padding: 6px 8px; border: 0; border-radius: 5px;
+        background: transparent; color: var(--wp-text); font: inherit; text-align: left; cursor: pointer; }
+      .wp-row-submenu-item:hover { background: var(--wp-bg-container); }
+      .wp-row-submenu-item.wp-active { color: var(--wp-primary); font-weight: 600; }
+      .wp-row-submenu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .wp-row-submenu-check { flex: 0 0 auto; color: var(--wp-primary); }
+      .wp-row-menu-empty { padding: 5px 8px; color: var(--wp-text-tertiary); font-size: 11px; }
       .wp-row-menu-danger { color: var(--wp-error); }
-      .wp-row-menu-sep { height: 1px; margin: 4px 6px; background: var(--wp-border); }
+      .wp-row-menu-sep { height: 1px; margin: 5px 6px; background: var(--wp-border); }
       .wp-row.wp-row-menu-open { background: var(--wp-fill-secondary); }
       .wp-inline-new { display: flex; gap: 6px; margin-top: 6px; }
       .wp-inline-new-input {
@@ -4689,6 +4708,8 @@ window.__ModuleLoader__.load({
       const [draftText, setDraftText] = useState({});
       // Right-click task menu: {taskId, x, y} or null. Position is viewport-based.
       const [rowMenu, setRowMenu] = useState(null);
+      const [rowSubmenu, setRowSubmenu] = useState('');
+      const [moveQuery, setMoveQuery] = useState('');
       // Close the row menu on any outside interaction, so it can never linger
       // over stale state.
       useEffect(() => {
@@ -5366,35 +5387,83 @@ window.__ModuleLoader__.load({
           dl ? h('span', { className: 'wp-row-time ' + dl.cls }, dl.text) : null);
       };
 
-      // Right-click menu for a task row. Every entry routes through the same
-      // operation the detail panel uses, so behaviour cannot diverge.
+      // Right-click menu for a task row. Anchored at the pointer, opened to the
+      // RIGHT of it by default and flipped only when the viewport would clip it.
       const rowMenuTask = rowMenu ? tasks.find((t) => t.id === rowMenu.taskId) : null;
-      const closeRowMenu = () => setRowMenu(null);
+      const closeRowMenu = () => { setRowMenu(null); setRowSubmenu(''); setMoveQuery(''); };
+      const MENU_W = 224;
+      // Prefer the pointer's right side; flip left only when that would clip. A
+      // missing viewport metric (non-browser host) must not force a left flip.
+      const viewportW = Number(window.innerWidth) > 0 ? Number(window.innerWidth) : Infinity;
+      const viewportH = Number(window.innerHeight) > 0 ? Number(window.innerHeight) : Infinity;
+      const menuLeft = rowMenu
+        ? (rowMenu.x + MENU_W + 8 <= viewportW ? rowMenu.x + 4 : Math.max(8, rowMenu.x - MENU_W - 4))
+        : 0;
+      const menuTop = rowMenu
+        ? Math.max(8, Math.min(rowMenu.y + 4, viewportH - 340))
+        : 0;
       const rowMenuNode = rowMenuTask ? h('div', {
         className: 'wp-row-menu', role: 'menu',
-        style: { left: Math.max(8, Math.min(rowMenu.x, 0)) + 'px', top: Math.max(8, rowMenu.y) + 'px' },
+        style: { left: menuLeft + 'px', top: menuTop + 'px' },
         onClick: (e) => e.stopPropagation(),
         onContextMenu: (e) => { if (e && e.preventDefault) e.preventDefault(); },
       },
-        h('div', { className: 'wp-row-menu-title' }, rowMenuTask.title),
-        h('div', { className: 'wp-row-menu-section' }, '优先级'),
+        h('div', { className: 'wp-row-menu-title', title: rowMenuTask.title }, rowMenuTask.title),
         h('div', { className: 'wp-row-menu-row' }, URGENCY_ORDER.map((level) => h('button', {
-          className: 'wp-row-menu-chip' + ((rowMenuTask.urgency || 'medium') === level ? ' wp-active' : ''),
-          type: 'button', role: 'menuitemradio', 'aria-checked': (rowMenuTask.urgency || 'medium') === level ? 'true' : 'false',
-          key: level,
+          className: 'wp-row-menu-flag wp-flag-' + level + ((rowMenuTask.urgency || 'medium') === level ? ' wp-active' : ''),
+          type: 'button', key: level,
+          'aria-pressed': (rowMenuTask.urgency || 'medium') === level ? 'true' : 'false',
+          title: URGENCY[level] || level,
           onClick: () => { updateTask(rowMenuTask.id, { urgency: level }); closeRowMenu(); },
-        }, URGENCY[level] || level))),
+        }, h(FlagIcon), h('span', null, URGENCY[level] || level)))),
         h('div', { className: 'wp-row-menu-sep' }),
-        h('div', { className: 'wp-row-menu-section' }, '移动到项目'),
-        h('div', { className: 'wp-row-menu-list' },
-          h('button', { className: 'wp-row-menu-item' + (!rowMenuTask.projectId ? ' wp-active' : ''), type: 'button', role: 'menuitem',
-            onClick: () => { updateTask(rowMenuTask.id, { projectId: '' }); closeRowMenu(); } }, '未分组'),
-          sortedProjects.length === 0 ? h('div', { className: 'wp-row-menu-empty' }, '还没有项目') : null,
-          sortedProjects.map((project) => h('button', {
-            className: 'wp-row-menu-item' + (rowMenuTask.projectId === project.id ? ' wp-active' : ''),
-            type: 'button', role: 'menuitem', key: project.id,
-            onClick: () => { updateTask(rowMenuTask.id, { projectId: project.id }); closeRowMenu(); },
-          }, project.name + (project.status === 'archived' ? '（已归档）' : '')))),
+        h('button', {
+          className: 'wp-row-menu-item wp-row-menu-parent' + (rowSubmenu === 'move' ? ' wp-open' : ''),
+          type: 'button', role: 'menuitem', 'aria-haspopup': 'true', 'aria-expanded': rowSubmenu === 'move' ? 'true' : 'false',
+          onClick: () => { setRowSubmenu(rowSubmenu === 'move' ? '' : 'move'); setMoveQuery(''); },
+        },
+          h('span', null, '移动到'),
+          h('span', { className: 'wp-row-menu-chevron' }, '›')),
+        rowSubmenu === 'move' ? h('div', { className: 'wp-row-submenu', role: 'menu' },
+          // Filter first: with many projects a long flat list is unusable.
+          sortedProjects.length > 6 ? h('input', {
+            className: 'wp-row-submenu-search', type: 'search', value: moveQuery,
+            placeholder: '搜索项目…', autoFocus: true,
+            onClick: (e) => e.stopPropagation(),
+            onChange: (e) => setMoveQuery(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Escape') { e.stopPropagation(); setRowSubmenu(''); } },
+          }) : null,
+          (() => {
+            const q = moveQuery.trim().toLowerCase();
+            const matches = sortedProjects.filter((p) => !q || String(p.name).toLowerCase().includes(q));
+            // The current project is pinned first and checked, so the menu always
+            // answers "where is this task now".
+            const current = matches.find((p) => p.id === rowMenuTask.projectId) || null;
+            const rest = matches.filter((p) => !current || p.id !== current.id);
+            const entry = (project) => h('button', {
+              className: 'wp-row-submenu-item' + (project.id === rowMenuTask.projectId ? ' wp-active' : ''),
+              type: 'button', role: 'menuitemradio', key: project.id,
+              'aria-checked': project.id === rowMenuTask.projectId ? 'true' : 'false',
+              onClick: () => { updateTask(rowMenuTask.id, { projectId: project.id }); closeRowMenu(); },
+            },
+              h('span', { className: 'wp-row-submenu-name' }, project.name + (project.status === 'archived' ? '（已归档）' : '')),
+              project.id === rowMenuTask.projectId ? h('span', { className: 'wp-row-submenu-check' }, '✓') : null);
+            const groups = [];
+            if (!q || '未分组'.includes(moveQuery.trim())) {
+              groups.push(h('button', {
+                className: 'wp-row-submenu-item' + (!rowMenuTask.projectId ? ' wp-active' : ''),
+                type: 'button', role: 'menuitemradio', key: '__none__',
+                'aria-checked': !rowMenuTask.projectId ? 'true' : 'false',
+                onClick: () => { updateTask(rowMenuTask.id, { projectId: '' }); closeRowMenu(); },
+              },
+                h('span', { className: 'wp-row-submenu-name' }, '未分组'),
+                !rowMenuTask.projectId ? h('span', { className: 'wp-row-submenu-check' }, '✓') : null));
+            }
+            if (current) groups.push(entry(current));
+            groups.push(...rest.map(entry));
+            if (!current && !groups.length) return h('div', { className: 'wp-row-menu-empty' }, '没有匹配的项目');
+            return groups;
+          })()) : null,
         h('div', { className: 'wp-row-menu-sep' }),
         h('button', {
           className: 'wp-row-menu-item', type: 'button', role: 'menuitem',
