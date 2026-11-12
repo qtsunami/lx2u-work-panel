@@ -154,6 +154,7 @@ function harness(state = fixture(), storage = seedStorage(state), options = {}) 
   if (!storage.workspaceServer) storage.workspaceServer = { initialized: true, revision: 1, storeId: 'vm-store', workspace: plain(state), updatedAt: NOW, history: new Map(), calls: [], offline: false };
   const server = storage.workspaceServer;
   const harnessOptions = options;
+  if (options.workspaceGetFailure) server.getHook = () => Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: false, error: 'workspace-load-failed', retryable: true }) });
   const response = data => Promise.resolve({ ok: true, status: 200, json: async () => plain(data) });
   const workspaceFetch = (options = {}) => {
     const body = options.method === 'POST' ? JSON.parse(options.body) : null;
@@ -670,7 +671,7 @@ test('Alt+Enter directly adds exactly once without AI calls or losing edits to a
   const ui = harness(); await ui.settle();
   try {
     const before = ui.storage.json(KEY.tasks).length;
-    ui.change('wp-quick-input', 'older AI interpretation'); ui.fire(ui.byClass('wp-quick-input'), 'onKeyDown', { key: 'Enter' });
+    ui.change('wp-quick-input', 'older AI interpretation'); ui.click('AI 记录');
     const request = ui.nextRequest('chat'); assert.equal(ui.storage.json(KEY.tasks).length, before);
     ui.change('wp-quick-input', 'direct manual new task'); ui.fire(ui.byClass('wp-quick-input'), 'onKeyDown', { key: 'Enter', altKey: true });
     assert.equal(ui.requests.filter(request => request.body.mode === 'chat').length, 1, 'Alt+Enter must not issue another AI request');

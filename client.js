@@ -22,12 +22,13 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.4.0';
+    const PANEL_VERSION = '1.4.1';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
     const CONTEXT_ENDPOINT = '/api/work-panel/context';
     const WORKSPACE_META_KEY = '@local/work-panel:host-meta:v1';
+    const WORKSPACE_LOCAL_ONLY_KEY = '@local/work-panel:local-only:v1';
     const WORKSPACE_PENDING_KEY = '@local/work-panel:host-pending:v1';
     const WORKSPACE_EXTRAS_KEY = '@local/work-panel:workspace-extras:v1';
     const HOST_MIGRATION_BACKUP_KEY = '@local/work-panel:backup:before-host:v1';
@@ -49,6 +50,7 @@ window.__ModuleLoader__.load({
         this.running = null;
         this.timer = null;
         this.changeVersion = 0;
+        this.localOnly = false;
         this.status = { phase: 'loading', message: '正在连接工作数据主存。', revision: null, canEdit: false };
       }
 
@@ -63,6 +65,7 @@ window.__ModuleLoader__.load({
       changed() {
         if (this.disposed) return this.getStatus();
         this.changeVersion += 1;
+        if (this.localOnly) { this._set('local', '仅本页保存：主存读取失败，本页仍可添加和完成任务；尚未同步到主存，请导出独立备份。'); return this.getStatus(); }
         if (!this.loaded || !this.meta || !this._known()) {
           this._fail('尚未确认主存版本，不能自动提交本页修改。');
           return this.getStatus();
@@ -83,14 +86,14 @@ window.__ModuleLoader__.load({
         this._cancelTimer();
         if (!this.started) return this.start();
         if (this.running) return this.running;
-        if (this.disposed || ['offline', 'error', 'conflict', 'loading'].includes(this.status.phase)) return Promise.resolve(this.getStatus());
+        if (this.disposed || ['offline', 'error', 'conflict', 'loading', 'local'].includes(this.status.phase)) return Promise.resolve(this.getStatus());
         return this._run(() => this._drain());
       }
 
       retry() {
         this._cancelTimer();
         if (this.running) return this.running;
-        if (this.disposed || this.status.phase === 'conflict') return Promise.resolve(this.getStatus());
+        if (this.disposed || this.localOnly || this.status.phase === 'conflict') return Promise.resolve(this.getStatus());
         if (!this.started) return this.start();
         return this._run(() => this._connect(false));
       }
@@ -118,13 +121,33 @@ window.__ModuleLoader__.load({
         const known = this._known();
         this.status = {
           phase, message, revision: this.meta ? this.meta.revision : null,
-          canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known),
+          canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known)
+            || (phase === 'local' && this.localOnly),
         };
         this.d.onStatus(this.getStatus());
       }
 
       _fail(message) { this._cancelTimer(); this._set('error', message); return false; }
       _conflict(message) { this._cancelTimer(); this._set('conflict', message); return false; }
+
+      // A failed first Host handshake must not disable ordinary local work. Record
+      // this mode durably BEFORE enabling edits, then never auto-hydrate over it.
+      _enterLocalOnly() {
+        if (this._known() || this.pending || !this.loaded || !this.d.writeLocalOnly || !this.d.readLocalOnly) return false;
+        if (this.localOnly) { this._set('local', '仅本页保存：主存不可用，修改未同步；请导出独立备份。'); return true; }
+        let local;
+        try { local = this._local();
+          if (this.d.validateLocal && this.d.validateLocal(local) !== true) return false;
+        } catch { return false; }
+        if (!this._backup(local)) return false;
+        try {
+          if (this.d.writeLocalOnly({ version: 1, startedAt: new Date().toISOString() }) !== true) return false;
+        } catch { return false; }
+        this.localOnly = true;
+        this._set('local', '仅本页保存：主存读取失败，任务可以继续编辑，但尚未同步；请导出独立备份。');
+        return true;
+      }
+
       _known() { return !!this.meta && Number.isSafeInteger(this.meta.revision) && this.meta.revision >= 1 && typeof this.meta.storeId === 'string' && !!this.meta.storeId; }
 
       _run(work) {
@@ -163,6 +186,9 @@ window.__ModuleLoader__.load({
         if (this.loaded) return;
         const meta = this.d.readMeta();
         const pending = this.d.readPending();
+        const localMarker = this.d.readLocalOnly ? this.d.readLocalOnly() : null;
+        if (localMarker !== null && (!localMarker || localMarker.version !== 1 || typeof localMarker.startedAt !== 'string')) throw new Error('本地独立模式标记损坏，已停止自动操作');
+        if (localMarker && (meta || pending)) throw new Error('本地独立模式与主存同步元数据冲突，已停止自动操作');
         if (meta !== null && (!meta || typeof meta !== 'object' || !Number.isSafeInteger(meta.revision) || meta.revision < 0
           || typeof meta.dirty !== 'boolean' || (meta.revision >= 1 ? typeof meta.storeId !== 'string' || !meta.storeId : meta.storeId !== null)
           || (meta.lastSyncedDigest !== undefined && meta.lastSyncedDigest !== null && typeof meta.lastSyncedDigest !== 'string'))) throw new Error('同步元数据损坏，已停止自动操作');
@@ -172,7 +198,9 @@ window.__ModuleLoader__.load({
           || (pending.action === 'initialize' ? pending.baseRevision !== 0 || pending.storeId !== null : pending.baseRevision < 1 || typeof pending.storeId !== 'string' || !pending.storeId))) throw new Error('待提交事务损坏，已停止自动操作');
         this.meta = meta ? JSON.parse(JSON.stringify(meta)) : null;
         this.pending = pending ? { ...pending, workspace: this._clone(pending.workspace) } : null;
-        this._local(); // A read failure is not a fresh/empty workspace.
+        const local = this._local(); // A read failure is not a fresh/empty workspace.
+        if (localMarker && this.d.validateLocal && this.d.validateLocal(local) !== true) throw new Error('本地独立模式缓存无法验证，已停止编辑');
+        this.localOnly = !!localMarker;
         this.loaded = true;
       }
 
@@ -202,7 +230,7 @@ window.__ModuleLoader__.load({
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
           });
         } catch {
-          if (!this.disposed) this._set('offline', this._known() ? '主存暂时离线，可继续本页编辑；请联网后重试同步。' : '无法连接主存，尚未确认版本；本页数据已保留，暂不能编辑。');
+          if (!this.disposed && !(method === 'GET' && this._enterLocalOnly())) this._set('offline', this._known() ? '主存暂时离线，可继续本页编辑；请联网后重试同步。' : '无法连接主存，尚未确认版本；本页数据已保留，暂不能编辑。');
           return null;
         }
         if (this.disposed) return null;
@@ -214,6 +242,8 @@ window.__ModuleLoader__.load({
         if (!response.ok || !data.ok) {
           const error = String(data.error || 'host-error');
           if (/conflict|uninitialized/.test(error)) this._conflict('主存版本或身份已变化，已保留本页数据；请先导出再明确重新加载。');
+          else if (method === 'GET' && data.retryable && this._enterLocalOnly()) { /* Local-only mode remains explicitly unsynced. */ }
+          else if (method === 'GET' && data.retryable && this._known()) this._set('offline', '主存读取失败（' + error + '），本页可继续编辑，但未同步；请重试或导出备份。');
           else this._fail('主存未确认保存（' + error + '），待提交事务仍保留，请重试或导出备份。');
           return null;
         }
@@ -229,6 +259,10 @@ window.__ModuleLoader__.load({
 
       async _connect(explicitReload) {
         this._readState();
+        if (this.localOnly && !explicitReload) {
+          this._set('local', '仅本页保存：主存未同步。本机编辑可用；修复主存后先导出，再明确选择加载主存。');
+          return;
+        }
         // Retrying must first make all in-memory metadata durable, including a
         // failed initial/ack write whose dirty flag can legitimately be false.
         if (this.meta && !this._persistMeta()) return;
@@ -310,6 +344,11 @@ window.__ModuleLoader__.load({
         this.meta = { revision: server.revision, storeId: server.storeId, dirty: false, lastSyncedDigest: this._digest(server.workspace) };
         if (!this._persistMeta()) return;
         if (clearPending && !this._persistPending(null)) return;
+        if (this.localOnly) {
+          try { if (this.d.writeLocalOnly(null) !== true) { this._fail('主存已加载，但本地独立模式标记未清除；请先导出再重试。'); return; } }
+          catch { this._fail('主存已加载，但本地独立模式标记未清除；请先导出再重试。'); return; }
+          this.localOnly = false;
+        }
         this._set('ready', message);
       }
 
@@ -2927,6 +2966,7 @@ window.__ModuleLoader__.load({
       const [delegation, setDelegation] = useState(null);
       const [quickDeadlineTouched, setQuickDeadlineTouched] = useState(false);
       const [restoreMigrationConfirm, setRestoreMigrationConfirm] = useState(false);
+      const [reloadHostConfirm, setReloadHostConfirm] = useState(false);
       const hostSyncRef = useRef(null);
       const suppressSyncRef = useRef(false);
       const extrasRef = useRef(null);
@@ -3097,6 +3137,12 @@ window.__ModuleLoader__.load({
             const key = window.localStorage.getItem(HOST_MIGRATION_BACKUP_KEY) === null
               ? HOST_MIGRATION_BACKUP_KEY : PRE_IMPORT_KEY;
             return writeBackupSlot(key, { at: new Date().toISOString(), backup: buildBackup(local) });
+          },
+          validateLocal: (state) => !validateBackup(buildBackup(state), 'hydrate'),
+          readLocalOnly: () => readSyncSlot(WORKSPACE_LOCAL_ONLY_KEY),
+          writeLocalOnly: (value) => {
+            if (value !== null) return writeBackupSlot(WORKSPACE_LOCAL_ONLY_KEY, value);
+            try { window.localStorage.removeItem(WORKSPACE_LOCAL_ONLY_KEY); return true; } catch { return false; }
           },
           readMeta: () => readSyncSlot(WORKSPACE_META_KEY),
           writeMeta: (value) => writeBackupSlot(WORKSPACE_META_KEY, value),
@@ -4428,11 +4474,11 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-quick-box', ref: calRef },
           h('input', {
             ref: quickInputRef, className: 'wp-quick-input', type: 'text', value: quickText,
-            placeholder: '告诉 AI：记任务、记进展、关联成果…',
-            title: 'Enter：AI 整理；Alt+Enter：直接新建待办',
+            placeholder: '输入待办，按 Enter 直接添加；也可选择 AI 整理…',
+            title: 'Enter 或 Alt+Enter：直接添加待办；AI 记录按钮：整理工作记录',
             onChange: (e) => setQuickText(e.target.value),
             onKeyDown: (e) => { if (e.key === 'Enter' && !e.isComposing) {
-              e.preventDefault(); if (e.altKey) addQuick(); else captureQuick();
+              e.preventDefault(); addQuick();
             } },
           }),
           h('button', {
@@ -4440,6 +4486,8 @@ window.__ModuleLoader__.load({
             type: 'button', title: '选择日期 / 时间', 'aria-label': '选择日期 / 时间',
             onClick: () => setCalOpen((v) => !v),
           }, h(CalDayIcon, { day: Number(quickDeadline.date.slice(8, 10)) }), quickLabel ? h('span', { className: 'wp-quick-cal-label' }, quickLabel) : null),
+          h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+            disabled: !quickText.trim(), onClick: addQuick, 'aria-label': '直接添加任务' }, '添加任务'),
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
             disabled: !quickText.trim() || sending || !!pendingActions, onClick: captureQuick,
             title: '使用当前任务或项目上下文整理记录', 'aria-label': 'AI 记录' }, h(SparkIcon, { size: 14 }), 'AI 记录'),
@@ -5400,12 +5448,17 @@ window.__ModuleLoader__.load({
         h('style', null, CSS),
         hostSyncStatus.phase !== 'ready' ? h('div', { className: 'wp-host-sync', role: 'status' },
           h('span', null, hostSyncStatus.message),
-          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.retry() }, '重试同步'),
+          hostSyncStatus.phase !== 'local' ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.retry() }, '重试同步') : null,
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportBackup }, '导出本页备份'),
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setActiveView('data') }, '数据恢复'),
-          hostSyncStatus.phase === 'conflict' || hostSyncStatus.phase === 'error'
-            ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.reload(),
-                title: '成功保存本页安全副本后，再加载主存；不会自动合并冲突。' }, '备份后加载主存') : null) : null,
+          ['conflict', 'error', 'local'].includes(hostSyncStatus.phase)
+            ? reloadHostConfirm ? h('span', null,
+              '将本页数据留安全副本后，以主存内容替换当前页面；未同步修改不会自动合并。',
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => {
+                setReloadHostConfirm(false); if (hostSyncRef.current) hostSyncRef.current.reload();
+              } }, '确认备份并加载主存'),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setReloadHostConfirm(false) }, '取消'))
+              : h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setReloadHostConfirm(true) }, '备份后加载主存') : null) : null,
         h('div', { className: 'wp-workbench' },
           sidenav,
           h('fieldset', { className: 'wp-sync-guard', disabled: !hostSyncStatus.canEdit && !(isDataView && hostSyncStatus.phase !== 'loading') },

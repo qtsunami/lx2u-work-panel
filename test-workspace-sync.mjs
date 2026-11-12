@@ -6,7 +6,7 @@ const clone = value => value == null ? value : JSON.parse(JSON.stringify(value))
 const ws = label => ({ tasks: [{ id: label, title: label }], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {} });
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 function rig(options = {}) {
-  const state = { local: ws('local'), meta: null, pending: null, remote: options.meta && !options.meta.dirty ? ws('local') : ws('remote'), revision: 3, initialized: true, storeId: 'store-A', statuses: [], backups: [], calls: [], timers: new Map(), failures: {}, getHook: null, postHook: null, ...clone(options) };
+  const state = { local: ws('local'), meta: null, pending: null, localOnly: null, remote: options.meta && !options.meta.dirty ? ws('local') : ws('remote'), revision: 3, initialized: true, storeId: 'store-A', statuses: [], backups: [], calls: [], timers: new Map(), failures: {}, getHook: null, postHook: null, ...clone(options) };
   let seq = 0, id = 0;
   const fault = name => { if (state.failures[name]) { if (Number.isFinite(state.failures[name])) state.failures[name]--; return true; } return false; };
   const history = new Map();
@@ -14,6 +14,9 @@ function rig(options = {}) {
     readLocal: () => { if (fault('readLocal')) throw new Error('readLocal failure'); return clone(state.local); },
     writeRemote: value => { if (fault('writeRemote')) return false; state.local = clone(value); return true; },
     backup: value => { if (fault('backup')) return false; state.backups.push(clone(value)); return true; },
+    validateLocal: value => !!value && Array.isArray(value.tasks),
+    readLocalOnly: () => clone(state.localOnly),
+    writeLocalOnly: value => { if (fault('writeLocalOnly')) return false; state.localOnly = clone(value); return true; },
     readMeta: () => { if (fault('readMeta')) throw new Error('bad metadata'); return clone(state.meta); },
     writeMeta: value => { if (fault('writeMeta')) return false; state.meta = clone(value); return true; },
     readPending: () => { if (fault('readPending')) throw new Error('bad pending'); return clone(state.pending); },
@@ -104,8 +107,28 @@ test('uncertain POST network failure retries the exact requestId on explicit ret
   await r.sync.flush(); const pending = clone(r.state.pending); assert.equal(r.status().phase, 'offline'); assert.equal(r.status().canEdit, true);
   await r.sync.retry(); assert.equal(r.posts()[1].requestId, pending.requestId); assert.equal(r.state.pending, null); assert.equal(r.status().phase, 'ready');
 });
-test('first handshake offline never permits editing or assumes empty canonical data', async () => {
-  const r = rig({ failures: { networkGET: 1 } }); await r.sync.start(); assert.equal(r.status().phase, 'offline'); assert.equal(r.status().canEdit, false); assert.equal(r.posts().length, 0); assert.equal(r.state.backups.length, 0); assert.deepEqual(r.state.local, ws('local'));
+test('first handshake failure retains a backup, then enables clearly unsynced local-only editing', async () => {
+  const r = rig({ failures: { networkGET: 1 } }); await r.sync.start(); assert.equal(r.status().phase, 'local'); assert.equal(r.status().canEdit, true); assert.equal(r.posts().length, 0); assert.equal(r.state.backups.length, 1); assert.deepEqual(r.state.local, ws('local'));
+  r.edit('new local task'); await r.sync.flush(); assert.equal(r.posts().length, 0);
+  r.remount(); await r.sync.start(); assert.equal(r.status().phase, 'local'); assert.deepEqual(r.state.local, ws('new local task')); assert.equal(r.posts().length, 0);
+  await r.sync.retry(); assert.equal(r.posts().length, 0);
+  await r.sync.reload(); assert.equal(r.status().phase, 'ready'); assert.equal(r.state.localOnly, null); assert.deepEqual(r.state.local, ws('remote')); assert.deepEqual(r.state.backups.at(-1), ws('new local task'));
+});
+test('corrupt local-only marker blocks both editing and migration without overwriting browser data', async () => {
+  const r = rig({ localOnly: { version: 99, startedAt: 'unknown' } }); await r.sync.start();
+  assert.equal(r.status().phase, 'error'); assert.equal(r.status().canEdit, false); assert.equal(r.state.calls.length, 0);
+  assert.deepEqual(r.state.local, ws('local'));
+});
+test('first handshake failure with no durable local-mode marker remains read-only', async () => {
+  const r = rig({ failures: { networkGET: 1, writeLocalOnly: 1 } }); await r.sync.start();
+  assert.equal(r.status().canEdit, false); assert.equal(r.state.localOnly, null); assert.equal(r.posts().length, 0);
+});
+test('known cache with retryable Host storage-load error stays editable and queues changes', async () => {
+  const r = rig({ meta: known() });
+  r.state.getHook = () => r.response({ ok: false, error: 'workspace-load-failed', retryable: true });
+  await r.sync.start(); assert.equal(r.status().phase, 'offline'); assert.equal(r.status().canEdit, true);
+  r.edit('saved despite backend error'); assert.equal(r.state.meta.dirty, true); assert.equal(r.posts().length, 0);
+  r.state.getHook = null; await r.sync.retry(); assert.deepEqual(r.state.remote, ws('saved despite backend error')); assert.equal(r.status().phase, 'ready');
 });
 test('known offline workspace remains editable and queues dirty without automatic network retries', async () => {
   const r = rig({ meta: known(), failures: { networkGET: 1 } }); await r.sync.start(); assert.equal(r.status().canEdit, true); r.edit('offline newer'); assert.equal(r.state.meta.dirty, true); assert.equal(r.state.timers.size, 0);

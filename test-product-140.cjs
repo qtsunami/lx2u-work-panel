@@ -25,7 +25,7 @@ test('AI quick capture prioritizes selected task beyond the first fifty and reta
   try {
     select(ui, 54);
     const raw = '今天修复了登录问题，测试通过';
-    ui.change('wp-quick-input', raw); ui.fire(ui.byClass('wp-quick-input'), 'onKeyDown', { key: 'Enter' });
+    ui.change('wp-quick-input', raw); ui.click('AI 记录');
     const request = ui.nextRequest('chat');
     assert.equal(request.body.context.taskId, 't-54');
     assert.equal(request.body.tasks[0].id, 't-54'); assert.equal(request.body.tasks.length, 50);
@@ -209,6 +209,51 @@ test('overlong AI quick input stays editable and is not silently sent or cleared
     assert.equal(ui.requests.length, 0); assert.equal(ui.byClass('wp-quick-input').props.value, raw);
     assert.ok(ui.text().includes('当前输入已保留'));
   } finally { ui.close(); }
+});
+
+test('Host storage load failure allows ordinary local add and completion without claiming sync', async () => {
+  const ui = harness(state(), undefined, { workspaceGetFailure: true }); await ui.settle();
+  try {
+    assert.equal(ui.byClass('wp-sync-guard').props.disabled, false);
+    assert.ok(ui.text().includes('仅本页保存'));
+    ui.change('wp-quick-input', '新的待办事项'); ui.click('添加任务');
+    assert.equal(ui.storage.json(TASK_KEY).length, 2);
+    assert.equal(ui.server.workspace.tasks.length, 1, 'Host must never be silently overwritten');
+    const checkbox = ui.nodes().find(node => has(node, 'wp-row-check') && node.props.title === '标记为已完成');
+    assert.ok(checkbox, 'unfinished checkbox must be available'); ui.fire(checkbox, 'onClick');
+    assert.ok(ui.storage.json(TASK_KEY).some(task => task.status === 'done'));
+    assert.equal(ui.server.workspace.tasks.filter(task => task.status === 'done').length, 0);
+    assert.ok(ui.storage.json('@local/work-panel:local-only:v1'));
+    assert.equal(ui.server.calls.filter(call => call.method === 'POST').length, 0);
+  } finally { ui.close(); }
+});
+
+test('restart cannot silently hydrate over tasks edited during Host load failure', async () => {
+  const ui = harness(state(), undefined, { workspaceGetFailure: true }); await ui.settle(); let next;
+  try {
+    ui.change('wp-quick-input', '只存在本页的任务'); ui.fire(ui.byClass('wp-quick-input'), 'onKeyDown', { key: 'Enter' });
+    assert.equal(ui.storage.json(TASK_KEY).length, 2); ui.close();
+    ui.server.getHook = null;
+    next = harness(state(), ui.storage); await next.settle();
+    assert.equal(next.storage.json(TASK_KEY).length, 2);
+    assert.equal(next.server.workspace.tasks.length, 1);
+    assert.equal(next.byClass('wp-sync-guard').props.disabled, false);
+    assert.ok(next.text().includes('未同步'));
+    next.click('备份后加载主存');
+    assert.equal(next.storage.json(TASK_KEY).length, 2, 'first click must only show confirmation');
+    next.click('取消'); assert.equal(next.storage.json(TASK_KEY).length, 2);
+  } finally { next?.close(); ui.close(); }
+});
+
+test('Host load failure with unpersistable local-only marker does not enable editing', async () => {
+  const ui = harness(state(), undefined, { workspaceGetFailure: true });
+  // The failure is injected for a second mount below; do not touch real storage.
+  await ui.settle(); const storage = ui.storage; ui.close();
+  storage.removeItem('@local/work-panel:local-only:v1');
+  storage.fail('set', '@local/work-panel:local-only:v1', 2);
+  const next = harness(state(), storage, { workspaceGetFailure: true }); await next.settle();
+  try { assert.equal(next.byClass('wp-sync-guard').props.disabled, true); assert.equal(next.server.calls.filter(call => call.method === 'POST').length, 0); }
+  finally { next.close(); }
 });
 
 (async () => {

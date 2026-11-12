@@ -11,6 +11,7 @@ export class WorkspaceSync {
     this.running = null;
     this.timer = null;
     this.changeVersion = 0;
+    this.localOnly = false;
     this.status = { phase: 'loading', message: '正在连接工作数据主存。', revision: null, canEdit: false };
   }
 
@@ -25,6 +26,7 @@ export class WorkspaceSync {
   changed() {
     if (this.disposed) return this.getStatus();
     this.changeVersion += 1;
+    if (this.localOnly) { this._set('local', '仅本页保存：主存读取失败，本页仍可添加和完成任务；尚未同步到主存，请导出独立备份。'); return this.getStatus(); }
     if (!this.loaded || !this.meta || !this._known()) {
       this._fail('尚未确认主存版本，不能自动提交本页修改。');
       return this.getStatus();
@@ -45,14 +47,14 @@ export class WorkspaceSync {
     this._cancelTimer();
     if (!this.started) return this.start();
     if (this.running) return this.running;
-    if (this.disposed || ['offline', 'error', 'conflict', 'loading'].includes(this.status.phase)) return Promise.resolve(this.getStatus());
+    if (this.disposed || ['offline', 'error', 'conflict', 'loading', 'local'].includes(this.status.phase)) return Promise.resolve(this.getStatus());
     return this._run(() => this._drain());
   }
 
   retry() {
     this._cancelTimer();
     if (this.running) return this.running;
-    if (this.disposed || this.status.phase === 'conflict') return Promise.resolve(this.getStatus());
+    if (this.disposed || this.localOnly || this.status.phase === 'conflict') return Promise.resolve(this.getStatus());
     if (!this.started) return this.start();
     return this._run(() => this._connect(false));
   }
@@ -80,13 +82,33 @@ export class WorkspaceSync {
     const known = this._known();
     this.status = {
       phase, message, revision: this.meta ? this.meta.revision : null,
-      canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known),
+      canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known)
+        || (phase === 'local' && this.localOnly),
     };
     this.d.onStatus(this.getStatus());
   }
 
   _fail(message) { this._cancelTimer(); this._set('error', message); return false; }
   _conflict(message) { this._cancelTimer(); this._set('conflict', message); return false; }
+
+  // A failed first Host handshake must not disable ordinary local work. Record
+  // this mode durably BEFORE enabling edits, then never auto-hydrate over it.
+  _enterLocalOnly() {
+    if (this._known() || this.pending || !this.loaded || !this.d.writeLocalOnly || !this.d.readLocalOnly) return false;
+    if (this.localOnly) { this._set('local', '仅本页保存：主存不可用，修改未同步；请导出独立备份。'); return true; }
+    let local;
+    try { local = this._local();
+      if (this.d.validateLocal && this.d.validateLocal(local) !== true) return false;
+    } catch { return false; }
+    if (!this._backup(local)) return false;
+    try {
+      if (this.d.writeLocalOnly({ version: 1, startedAt: new Date().toISOString() }) !== true) return false;
+    } catch { return false; }
+    this.localOnly = true;
+    this._set('local', '仅本页保存：主存读取失败，任务可以继续编辑，但尚未同步；请导出独立备份。');
+    return true;
+  }
+
   _known() { return !!this.meta && Number.isSafeInteger(this.meta.revision) && this.meta.revision >= 1 && typeof this.meta.storeId === 'string' && !!this.meta.storeId; }
 
   _run(work) {
@@ -125,6 +147,9 @@ export class WorkspaceSync {
     if (this.loaded) return;
     const meta = this.d.readMeta();
     const pending = this.d.readPending();
+    const localMarker = this.d.readLocalOnly ? this.d.readLocalOnly() : null;
+    if (localMarker !== null && (!localMarker || localMarker.version !== 1 || typeof localMarker.startedAt !== 'string')) throw new Error('本地独立模式标记损坏，已停止自动操作');
+    if (localMarker && (meta || pending)) throw new Error('本地独立模式与主存同步元数据冲突，已停止自动操作');
     if (meta !== null && (!meta || typeof meta !== 'object' || !Number.isSafeInteger(meta.revision) || meta.revision < 0
       || typeof meta.dirty !== 'boolean' || (meta.revision >= 1 ? typeof meta.storeId !== 'string' || !meta.storeId : meta.storeId !== null)
       || (meta.lastSyncedDigest !== undefined && meta.lastSyncedDigest !== null && typeof meta.lastSyncedDigest !== 'string'))) throw new Error('同步元数据损坏，已停止自动操作');
@@ -134,7 +159,9 @@ export class WorkspaceSync {
       || (pending.action === 'initialize' ? pending.baseRevision !== 0 || pending.storeId !== null : pending.baseRevision < 1 || typeof pending.storeId !== 'string' || !pending.storeId))) throw new Error('待提交事务损坏，已停止自动操作');
     this.meta = meta ? JSON.parse(JSON.stringify(meta)) : null;
     this.pending = pending ? { ...pending, workspace: this._clone(pending.workspace) } : null;
-    this._local(); // A read failure is not a fresh/empty workspace.
+    const local = this._local(); // A read failure is not a fresh/empty workspace.
+    if (localMarker && this.d.validateLocal && this.d.validateLocal(local) !== true) throw new Error('本地独立模式缓存无法验证，已停止编辑');
+    this.localOnly = !!localMarker;
     this.loaded = true;
   }
 
@@ -164,7 +191,7 @@ export class WorkspaceSync {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
       });
     } catch {
-      if (!this.disposed) this._set('offline', this._known() ? '主存暂时离线，可继续本页编辑；请联网后重试同步。' : '无法连接主存，尚未确认版本；本页数据已保留，暂不能编辑。');
+      if (!this.disposed && !(method === 'GET' && this._enterLocalOnly())) this._set('offline', this._known() ? '主存暂时离线，可继续本页编辑；请联网后重试同步。' : '无法连接主存，尚未确认版本；本页数据已保留，暂不能编辑。');
       return null;
     }
     if (this.disposed) return null;
@@ -176,6 +203,8 @@ export class WorkspaceSync {
     if (!response.ok || !data.ok) {
       const error = String(data.error || 'host-error');
       if (/conflict|uninitialized/.test(error)) this._conflict('主存版本或身份已变化，已保留本页数据；请先导出再明确重新加载。');
+      else if (method === 'GET' && data.retryable && this._enterLocalOnly()) { /* Local-only mode remains explicitly unsynced. */ }
+      else if (method === 'GET' && data.retryable && this._known()) this._set('offline', '主存读取失败（' + error + '），本页可继续编辑，但未同步；请重试或导出备份。');
       else this._fail('主存未确认保存（' + error + '），待提交事务仍保留，请重试或导出备份。');
       return null;
     }
@@ -191,6 +220,10 @@ export class WorkspaceSync {
 
   async _connect(explicitReload) {
     this._readState();
+    if (this.localOnly && !explicitReload) {
+      this._set('local', '仅本页保存：主存未同步。本机编辑可用；修复主存后先导出，再明确选择加载主存。');
+      return;
+    }
     // Retrying must first make all in-memory metadata durable, including a
     // failed initial/ack write whose dirty flag can legitimately be false.
     if (this.meta && !this._persistMeta()) return;
@@ -272,6 +305,11 @@ export class WorkspaceSync {
     this.meta = { revision: server.revision, storeId: server.storeId, dirty: false, lastSyncedDigest: this._digest(server.workspace) };
     if (!this._persistMeta()) return;
     if (clearPending && !this._persistPending(null)) return;
+    if (this.localOnly) {
+      try { if (this.d.writeLocalOnly(null) !== true) { this._fail('主存已加载，但本地独立模式标记未清除；请先导出再重试。'); return; } }
+      catch { this._fail('主存已加载，但本地独立模式标记未清除；请先导出再重试。'); return; }
+      this.localOnly = false;
+    }
     this._set('ready', message);
   }
 

@@ -298,10 +298,10 @@ test('size/depth limits reject explicitly, and a transient load failure can reop
   let failLoad = true;
   mock.backend.kv.open = async (descriptor) => {
     const unit = await open(descriptor);
-    if (failLoad) { failLoad = false; unit.loadAll = async () => { throw new Error('read failed'); }; }
+    if (failLoad) { failLoad = false; unit.loadAll = async () => { const error = new Error('read failed'); error.code = 'EACCES'; throw error; }; }
     return unit;
   };
-  await assert.rejects(store.get(), { code: 'workspace-load-failed' });
+  await assert.rejects(store.get(), { code: 'workspace-load-failed', details: { retryable: true, storageCode: 'EACCES' } });
   assert.equal((await store.write(initialize())).ok, true);
   assert.equal(mock.state.opens, 2);
   await store.close();

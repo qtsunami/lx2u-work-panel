@@ -195,7 +195,10 @@ export class WorkspaceStore {
     } catch (error) {
       if (unit) { try { await unit.close(); } catch { this.blockOnCloseFailure(unit); } }
       if (error instanceof WorkspaceError) throw error;
-      throw new WorkspaceError('workspace-load-failed', '无法读取持久工作区；未覆盖原数据，请检查存储后重试。', { retryable: true });
+      const storageCode = typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(error.code) ? error.code : null;
+      throw new WorkspaceError('workspace-load-failed', '无法读取持久工作区；未覆盖原数据，请检查存储后重试。', {
+        retryable: true, ...(storageCode ? { storageCode } : {}),
+      });
     }
   }
   async save(next) {
