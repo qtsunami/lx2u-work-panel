@@ -119,6 +119,30 @@ test('corrupt local-only marker blocks both editing and migration without overwr
   assert.equal(r.status().phase, 'error'); assert.equal(r.status().canEdit, false); assert.equal(r.state.calls.length, 0);
   assert.deepEqual(r.state.local, ws('local'));
 });
+test('user-triggered resume adopts local data into an empty Host and clears the marker', async () => {
+  const r = rig({ initialized: false, revision: 0, storeId: null, failures: { networkGET: 1 } });
+  await r.sync.start();
+  assert.equal(r.status().phase, 'local'); r.state.failures = {};
+  r.edit('local task to adopt');
+  await r.sync.resume();
+  assert.equal(r.status().phase, 'ready'); assert.equal(r.state.localOnly, null);
+  assert.equal(r.posts().length, 1); assert.equal(r.posts()[0].action, 'initialize');
+  assert.deepEqual(r.state.remote.tasks.map(t => t.title), ['local task to adopt']);
+  assert.equal(r.state.backups.length, 2, 'a fresh backup precedes adoption');
+  r.edit('after adoption'); await r.sync.flush();
+  assert.equal(r.posts().at(-1).action, 'commit'); assert.equal(r.status().phase, 'ready');
+});
+test('resume refuses to overwrite a Host that already has data', async () => {
+  const r = rig({ meta: known(), failures: { networkGET: 1 } });
+  await r.sync.start();
+  assert.equal(r.status().phase, 'offline', 'a bound cache stays editable offline rather than local-only');
+  const local = rig({ failures: { networkGET: 1 } }); await local.sync.start();
+  assert.equal(local.status().phase, 'local');
+  local.state.initialized = true; local.state.revision = 4; local.state.storeId = 'someone-else';
+  await local.sync.resume();
+  assert.equal(local.status().phase, 'conflict'); assert.equal(local.posts().length, 0);
+  assert.deepEqual(local.state.local.tasks.map(t => t.id), ['local']);
+});
 test('first handshake failure with no durable local-mode marker remains read-only', async () => {
   const r = rig({ failures: { networkGET: 1, writeLocalOnly: 1 } }); await r.sync.start();
   assert.equal(r.status().canEdit, false); assert.equal(r.state.localOnly, null); assert.equal(r.posts().length, 0);

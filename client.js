@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.4.2';
+    const PANEL_VERSION = '1.4.3';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -98,6 +98,36 @@ window.__ModuleLoader__.load({
         return this._run(() => this._connect(false));
       }
 
+      // User-triggered recovery: the first handshake failed, so this page kept
+      // working locally. Once the Host answers again, adopt this page's data as
+      // canonical, but only into an empty Host. An existing store is a conflict.
+      resume() {
+        this._cancelTimer();
+        if (this.running) return this.running;
+        if (this.disposed) return Promise.resolve(this.getStatus());
+        if (!this.localOnly) return this.retry();
+        return this._run(async () => {
+          this._readState();
+          this._set('loading', '正在确认主存为空，准备把本页数据写入主存。');
+          const server = await this._request('GET');
+          if (!server || this.disposed) return;
+          if (!this._validServer(server)) { this._fail('主存缺少合法版本或身份，已停止迁移。'); return; }
+          if (server.initialized) {
+            this._conflict('主存已有数据，不能自动用本页覆盖；请先导出本页备份，再明确选择加载主存。');
+            return;
+          }
+          const local = this._local();
+          if (!this._backup(local)) return;
+          const requestId = this.d.makeId();
+          if (typeof requestId !== 'string' || !requestId) { this._fail('无法生成稳定事务编号，迁移已停止。'); return; }
+          const pending = { action: 'initialize', baseRevision: 0, requestId, workspace: local, storeId: null };
+          if (!this._persistPending(pending)) return;
+          this.meta = { revision: 0, storeId: null, dirty: false, lastSyncedDigest: null };
+          if (!this._persistMeta()) return;
+          return this._drain();
+        });
+      }
+
       // Explicit user action only: backup is mandatory before replacing this page.
       reload() {
         this._cancelTimer();
@@ -125,6 +155,14 @@ window.__ModuleLoader__.load({
             || (phase === 'local' && this.localOnly),
         };
         this.d.onStatus(this.getStatus());
+      }
+
+      _clearLocalOnly() {
+        try {
+          if (this.d.writeLocalOnly(null) !== true) throw new Error('marker');
+        } catch { this._fail('主存已接收数据，但本地独立模式标记未清除；请先导出再重试。'); return false; }
+        this.localOnly = false;
+        return true;
       }
 
       _fail(message) { this._cancelTimer(); this._set('error', message); return false; }
@@ -364,11 +402,7 @@ window.__ModuleLoader__.load({
           lastSyncedDigest: this._digest(server.workspace), lastSyncedRecords: this._records(server.workspace) };
         if (!this._persistMeta()) return;
         if (clearPending && !this._persistPending(null)) return;
-        if (this.localOnly) {
-          try { if (this.d.writeLocalOnly(null) !== true) { this._fail('主存已加载，但本地独立模式标记未清除；请先导出再重试。'); return; } }
-          catch { this._fail('主存已加载，但本地独立模式标记未清除；请先导出再重试。'); return; }
-          this.localOnly = false;
-        }
+        if (this.localOnly && !this._clearLocalOnly()) return;
         this._set('ready', message);
       }
 
@@ -406,6 +440,7 @@ window.__ModuleLoader__.load({
           };
           if (!this._persistMeta()) return;
           if (!this._persistPending(null)) return;
+          if (this.localOnly && !this._clearLocalOnly()) return;
           if (!this.meta.dirty) { this._set('ready', '工作数据已与主存同步。'); return; }
           // The newer cache becomes a new immutable transaction, based on the
           // applied revision, never a server-supplied unrelated current revision.
@@ -5479,7 +5514,10 @@ window.__ModuleLoader__.load({
         h('style', null, CSS),
         hostSyncStatus.phase !== 'ready' ? h('div', { className: 'wp-host-sync', role: 'status' },
           h('span', null, hostSyncStatus.message),
-          hostSyncStatus.phase !== 'local' ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.retry() }, '重试同步') : null,
+          hostSyncStatus.phase === 'local'
+            ? h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', title: '主存为空时把本页数据写入主存；主存已有数据会拒绝',
+                onClick: () => hostSyncRef.current && hostSyncRef.current.resume() }, '把本页数据同步到主存')
+            : h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.retry() }, '重试同步'),
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportBackup }, '导出本页备份'),
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setActiveView('data') }, '数据恢复'),
           ['conflict', 'error', 'local'].includes(hostSyncStatus.phase)
