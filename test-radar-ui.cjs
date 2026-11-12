@@ -163,6 +163,22 @@ test('typing in a task field never shows the sync banner or shifts the header', 
   } finally { ui.close(); }
 });
 
+test('quiet background sync never re-renders the panel or shows warning UI', async () => {
+  const ui = harness(state([task('a')])); await ui.settle();
+  try {
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onClick');
+    // Typing drives the real write -> changed() -> syncing path.
+    ui.fire(ui.byClass('wp-detail-title-input'), 'onChange', { target: { value: '任务 a 改' } });
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-host-sync')).length, 0, 'no banner while typing');
+    ui.timers.advance(600); await ui.settle();
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-host-sync')).length, 0, 'no banner after the debounce and sync');
+    // The quiet indicator exists as a fixed-position element, not a layout row.
+    const dots = ui.nodes().filter(n => has(n, 'wp-sync-dot'));
+    assert.equal(dots.length, 1, 'exactly one non-layout indicator');
+    assert.equal(dots[0].props['data-active'], 'false');
+  } finally { ui.close(); }
+});
+
 test('a debounced edit is not lost when the selection changes immediately', async () => {
   const ui = harness(state([task('a'), task('b')])); await ui.settle();
   try {

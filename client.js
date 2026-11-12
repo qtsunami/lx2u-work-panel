@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.2';
+    const PANEL_VERSION = '1.5.3';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -4002,8 +4002,9 @@ window.__ModuleLoader__.load({
       .wp-host-sync { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; background: var(--wp-fill-secondary); color: var(--wp-text-secondary); font-size: 12px; }
       .wp-host-sync > span { flex: 1; min-width: 160px; }
       .wp-sync-dot { position: absolute; top: 6px; right: 10px; width: 6px; height: 6px; border-radius: 50%;
-        background: var(--wp-primary); opacity: .55; pointer-events: none; animation: wp-sync-pulse 1.2s ease-in-out infinite; z-index: 5; }
-      @keyframes wp-sync-pulse { 0%, 100% { opacity: .25; } 50% { opacity: .8; } }
+        background: var(--wp-primary); opacity: 0; transition: opacity .25s ease; pointer-events: none; z-index: 5; }
+      .wp-sync-dot[data-active='true'] { opacity: .5; animation: wp-sync-pulse 1.2s ease-in-out infinite; }
+      @keyframes wp-sync-pulse { 0%, 100% { opacity: .2; } 50% { opacity: .6; } }
       .wp-root { position: relative; }
 
       /* ---- weekly report ---- */
@@ -4298,6 +4299,8 @@ window.__ModuleLoader__.load({
       const [reloadHostConfirm, setReloadHostConfirm] = useState(false);
       const hostSyncRef = useRef(null);
       const suppressSyncRef = useRef(false);
+      const syncDotRef = useRef(null);
+      const lastSyncRenderRef = useRef('');
       const extrasRef = useRef(null);
       if (!extrasRef.current) extrasRef.current = readWorkspaceExtras();
       // 1.5.0: automatic work is opt-in. Radar state (snooze/dismiss) and
@@ -4511,7 +4514,24 @@ window.__ModuleLoader__.load({
           },
           makeId: () => 'wp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2),
           schedule: (fn, delay) => setTimeout(fn, delay), cancel: (timer) => clearTimeout(timer),
-          onStatus: (status) => { if (!stopped) setHostSyncStatus(status); },
+          // Background sync is not UI state. A quiet status never re-renders the
+          // panel (that is what made the page flicker); only phases the user must
+          // know about reach React, and only when something actually changed.
+          onStatus: (status) => {
+            if (stopped) return;
+            // Guarded: a host without this element (or a DOM stub) must not break
+            // the status pipeline.
+            const dot = syncDotRef.current;
+            if (dot && typeof dot.setAttribute === 'function') {
+              try { dot.setAttribute('data-active', status.phase === 'syncing' ? 'true' : 'false'); } catch { /* cosmetic only */ }
+            }
+            if (status.quiet) return;
+            const last = lastSyncRenderRef.current;
+            const key = [status.phase, status.message, status.canEdit, status.revision].join('\u0000');
+            if (last === key) return;
+            lastSyncRenderRef.current = key;
+            setHostSyncStatus(status);
+          },
         });
         hostSyncRef.current = controller;
         const onWrite = () => { if (!stopped && !suppressSyncRef.current) controller.changed(); };
@@ -7273,9 +7293,13 @@ window.__ModuleLoader__.load({
         h('style', null, CSS),
         // Routine background sync: one absolutely-positioned dot, so typing never
         // reflows the page and the header never jumps.
-        hostSyncStatus.quiet && hostSyncStatus.phase === 'syncing'
-          ? h('span', { className: 'wp-sync-dot', role: 'status', 'aria-label': '正在同步到本机主存', title: '正在同步到本机主存' })
-          : null,
+        // Rendered once and toggled through the DOM: its activity never causes a
+        // React render, so typing cannot produce a re-render loop.
+        h('span', {
+          className: 'wp-sync-dot', role: 'status', 'aria-live': 'off',
+          'aria-label': '正在同步到本机主存', title: '正在同步到本机主存',
+          ref: syncDotRef, 'data-active': 'false',
+        }),
         hostSyncStatus.phase !== 'ready' && !hostSyncStatus.quiet ? h('div', { className: 'wp-host-sync', role: 'status' },
           h('span', null, hostSyncStatus.message),
           hostSyncStatus.phase === 'local'
