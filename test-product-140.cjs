@@ -202,6 +202,20 @@ test('pre-migration rollback is explicit, undoable and keeps canonical revisions
   } finally { ui.close(); }
 });
 
+test('data view explains every sync state and marks the current one', async () => {
+  const ui = harness(state()); await ui.settle();
+  try {
+    ui.click('数据');
+    ui.byClass('wp-sync-legend');
+    const plainText = ui.text();
+    for (const word of ['同步中', '已同步', '离线', '仅本页保存', '冲突', '异常']) assert.ok(plainText.includes(word), 'missing state ' + word);
+    assert.ok(plainText.includes('work_panel_workspace.json'), 'documents the canonical file location');
+    const current = ui.nodes().filter(node => has(node, 'wp-sync-legend-row') && has(node, 'wp-sync-legend-current'));
+    assert.equal(current.length, 1, 'exactly one state is highlighted');
+    assert.ok(current[0] && text(current[0]).startsWith('已同步'), 'ready is the highlighted state');
+  } finally { ui.close(); }
+});
+
 test('overlong AI quick input stays editable and is not silently sent or cleared', async () => {
   const ui = harness(state()); await ui.settle();
   try {

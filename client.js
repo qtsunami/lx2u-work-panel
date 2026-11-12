@@ -2731,6 +2731,11 @@ window.__ModuleLoader__.load({
       .wp-data-label { width: 72px; flex-shrink: 0; color: var(--wp-text-secondary); }
       .wp-data-value { color: var(--wp-text); }
       .wp-data-section-title { font-size: 13px; font-weight: 600; color: var(--wp-text); }
+      .wp-sync-legend { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+      .wp-sync-legend-row { display: flex; gap: 10px; padding: 6px 8px; border-radius: 6px; font-size: 12px; line-height: 1.6; }
+      .wp-sync-legend-row.wp-sync-legend-current { background: var(--wp-fill-secondary); }
+      .wp-sync-legend dt { flex: 0 0 78px; color: var(--wp-text); font-weight: 600; }
+      .wp-sync-legend dd { flex: 1; min-width: 0; margin: 0; color: var(--wp-text-secondary); }
       .wp-data-hint { margin: 0; font-size: 12px; line-height: 1.6; color: var(--wp-text-tertiary); }
       .wp-data-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .wp-data-file { display: none; }
@@ -4820,6 +4825,29 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wp-data-label' }, '数据量'),
             h('span', { className: 'wp-data-value' },
               stats.total + ' 任务 · ' + logs.length + ' 记录 · ' + artifacts.length + ' 成果 · ' + reports.length + ' 报告'))),
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '同步状态'),
+          h('p', { className: 'wp-data-hint' }, '数据先写本机缓存，再同步到 Host 主存。下面四种状态的含义与处理方式：'),
+          h('dl', { className: 'wp-sync-legend' },
+            h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'syncing' ? ' wp-sync-legend-current' : '') },
+              h('dt', null, '同步中'),
+              h('dd', null, '修改已保存到本机，正在写入主存；稍等一下即可，无需操作。')),
+            h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'ready' ? ' wp-sync-legend-current' : '') },
+              h('dt', null, '已同步'),
+              h('dd', null, '本机与主存一致。当前状态。')),
+            h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'offline' ? ' wp-sync-legend-current' : '') },
+              h('dt', null, '离线'),
+              h('dd', null, '暂时连不上主存，仍可继续编辑；改动会排队，联网后点提示条上的「重试同步」。')),
+            h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'local' ? ' wp-sync-legend-current' : '') },
+              h('dt', null, '仅本页保存'),
+              h('dd', null, '首次连接主存失败。编辑照常可用，但改动只在浏览器里，关页面会提示。主存恢复后再次打开面板会自动迁移；主存已有别处数据则会拒绝，需要先导出再决定。')),
+            h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'conflict' ? ' wp-sync-legend-current' : '') },
+              h('dt', null, '冲突'),
+              h('dd', null, '主存版本或身份变了（例如另一窗口先提交）。本页数据不会被覆盖；先「导出本页备份」，再按需「备份后加载主存」。')),
+            h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'error' ? ' wp-sync-legend-current' : '') },
+              h('dt', null, '异常'),
+              h('dd', null, '本地缓存、备份或主存读写失败。不要关闭页面，先导出备份，再重试或重启应用。'))),
+          h('p', { className: 'wp-data-hint' }, '主存文件位置：~/.dsh/storages/work_panel_workspace.json。浏览器缓存只是副本，外部导出的 JSON 才是独立备份。')),
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-section-title' }, '备份'),
           h('p', { className: 'wp-data-hint' }, '导出为单个 JSON 文件，包含任务、工作记录、成果、项目与报告。建议定期保存到本地。'),
