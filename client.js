@@ -461,6 +461,14 @@ window.__ModuleLoader__.load({
     }
     // @generated workspace-sync end
 
+    // @generated radar begin
+    // Generated from radar.js by build-client.mjs; do not edit this region.
+    // @generated radar end
+
+    // @generated auto-report begin
+    // Generated from auto-report.js by build-client.mjs; do not edit this region.
+    // @generated auto-report end
+
     function notifyWorkspaceWrite(keys) {
       const relevant = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
       if (keys.some((key) => relevant.includes(key))) workspaceWriteListeners.forEach((listener) => listener());
