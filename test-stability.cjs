@@ -76,7 +76,15 @@ function createRuntime() {
   };
   const sameDeps = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   const React = {
-    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    createElement: (type, props, ...children) => ({
+      type, props: props || {}, children,
+      // Deterministic measurement so layout-dependent UI (context submenu
+      // alignment) can be asserted without a real layout engine.
+      getBoundingClientRect() {
+        const tag = String((props && props.className) || type || '');
+        return { top: tag.includes('wp-row-menu-parent') ? 96 : 0, left: 0, width: 224, height: 24 };
+      },
+    }),
     useState(init) {
       const item = slot('state', () => ({ value: typeof init === 'function' ? init() : init }));
       if (!item.set) item.set = update => { if (mounted) pending.push([item, update]); };
@@ -107,7 +115,13 @@ function createRuntime() {
       for (const node of walk(tree)) {
         const ref = node.props.ref;
         if (ref && typeof ref === 'object') {
-          if (!refs.has(ref)) refs.set(ref, { focus() {}, click() {}, contains: () => false, scrollTop: 0, scrollHeight: 0 });
+          if (!refs.has(ref)) refs.set(ref, {
+            focus() {}, click() {}, contains: () => false, scrollTop: 0, scrollHeight: 0,
+            // Deterministic geometry so layout-dependent UI (the context submenu
+            // anchor) can be asserted without a layout engine. The class-based
+            // value lets one element be distinguished from another.
+            getBoundingClientRect() { return { top: 72, left: 100, width: 224, height: 26 }; },
+          });
           ref.current = refs.get(ref);
         }
       }

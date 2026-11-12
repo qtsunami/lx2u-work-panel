@@ -289,6 +289,22 @@ test('the move submenu opens as a side panel to the right, not a dropdown inside
   } finally { ui.close(); }
 });
 
+test('the side panel top aligns with the 移动到 row it belongs to', async () => {
+  const ui = harness(state([task('a')], { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] }));
+  await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 100, clientY: 40, preventDefault() {} });
+    openMoveSubmenu(ui); await ui.settle();
+    const sub = ui.nodes().find(n => has(n, 'wp-row-submenu-side'));
+    assert.ok(sub, 'side panel open');
+    const subTop = Number(String(sub.props.style.top).replace('px', ''));
+    // The harness gives every measured element top=72; the panel must adopt the
+    // measured row top rather than a hardcoded offset from the pointer.
+    assert.equal(subTop, 72, 'panel top comes from the measured row, got ' + subTop);
+  } finally { ui.close(); }
+});
+
 test('the project submenu is searchable when there are many projects', async () => {
   const many = Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, name: '项目' + i, status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }));
   const ui = harness(state([task('a')], { projects: many })); await ui.settle();

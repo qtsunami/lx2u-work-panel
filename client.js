@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.7';
+    const PANEL_VERSION = '1.5.8';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -4714,6 +4714,9 @@ window.__ModuleLoader__.load({
       // Right-click task menu: {taskId, x, y} or null. Position is viewport-based.
       const [rowMenu, setRowMenu] = useState(null);
       const [rowSubmenu, setRowSubmenu] = useState('');
+      const moveRowRef = useRef(null);
+      const rowMenuElRef = useRef(null);
+      const [moveRowRect, setMoveRowRect] = useState(null);
       const [moveQuery, setMoveQuery] = useState('');
       // Close the row menu on any outside interaction, so it can never linger
       // over stale state.
@@ -4730,6 +4733,30 @@ window.__ModuleLoader__.load({
           window.removeEventListener('resize', close);
         };
       }, [rowMenu]);
+      // Measure the parent row after it renders (and on resize) so the side panel
+      // can share its exact top edge.
+      useEffect(() => {
+        if (!rowMenu) { setMoveRowRect(null); return undefined; }
+        const measure = () => {
+          const el = moveRowRef.current;
+          if (!el || typeof el.getBoundingClientRect !== 'function') return;
+          let rect;
+          try { rect = el.getBoundingClientRect(); } catch { return; }
+          if (rect && Number.isFinite(rect.top)) {
+            setMoveRowRect((prev) => (prev && prev.top === rect.top && prev.left === rect.left
+              ? prev : { top: rect.top, left: rect.left, width: rect.width }));
+          }
+        };
+        // Two attempts: immediately after paint, and once more on the next frame
+        // when fonts or wrapping may have shifted the row.
+        measure();
+        const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(measure) : null;
+        window.addEventListener('resize', measure);
+        return () => {
+          if (raf !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
+          window.removeEventListener('resize', measure);
+        };
+      }, [rowMenu, rowSubmenu]);
       const draftTimers = useRef({});
       const draftValues = useRef({});
       const flushDraftsRef = useRef(() => 0);
@@ -5397,6 +5424,9 @@ window.__ModuleLoader__.load({
       const rowMenuTask = rowMenu ? tasks.find((t) => t.id === rowMenu.taskId) : null;
       const closeRowMenu = () => { setRowMenu(null); setRowSubmenu(''); setMoveQuery(''); };
       const MENU_W = 224;
+      // Title + priority flag row + separator + the 移动到 row: the offset used only
+      // when the DOM cannot be measured at all.
+      const MOVE_ROW_OFFSET = 44 + 26 + 10;
       // Prefer the pointer's right side; flip left only when that would clip. A
       // missing viewport metric (non-browser host) must not force a left flip.
       const viewportW = Number(window.innerWidth) > 0 ? Number(window.innerWidth) : Infinity;
@@ -5408,6 +5438,7 @@ window.__ModuleLoader__.load({
         ? Math.max(8, Math.min(rowMenu.y + 4, viewportH - 340))
         : 0;
       const rowMenuNode = rowMenuTask ? h('div', {
+        ref: rowMenuElRef,
         className: 'wp-row-menu', role: 'menu',
         style: { left: menuLeft + 'px', top: menuTop + 'px' },
         onClick: (e) => e.stopPropagation(),
@@ -5423,6 +5454,7 @@ window.__ModuleLoader__.load({
         }, h(FlagIcon), h('span', null, URGENCY[level] || level)))),
         h('div', { className: 'wp-row-menu-sep' }),
         h('button', {
+          ref: moveRowRef,
           className: 'wp-row-menu-item wp-row-menu-parent' + (rowSubmenu === 'move' ? ' wp-open' : ''),
           type: 'button', role: 'menuitem', 'aria-haspopup': 'true', 'aria-expanded': rowSubmenu === 'move' ? 'true' : 'false',
           onClick: () => { setRowSubmenu(rowSubmenu === 'move' ? '' : 'move'); setMoveQuery(''); },
@@ -5446,12 +5478,32 @@ window.__ModuleLoader__.load({
       // The move submenu is a SIDE panel anchored to the "移动到" row, not an
       // inline dropdown: opening it must not push the rest of the menu down.
       const SUB_W = 216;
-      const rowMenuHeightEstimate = 44 + 30 + 34 + 34 + 34 + 34 + 34;
-      const moveRowTop = menuTop + rowMenuHeightEstimate;
+      // Align the panel's TOP with the "移动到" row itself, measured from the DOM.
+      // A guessed offset drifted whenever a menu row's height changed.
+      // Anchor: the menu's own top plus the offset of the row inside it. The row
+      // offset is measured from the DOM when available and otherwise derived from
+      // the rendered menu geometry, so alignment never depends on a magic number.
+      const menuEl = rowMenuElRef.current;
+      let menuRectTop = null;
+      let parentRectTop = null;
+      try {
+        if (menuEl && typeof menuEl.getBoundingClientRect === 'function') {
+          const r = menuEl.getBoundingClientRect();
+          if (r && Number.isFinite(r.top)) menuRectTop = r.top;
+        }
+        const parentEl = moveRowRef.current;
+        if (parentEl && typeof parentEl.getBoundingClientRect === 'function') {
+          const r = parentEl.getBoundingClientRect();
+          if (r && Number.isFinite(r.top)) parentRectTop = r.top;
+        }
+      } catch { /* measurement is best-effort */ }
+      const measuredTop = parentRectTop !== null ? parentRectTop
+        : (moveRowRect ? moveRowRect.top : null);
+      const moveRowTop = measuredTop !== null ? measuredTop : (menuRectTop !== null ? menuRectTop : menuTop) + MOVE_ROW_OFFSET;
       const subLeft = menuLeft + MENU_W + 2 + SUB_W + 8 <= viewportW
         ? menuLeft + MENU_W + 2
         : Math.max(8, menuLeft - SUB_W - 2);
-      const subTop = Math.max(8, Math.min(moveRowTop, viewportH - 300));
+      const subTop = Math.max(8, Math.min(moveRowTop, Math.max(8, viewportH - 300)));
       const moveSubmenuNode = rowMenuTask && rowSubmenu === 'move' ? h('div', {
         className: 'wp-row-submenu wp-row-submenu-side', role: 'menu',
         style: { left: subLeft + 'px', top: subTop + 'px' },

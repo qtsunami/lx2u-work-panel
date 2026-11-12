@@ -1,6 +1,6 @@
 {
   "name": "@local/work-panel",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "type": "module",
   "license": "MIT",
   "scripts": {
