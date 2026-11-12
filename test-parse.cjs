@@ -647,5 +647,23 @@ check('storage estimate counts our keys', dbg.estimateStorageUsage() > 0, true);
 const pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
 check('PANEL_VERSION matches package.json', dbg.PANEL_VERSION, pkgVersion);
 
+console.log('\n# stability: strict imports preserve existing data');
+const validEmptyBackup = dbg.buildBackup(emptyWorkspace);
+check('full empty backup is valid', dbg.validateBackup(validEmptyBackup), '');
+check('full empty backup can restore empty workspace', dbg.applyImport(localWorkspace, validEmptyBackup, 'replace').next.tasks, []);
+check('replace refuses missing stores', dbg.applyImport(localWorkspace, { app: 'work-panel', tasks: [] }, 'replace').error, 'incomplete-backup');
+check('merge refuses malformed nonempty data', dbg.applyImport(localWorkspace, { tasks: [{}] }, 'merge').error, 'invalid-record');
+check('replace refuses malformed complete backup', dbg.applyImport(localWorkspace, { ...validEmptyBackup, tasks: [{}] }, 'replace').error, 'invalid-record');
+check('duplicate input ids rejected', dbg.applyImport(localWorkspace, { tasks: [{ id: 'x', title: 'X' }, { id: 'x', title: 'Y' }] }, 'merge').error, 'invalid-record');
+const tooManyLocal = { ...emptyWorkspace, tasks: Array.from({ length: 5001 }, (_, i) => ({ id: 'big-' + i, title: 'Task ' + i })) };
+check('oversize merge refuses instead of slicing local ids', dbg.applyImport(tooManyLocal, { tasks: [{ id: 'new', title: 'New' }] }, 'merge').error, 'too-large');
+check('oversize rejection leaves local untouched', tooManyLocal.tasks.length, 5001);
+check('invalid artifact links refused', dbg.applyImport(emptyWorkspace, { artifacts: [{ id: 'a', taskId: 't', links: 'not-array' }] }, 'merge').error, 'invalid-record');
+check('invalid report period refused', dbg.applyImport(emptyWorkspace, { reports: [{ id: 'r', body: 'text', kind: 'week', period: null }] }, 'merge').error, 'invalid-record');
+const editBackup = dbg.buildBackup({ ...emptyWorkspace, reportEdits: { [dbg.reportEditorKey('week', { start: '2026-11-09', end: '2026-11-15' }, 'p-1')]: { body: '未保存', excluded: [] } } });
+check('editor buffer included in backups', Object.keys(editBackup.reportEdits).length, 1);
+check('editor buffer restore roundtrip', dbg.applyImport(emptyWorkspace, editBackup, 'replace').next.reportEdits, editBackup.reportEdits);
+check('different project has different editor identity', dbg.reportEditorKey('week', healthWeek, 'p-1') !== dbg.reportEditorKey('week', healthWeek, 'p-2'), true);
+
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

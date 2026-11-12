@@ -9,6 +9,9 @@
  * applied (with an undo snapshot). This keeps every model-initiated change
  * reviewable and reversible.
  */
+import { randomUUID } from 'node:crypto';
+import { InboxError, InboxStore, inboxFailure } from './inbox-store.js';
+
 export const inject = ['connection'];
 
 /** Default conversation model: DeepSeek-V4.1-Flash. */
@@ -401,10 +404,12 @@ function sanitizeReport(raw, knownRefs) {
 // An executing agent (or a local script) pushes "what I just did" here. Nothing
 // is written into the panel directly: the browser shows the item and the user
 // confirms it into the task's work record.
-const INBOX_LIMIT = 200;
-
 function makeReportItem(body) {
   if (!body || typeof body !== 'object') return null;
+  if (body.requestId !== undefined && (typeof body.requestId !== 'string'
+    || !body.requestId.trim() || body.requestId.length > 200)) {
+    throw new InboxError('invalid-request-id', 'requestId 必须是 1–200 字符的非空字符串。');
+  }
   const text = str(body.text, 4000);
   if (!text) return null;
   const artifacts = Array.isArray(body.artifacts)
@@ -416,7 +421,8 @@ function makeReportItem(body) {
       })).filter((item) => item.summary || item.links.length)
     : [];
   return {
-    id: 'rb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+    id: 'rb-' + randomUUID(),
+    ...(body.requestId !== undefined ? { requestId: body.requestId.trim() } : {}),
     taskId: typeof body.taskId === 'string' ? body.taskId.trim().slice(0, 120) : '',
     taskTitle: str(body.taskTitle, 200),
     source: str(body.source, 40) || 'execution',
@@ -606,17 +612,26 @@ export function apply(ctx, config) {
       }
     },
   };
-  const inbox = [];
-  const enqueue = (item) => {
-    inbox.push(item);
-    while (inbox.length > INBOX_LIMIT) inbox.shift();
-    return item;
+  const inbox = new InboxStore(() => ctx.get('storage'), { backend: config && config.inboxBackend });
+  ctx.effect(() => () => inbox.close(), 'work-panel: durable inbox');
+  const report = async (body) => {
+    try {
+      const item = makeReportItem(body);
+      if (!item) throw new InboxError('empty-report', '回传 text 不能为空。');
+      return await inbox.enqueue(item);
+    } catch (error) {
+      return inboxFailure(error);
+    }
   };
 
   const inboxRoute = {
     path: '/api/work-panel/inbox',
     methods: ['GET'],
-    fetch: async () => json({ items: inbox }),
+    requestBody: 'buffered',
+    fetch: async () => {
+      try { return json(await inbox.list()); }
+      catch (error) { return json(inboxFailure(error)); }
+    },
   };
 
   const reportBackRoute = {
@@ -628,12 +643,9 @@ export function apply(ctx, config) {
       try {
         body = await request.json();
       } catch {
-        return json({ error: 'bad-json' });
+        return json(inboxFailure(new InboxError('bad-json', '请求正文不是有效 JSON。')));
       }
-      const item = makeReportItem(body);
-      if (!item) return json({ error: 'empty-report' });
-      enqueue(item);
-      return json({ ok: true, id: item.id, pending: inbox.length });
+      return json(await report(body));
     },
   };
 
@@ -646,14 +658,13 @@ export function apply(ctx, config) {
       try {
         body = await request.json();
       } catch {
-        return json({ error: 'bad-json' });
+        return json(inboxFailure(new InboxError('bad-json', '请求正文不是有效 JSON。')));
       }
-      const ids = new Set(Array.isArray(body && body.ids) ? body.ids.filter((id) => typeof id === 'string') : []);
-      const before = inbox.length;
-      for (let i = inbox.length - 1; i >= 0; i -= 1) {
-        if (ids.has(inbox[i].id)) inbox.splice(i, 1);
+      if (!Array.isArray(body && body.ids) || body.ids.some((id) => typeof id !== 'string' || !id)) {
+        return json(inboxFailure(new InboxError('invalid-ack', 'ids 必须是回传 id 字符串数组。')));
       }
-      return json({ ok: true, removed: before - inbox.length });
+      try { return json(await inbox.ack(body.ids)); }
+      catch (error) { return json(inboxFailure(error)); }
     },
   };
 
@@ -674,13 +685,13 @@ export function apply(ctx, config) {
             '把刚完成的工作回传到用户的工作面板收件箱。',
             '在为一个工作面板任务执行完一段工作（写代码、查资料、产出文档等）之后调用它。',
             '回传只是排队等待用户确认，不会修改任务，也不会把任务标记为完成。',
-            'taskId 优先；不知道 id 时可以给 taskTitle，面板会按标题匹配。',
           ].join(''),
           parameters: {
             type: 'object',
             properties: {
               taskId: { type: 'string', description: '工作面板任务 id（优先使用）' },
-              taskTitle: { type: 'string', description: '任务标题，用于没有 id 时匹配' },
+              taskTitle: { type: 'string', description: '没有 taskId 时按此任务标题匹配' },
+              requestId: { type: 'string', description: '可选幂等键，1–200字符；重试同一回传时复用，同键不同内容拒绝。待确认期间及确认后最近1000个键去重。' },
               text: { type: 'string', description: '这次推进做了什么、结果如何（一到三句）' },
               kind: { type: 'string', enum: ['progress', 'issue', 'decision', 'ai'], description: '记录类型，默认 progress' },
               artifacts: {
@@ -705,17 +716,19 @@ export function apply(ctx, config) {
                 ok: { type: 'boolean' },
                 id: { type: 'string' },
                 pending: { type: 'number' },
+                duplicate: { type: 'boolean' },
+                error: { type: 'string' },
+                message: { type: 'string' },
+                retryable: { type: 'boolean' },
+                uncertain: { type: 'boolean' },
               },
               required: ['ok'],
             },
-            render: () => [{ type: 'text', text: '已回传到工作面板收件箱，等待用户确认。' }],
+            render: (_args, value) => [{ type: 'text', text: value.ok
+              ? (value.duplicate ? '该回传已接收，无需重复排队。' : '已持久回传到工作面板收件箱，等待用户确认。')
+              : `回传未确认成功（${value.error}）：${value.message}` }],
           },
-          execute: async (args) => {
-            const item = makeReportItem(args);
-            if (!item) throw new Error('text is required');
-            enqueue(item);
-            return { ok: true, id: item.id, pending: inbox.length };
-          },
+          execute: report,
         });
       } catch {
         return () => {};

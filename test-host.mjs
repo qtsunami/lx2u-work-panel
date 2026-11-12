@@ -3,15 +3,37 @@ import { apply } from './index.js';
 
 let registered;
 let routes = [];
+function mockStorage() {
+  const state = { disk: null, failNext: false, opens: 0, closes: 0, writes: 0 };
+  const backend = { kv: { open: async () => {
+    state.opens += 1;
+    let memory = structuredClone(state.disk);
+    return {
+      loadAll: async () => ({ tables: {}, global: structuredClone(memory) }),
+      setGlobal: async (value) => {
+        state.writes += 1;
+        memory = structuredClone(value);
+        if (state.failNext) { state.failNext = false; throw new Error('disk full'); }
+        state.disk = structuredClone(value);
+      },
+      close: async () => { state.closes += 1; },
+    };
+  } } };
+  return { state, backend: { names: () => ['json'], get: (name) => name === 'json' ? backend : undefined } };
+}
 function makeCtx(llm, options = {}) {
   const captured = [];
+  const disposers = [];
+  const storage = options.storage === false ? undefined : (options.storage || mockStorage());
   routes = captured;
   return {
-    effect: (fn) => fn(),
+    dispose: async () => { for (const dispose of disposers.reverse()) await dispose(); },
+    effect: (fn) => { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose); return dispose; },
     get: (name) => {
       if (name === 'llm') return llm;
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test-provider', model: 'test-model' }) };
       if (name === 'tools') return options.tools;
+      if (name === 'storage') return storage;
       return undefined;
     },
     connection: {
@@ -352,14 +374,84 @@ check('tool-enqueues', [toolCall.ok, toolCall.pending], [true, 1]);
 const inboxFromTool = await callRoute('/api/work-panel/inbox', {});
 check('tool-item-visible', inboxFromTool.items[0].text, '用脚本生成周报草稿');
 check('tool-item-source', inboxFromTool.items[0].source, 'execution');
-let toolThrew = '';
-try { await tool.execute({}); } catch (error) { toolThrew = String(error && error.message); }
-check('tool-rejects-empty', toolThrew, 'text is required');
+const toolEmpty = await tool.execute({});
+check('tool-rejects-empty', [toolEmpty.ok, toolEmpty.error], [false, 'empty-report']);
+check('tool-render-reports-failure', tool.output.render({}, toolEmpty)[0].text.includes('未确认成功'), true);
+check('tool-schema-has-request-id', tool.parameters.properties.requestId.type, 'string');
 
 // A profile without the tool registry still loads: routes work, no tool.
 registered = undefined;
 apply(makeCtx(mockLlm('{}')));
 check('no-tool-without-registry', routeFor('/api/work-panel/inbox') !== undefined, true);
+
+console.log('\n# durable inbox across plugin restart');
+const persistent = mockStorage();
+let persistentCtx = makeCtx(mockLlm('{}'), { storage: persistent });
+apply(persistentCtx);
+const persisted = await callRoute('/api/work-panel/report-back', { requestId: 'retry-1', taskId: 't-1', text: '持久保存' });
+check('accepted-is-persisted', persistent.state.disk.items[0].id, persisted.id);
+await persistentCtx.dispose();
+persistentCtx = makeCtx(mockLlm('{}'), { storage: persistent });
+apply(persistentCtx);
+check('restart-recovers-inbox', (await callRoute('/api/work-panel/inbox', {})).items[0].id, persisted.id);
+const duplicate = await callRoute('/api/work-panel/report-back', { requestId: 'retry-1', taskId: 't-1', text: '持久保存' });
+check('retry-reuses-persisted-id', [duplicate.ok, duplicate.id, duplicate.duplicate, duplicate.pending], [true, persisted.id, true, 1]);
+const conflict = await callRoute('/api/work-panel/report-back', { requestId: 'retry-1', taskId: 't-1', text: '不同内容' });
+check('request-id-conflict', [conflict.ok, conflict.error], [false, 'request-id-conflict']);
+check('bad-request-id', (await callRoute('/api/work-panel/report-back', { requestId: '', text: 'x' })).error, 'invalid-request-id');
+check('non-string-request-id', (await callRoute('/api/work-panel/report-back', { requestId: 42, text: 'x' })).error, 'invalid-request-id');
+check('long-request-id', (await callRoute('/api/work-panel/report-back', { requestId: 'x'.repeat(201), text: 'x' })).error, 'invalid-request-id');
+check('ack-validation', (await callRoute('/api/work-panel/inbox/ack', { ids: 'all' })).error, 'invalid-ack');
+await callRoute('/api/work-panel/inbox/ack', { ids: [persisted.id, persisted.id] });
+check('duplicate-ack', await callRoute('/api/work-panel/inbox/ack', { ids: [persisted.id] }), { ok: true, removed: 0 });
+await persistentCtx.dispose();
+persistentCtx = makeCtx(mockLlm('{}'), { storage: persistent });
+apply(persistentCtx);
+check('ack-persists-across-restart', (await callRoute('/api/work-panel/inbox', {})).items.length, 0);
+check('acked-request-id-still-dedupes', (await callRoute('/api/work-panel/report-back', { requestId: 'retry-1', taskId: 't-1', text: '持久保存' })).id, persisted.id);
+check('acked-retry-does-not-requeue', (await callRoute('/api/work-panel/inbox', {})).items.length, 0);
+
+console.log('\n# write failures are not successful and chain recovers');
+persistent.state.failNext = true;
+const failedWrite = await callRoute('/api/work-panel/report-back', { text: '未保存' });
+check('report-write-failure-not-ok', [failedWrite.ok, failedWrite.error, failedWrite.uncertain], [false, 'inbox-write-failed', true]);
+const goodWrite = await callRoute('/api/work-panel/report-back', { text: '之后成功' });
+check('next-report-after-failed-write', [goodWrite.ok, goodWrite.pending], [true, 1]);
+check('failed-write-not-leaked', (await callRoute('/api/work-panel/inbox', {})).items.map((entry) => entry.text), ['之后成功']);
+persistent.state.failNext = true;
+const failedAck = await callRoute('/api/work-panel/inbox/ack', { ids: [goodWrite.id] });
+check('ack-write-failure-not-ok', [failedAck.ok, failedAck.error], [false, 'inbox-write-failed']);
+check('ack-failure-preserves-item', (await callRoute('/api/work-panel/inbox', {})).items.length, 1);
+await persistentCtx.dispose();
+
+console.log('\n# unavailable storage fails closed for routes and tool');
+const missingTools = [];
+apply(makeCtx(mockLlm('{}'), { storage: false, tools: { register: (definition) => { missingTools.push(definition); return () => {}; } } }));
+const missingStorage = await callRoute('/api/work-panel/report-back', { text: '不应接受' });
+check('storage-missing-no-ok', [missingStorage.ok, missingStorage.error], [false, 'storage-unavailable']);
+const missingList = await callRoute('/api/work-panel/inbox', {});
+check('storage-missing-list-no-empty-success', [missingList.ok, missingList.error, 'items' in missingList], [false, 'storage-unavailable', false]);
+check('storage-missing-ack-no-ok', (await callRoute('/api/work-panel/inbox/ack', { ids: [] })).ok, false);
+const missingToolResult = await missingTools[0].execute({ text: '不应接受' });
+check('storage-missing-tool-no-ok', [missingToolResult.ok, missingToolResult.error], [false, 'storage-unavailable']);
+check('storage-missing-tool-render', missingTools[0].output.render({}, missingToolResult)[0].text.includes('未确认成功'), true);
+const badJsonReport = await routeFor('/api/work-panel/report-back').fetch({ json: async () => { throw new Error('bad'); } });
+check('report-bad-json-structured', (await badJsonReport.json()).ok, false);
+const badJsonAck = await routeFor('/api/work-panel/inbox/ack').fetch({ json: async () => { throw new Error('bad'); } });
+check('ack-bad-json-structured', (await badJsonAck.json()).error, 'bad-json');
+
+console.log('\n# default capacity is explicit rejection, not eviction');
+const capacity = mockStorage();
+apply(makeCtx(mockLlm('{}'), { storage: capacity }));
+const submissions = await Promise.all(Array.from({ length: 201 }, (_, i) => callRoute('/api/work-panel/report-back', { text: '条目' + i })));
+check('capacity-accepts-200', submissions.filter((result) => result.ok).length, 200);
+check('capacity-rejects-overflow', [submissions[200].ok, submissions[200].error], [false, 'inbox-full']);
+check('capacity-keeps-first-item', (await callRoute('/api/work-panel/inbox', {})).items[0].id, submissions[0].id);
+check('capacity-persisted-count', capacity.state.disk.items.length, 200);
+
+console.log('\n# explicit backend configuration does not guess');
+apply(makeCtx(mockLlm('{}')), { inboxBackend: 'missing' });
+check('configured-missing-backend', (await callRoute('/api/work-panel/report-back', { text: 'x' })).error, 'storage-backend-unavailable');
 
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

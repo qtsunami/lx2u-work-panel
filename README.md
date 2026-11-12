@@ -2,9 +2,27 @@
 
 A personal workbench panel for DeepSeek Harness (DSH): a three-column layout with a left view navigator, a task list, and a right task-detail editor.
 
+## Product direction
+
+A personal AI outcomes workbench: fast capture → execution → reliable receipts → review → reusable evidence and reports.
+The next milestones are tracked in [ROADMAP.md](./ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
+
+## Stabilization (v1.3.2)
+
+- Report identity includes kind, period **and project**. Unrelated batch inserts never reset the editor. Unsaved edits are buffered per identity and included in exports. New edits, workspace restores and stale AI responses cannot silently overwrite one another.
+- Saving a report again preserves its original reference snapshots, including sources that were permanently deleted.
+- Storage failures stay visible; in-memory changes can be exported or retried. Invalid local JSON is protected from automatic overwrite; an intentional valid restore first retains its raw bytes.
+- Imports validate all records, reject incomplete replace operations and oversized results instead of truncating, and accept complete empty envelopes so the first import can be undone.
+- Import, restore, clear, project moves, AI confirmations and inbox adoption use a local rollback journal for multi-store writes. Interrupted operations recover before mounting; a rollback failure blocks further writes. This is not a multi-window transaction protocol: an observed external storage change suspends stale writes until reload.
+- A safety snapshot must succeed before import/clear/restore proceeds. Old undo cards, previews and in-flight AI work are invalidated after replacing a workspace.
+- Offline task parsing also requires confirmation before creating tasks.
+- The inbox now uses durable Host storage; see below. Tasks remain browser-owned until the 1.4.0 data migration.
+
+Validation includes stateful VM interactions and injected storage failures, not only tree-render smoke tests. Real desktop restart/visual acceptance has not yet been performed for this build.
+
 ## AI collaboration (v1.1)
 
-The model never writes data. It returns a typed action list, the panel shows exactly what
+The model never mutates task data directly. It returns a typed action list, the panel shows exactly what
 would change, and only a confirmation applies it — with an undo snapshot.
 
 | Step | What happens |
@@ -30,8 +48,8 @@ Safety rules:
 `管理 → 数据` is the safety net for a local-first tool:
 
 - **Export** writes one JSON file (`work-panel-backup-YYYY-MM-DD.json`) containing tasks, work records, artifacts, projects, reports and the inbox ack list, with a schema number and the producing version.
-- **Import** accepts that file in two modes: `合并` unions by id and keeps the newer record on conflict (nothing is deleted), `覆盖` replaces the workspace. Both run the project migration afterwards, so backups taken before project entities still import cleanly. A pre-import snapshot is always written first.
-- **Restore** offers `撤销上次导入/清空` and a **daily snapshot** the panel writes once per day when it opens.
+- **Import** accepts that file in two modes: `合并` unions by id and keeps the newer record on conflict (nothing is deleted), `覆盖` replaces the workspace. Both run the project migration afterwards, so backups taken before project entities still import cleanly. A pre-import snapshot must be written successfully first; otherwise the operation stops.
+- **Restore** offers `撤销上次导入/清空` and one rolling **daily snapshot** checked when the panel mounts. A same-storage snapshot protects some mistakes, not clearing app data; keep an exported file outside the app for independent recovery.
 - **Clear** removes local data only after an inline confirmation, and keeps the same one-step undo.
 - The sidebar footer shows the running version, and a unit test keeps it in sync with `package.json`, so you can always tell whether a restart actually loaded the new build.
 
@@ -44,7 +62,7 @@ back to the panel without touching task data.
 
 | Channel | How |
 | --- | --- |
-| Model tool | `work_panel_report` with `{ taskId?, taskTitle?, text, kind?, artifacts? }` (registered when the profile has a tool registry) |
+| Model tool | `work_panel_report` with `{ taskId?, taskTitle?, text, kind?, artifacts?, requestId? }` (registered when the profile has a tool registry) |
 | HTTP | `POST /api/work-panel/report-back` with the same body, on the same authenticated `/api` channel as the assistant |
 
 The Host queues what it receives (`GET /api/work-panel/inbox`); the panel polls it, lists the items under
@@ -53,8 +71,11 @@ The Host queues what it receives (`GET /api/work-panel/inbox`); the panel polls 
 - a report becomes an append-only **work record** marked `回传` in the timeline, plus the attached **artifacts**
 - items are matched to a task by `taskId`, then by exact/fuzzy `taskTitle`; an unmatched item shows a task picker and cannot be adopted until one is chosen
 - **nothing is auto-completed**: adoption adds records only, exactly like the manual `记录进展` action
-- `忽略` drops an item; acknowledged ids are remembered in `@local/work-panel:inbox-ack:v1`, so a Host restart does not replay them
-- the Host queue is in memory and capped at 200 items; it intentionally holds no task data
+- `忽略` acknowledges an item without adding records. Record/artifact adoption and the local handled-id list commit together; failed Host acknowledgements are retried during polling.
+- the Host queue uses the DSH KV backend (`inboxBackend: json` in the shipped patch) and the `work-panel-inbox` unit. Storage success precedes an `ok: true` receipt. Missing/ambiguous storage or a full queue (200 pending items) returns an explicit failure; it never evicts older pending work.
+- `requestId` is optional. Reuse it when retrying the same payload: pending requests and the latest 1000 acknowledged keys are deduplicated; a different payload with the same retained key is rejected. Without a key, retries may enqueue twice. This is bounded idempotency, not permanent exactly-once delivery.
+- write failures may be uncertain (published before I/O failed); retry with the same key. The queue reopens its storage handle after such errors rather than trusting stale memory.
+- one plugin instance owns the inbox unit. There is no multi-process writer/merge protocol; do not mount competing instances against the same unit.
 
 ## Weekly and monthly report (v1.2.1)
 
@@ -67,7 +88,7 @@ Left nav `周报` opens a report page: period selector on the left, editor in th
 - **Monthly report**: switch `周报 / 月报` in the toolbar. A month uses the natural calendar month and summarises the weeklies that fall inside it; the prompt asks the model to consolidate highlights and to write any repeated achievement only once, instead of concatenating the weekly bodies.
 - **Project-aware reports**: when a report is scoped to a project, its prompt carries the project name and description and is told to ignore unrelated projects.
 - **Paragraph polishing**: in preview mode click a paragraph → `润色`; the rewritten paragraph is shown as an unapplied suggestion alongside its evidence badges, and `替换这一段` applies it. The Host rejects any result that drops, edits or invents an evidence marker, and the client refuses to replace a paragraph whose text changed while the suggestion was open.
-- **Edit / Preview** toggle, `保存草稿`, `复制`, `导出 MD` (markers become numbered footnotes plus a source list). Nothing is sent anywhere.
+- **Edit / Preview** toggle, `保存草稿`, `复制`, `导出 MD` (markers become numbered footnotes plus a source list). Copy/export are local; AI generation sends selected context/evidence to the configured model provider.
 - **Snapshot rule**: saving a draft stores both the reference id and a snapshot taken at that moment, so editing a task later never rewrites an existing report.
 
 ## Features
@@ -124,6 +145,7 @@ The bundle's `cordis.patch.yml` sets the assistant model:
 config:
   provider: deepseek-account
   model: deepseek-flash
+  inboxBackend: json
 ```
 
 Change these to a provider/model that exists in your profile. Without a working model the assistant degrades to local parsing; the rest of the panel is unaffected.
@@ -132,19 +154,22 @@ Change these to a provider/model that exists in your profile. Without a working 
 
 | File | Purpose |
 | --- | --- |
-| `index.js` | Host half: registers `POST /api/work-panel/chat` on the `connection` fetch channel. Builds the prompts and validates every model action before returning it. |
+| `index.js` | Host half: authenticated assistant/report/inbox routes and report-back tool, model prompts and response validation. |
+| `inbox-store.js` | Durable, serialized inbox over the Host KV storage contract with bounded idempotency. |
 | `client.js` | Client half: registers the sidebar entry and the main panel. |
 | `cordis.patch.yml` | Bundle patch that inserts the plugin row. |
 | `locale/*.json` | Display metadata (title/description). |
 | `icon.svg` | Panel icon. |
 | `test-*.cjs` / `test-host.mjs` | Unit and render-smoke tests (not part of the published files). |
 
-Run the checks:
+Run all 12 suites with `npm test` (or `node test-all.mjs`); individual checks:
 
 ```bash
 node --check index.js && node --check client.js
 node test-parse.cjs        # parsing, data model, action protocol
-node test-host.mjs         # prompt routing, action sanitization
+node test-host.mjs         # routing, sanitization, durable tool/route parity
+node test-inbox-store.mjs  # restart, idempotency, I/O failure and capacity
+node test-stability.cjs    # real state/effect interactions and browser-storage faults
 node test-render.cjs       # empty panel smoke
 node test-detail-render.cjs
 node test-actions-render.cjs
@@ -157,13 +182,13 @@ node test-data-render.cjs
 
 ## Data model (v1.x)
 
-All state lives in `localStorage`, keyed by the plugin scope:
+Task/workspace data lives in `localStorage`, keyed by the plugin scope; only the pending execution inbox and its dedupe receipts use Host KV storage in 1.3.2:
 
 | Key | Content |
 | --- | --- |
-| `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (soft delete / recycle bin), `project` (reserved for project views). |
+| `@local/work-panel:tasks:v1` | Tasks. New fields are filled in on read, so upgrading from an older version needs no migration step: `expected`, `nextStep`, `blockedReason`, `completedAt`, `deletedAt` (soft delete / recycle bin), `projectId` (project entity reference). |
 | `@local/work-panel:logs:v1` | Work records — append-only, keyed by `taskId`. |
-| `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved so a monthly report cannot claim the same result twice. |
+| `@local/work-panel:artifacts:v1` | Artifact references — `{taskId, summary, links, at, claimedIn}`. `claimedIn` is reserved and unused; report period/evidence selection, not this field, limits repeated inclusion. |
 | `@local/work-panel:projects:v1` | Project records — `{id, name, description, color, status: 'active'|'archived', archivedAt}`. Tasks reference them via `projectId`. |
 | `@local/work-panel:reports:v1` | Report drafts — `{id, kind: 'week'|'month', period, projectId, projectName, body, refs[{type,id,taskId,snapshot,entry,artifact}], excluded, derivedFromReportIds, status}`. One draft per kind + period + project. |
 | `@local/work-panel:migration:projects:v1` | One-time marker for the project migration; `@local/work-panel:migration-backup:projects:v1` keeps the pre-migration tasks/projects/reports for recovery. |
@@ -172,6 +197,9 @@ All state lives in `localStorage`, keyed by the plugin scope:
 | `@local/work-panel:backup:pre-import:v1` | The workspace right before the last import or clear, so it can be undone once. |
 | `@local/work-panel:chat:v1` | AI assistant conversation. |
 | `@local/work-panel:theme` | Light/dark preference. |
+| `@local/work-panel:report-edits:v1` | Unsaved report buffers keyed by kind/period/project; included in workspace exports. |
+| `@local/work-panel:transaction:v1` | Temporary rollback journal; recovered before workspace reads on mount. |
+| `@local/work-panel:backup:raw-before-restore:v1` | Exact raw workspace values retained before intentionally replacing malformed local data. |
 
 Task status stays binary (todo / done). A "blocked" situation is recorded as `blockedReason` on the task instead of a third status, so the state machine stays simple.
 
@@ -184,8 +212,9 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
 - **1.2.3** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
 - **1.2.4** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
-- **1.3.1 (unreleased, in progress)** — data safety: JSON export/import with merge and replace modes, daily snapshot, one-step undo, storage usage, visible version, plus `useMemo` around the report evidence/batch/health scans that used to rerun on every keystroke.
-- **1.3.0** — execution report-back: `work_panel_report` tool and a report-back route, an in-memory Host queue, a panel inbox with adopt/ignore, execution records marked in the timeline, and task matching by id or title.
+- **1.3.2 (unreleased)** — strict safe imports/empty-workspace undo, visible write failures and rollback recovery, scoped durable editor buffers and stale-response guards, durable Host inbox with request-id retry, and stateful fault tests.
+- **1.3.1 (unreleased)** — data safety: JSON export/import with merge and replace modes, daily snapshot, one-step undo, storage usage, visible version, plus `useMemo` around the report evidence/batch/health scans that used to rerun on every keystroke.
+- **1.3.0** — execution report-back: `work_panel_report` tool and a report-back route, a Host inbox (made durable in 1.3.2), a panel inbox with adopt/ignore, execution records marked in the timeline, and task matching by id or title.
 - **1.2.5** — AI project awareness (`projectId` in the action protocol, project list in the prompt, unknown ids rejected), project context in project-scoped reports, a grouped left sidebar, a project health card, per-project batch report generation, and date-only deadlines now count as overdue from the next day (the overdue view, counts and sorting previously ignored them).
 - Decided against: kanban board and a three-state status model.
 

@@ -93,7 +93,7 @@ assert(dataView.has('wp-data-actions'), 'data actions missing');
 ['版本', '本地占用', '数据量', '导出备份', '合并', '覆盖', '选择备份文件', '清空本地数据'].forEach((label) => {
   assert(dataView.text.indexOf(label) !== -1, 'missing data control: ' + label);
 });
-assert(dataView.text.indexOf('v1.3.1') !== -1, 'panel version should be shown, got ' + dataView.text);
+assert(dataView.text.indexOf('v' + require('./package.json').version) !== -1, 'panel version should be shown, got ' + dataView.text);
 assert(!dataView.has('wp-detail'), 'data view should not show the task detail panel');
 
 // ---- 2. import mode copy switches ----
@@ -114,7 +114,7 @@ assert(confirming.text.indexOf('确认清空') !== -1, 'clear confirmation butto
 
 // ---- 5. version footer is always visible in the sidebar ----
 const normal = render({});
-assert(normal.text.indexOf('v1.3.1') !== -1, 'version footer missing from the sidebar');
+assert(normal.text.indexOf('v' + require('./package.json').version) !== -1, 'version footer missing from the sidebar');
 assert(normal.has('wp-sidenav-foot'), 'version footer element missing');
 
 console.log('DATA RENDER OK · view + modes + undo + confirmation + version footer');

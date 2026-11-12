@@ -18,7 +18,126 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.3.1';
+    const PANEL_VERSION = '1.3.2';
+    const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
+    const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
+    const storageListeners = new Set();
+    const pendingWrites = new Map();
+    let storageBlock = '';
+    let storageBlockKind = '';
+    let recoveryChecked = false;
+
+    function storageMessage() {
+      return storageBlock || (pendingWrites.size
+        ? '有修改尚未保存到本机。请重试或先导出备份，暂勿关闭页面。' : '');
+    }
+    function notifyStorage() { storageListeners.forEach((listener) => listener(storageMessage())); }
+    function writeStored(key, value) {
+      if (!storageBlock) {
+        try {
+          window.localStorage.setItem(key, value);
+          pendingWrites.delete(key);
+          notifyStorage();
+          return true;
+        } catch { /* Keep the intended write in memory for retry/export. */ }
+      }
+      pendingWrites.set(key, value);
+      notifyStorage();
+      return false;
+    }
+    function readProblem(key) {
+      if (storageBlockKind === 'transaction') return;
+      storageBlockKind = 'read';
+      storageBlock = '本地数据读取失败（' + key.split(':').slice(-2).join(':')
+        + '），已暂停写入以保护原数据。请先导出原始数据，再恢复有效备份。';
+      notifyStorage();
+    }
+
+    // Multi-store changes use a durable rollback journal. On restart the first
+    // render rolls back an interrupted write before loading any workspace data.
+    function recoverStorageTransaction() {
+      if (recoveryChecked) return !storageBlock;
+      recoveryChecked = true;
+      try {
+        const raw = window.localStorage.getItem(TRANSACTION_KEY);
+        if (!raw) return true;
+        const journal = JSON.parse(raw);
+        if (!journal || journal.schema !== 1 || !Array.isArray(journal.before)
+          || !journal.before.every((entry) => Array.isArray(entry)
+            && typeof entry[0] === 'string' && entry[0].startsWith(DATA_PREFIX)
+            && entry[0] !== TRANSACTION_KEY && (entry[1] === null || typeof entry[1] === 'string'))) {
+          throw new Error('invalid-journal');
+        }
+        for (const [key, value] of journal.before) {
+          if (value === null) window.localStorage.removeItem(key);
+          else window.localStorage.setItem(key, value);
+        }
+        window.localStorage.removeItem(TRANSACTION_KEY);
+        return true;
+      } catch {
+        storageBlockKind = 'transaction';
+        storageBlock = '上次保存未完成且自动恢复失败，已停止写入。请先导出原始数据，不要清理应用存储。';
+        notifyStorage();
+        return false;
+      }
+    }
+    function writeStoredTransaction(entries) {
+      if (storageBlock || !recoverStorageTransaction()) return false;
+      let before;
+      let prepared = false;
+      try {
+        before = entries.map(([key]) => [key, window.localStorage.getItem(key)]);
+        window.localStorage.setItem(TRANSACTION_KEY, JSON.stringify({ schema: 1, before }));
+        prepared = true;
+        for (const [key, value] of entries) window.localStorage.setItem(key, value);
+        window.localStorage.removeItem(TRANSACTION_KEY);
+        entries.forEach(([key]) => pendingWrites.delete(key));
+        notifyStorage();
+        return true;
+      } catch {
+        if (prepared) {
+          try {
+            for (const [key, value] of before) {
+              if (value === null) window.localStorage.removeItem(key);
+              else window.localStorage.setItem(key, value);
+            }
+            window.localStorage.removeItem(TRANSACTION_KEY);
+          } catch {
+            storageBlockKind = 'transaction';
+            storageBlock = '保存失败，回退尚未完成。已停止写入；请导出原始数据后重新打开面板恢复。';
+          }
+        }
+        notifyStorage();
+        return false;
+      }
+    }
+    function retryStorageWrites() {
+      const entries = Array.from(pendingWrites.entries());
+      return !storageBlock && (!entries.length || writeStoredTransaction(entries));
+    }
+    function workspaceEntries(state) {
+      return [
+        [STORAGE_KEY, JSON.stringify(state.tasks)], [PROJECTS_KEY, JSON.stringify(state.projects)],
+        [LOGS_KEY, JSON.stringify(state.logs)], [ARTIFACTS_KEY, JSON.stringify(state.artifacts)],
+        [REPORTS_KEY, JSON.stringify(state.reports)], [INBOX_ACK_KEY, JSON.stringify(state.inboxAck || [])],
+        [REPORT_EDITS_KEY, JSON.stringify(state.reportEdits || {})],
+      ];
+    }
+    function reportEditorKey(kind, period, scopeId) {
+      return JSON.stringify([kind, period.start, period.end, scopeId || '']);
+    }
+    function validReportEdits(value) {
+      return value && typeof value === 'object' && !Array.isArray(value)
+        && Object.values(value).every((edit) => edit && typeof edit.body === 'string'
+          && Array.isArray(edit.excluded) && edit.excluded.every((id) => typeof id === 'string'));
+    }
+    function loadReportEdits() {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(REPORT_EDITS_KEY) || '{}');
+        if (!validReportEdits(parsed)) throw new Error('invalid-edits');
+        return parsed;
+      } catch { readProblem(REPORT_EDITS_KEY); return {}; }
+    }
 
     const STATUS = { todo: '待办', done: '已完成' };
     const URGENCY = { high: '高', medium: '中', low: '低', none: '无' };
@@ -36,15 +155,14 @@ window.__ModuleLoader__.load({
         const raw = window.localStorage.getItem(STORAGE_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
+        if (!Array.isArray(parsed)) throw new Error('invalid-store');
         // Migration path: legacy tasks (binary status, no v2 fields) are
         // upgraded in place on read, so no separate migration step is needed.
-        return parsed
-          .filter((t) => t && typeof t.id === 'string' && typeof t.title === 'string')
-          .map(withV2Fields);
-      } catch { return []; }
+        if (!parsed.every((t) => t && typeof t.id === 'string' && typeof t.title === 'string')) throw new Error('invalid-task');
+        return parsed.map(withV2Fields);
+      } catch { readProblem(STORAGE_KEY); return []; }
     }
-    function saveTasks(tasks) { try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch { /* ignore */ } }
+    function saveTasks(tasks) { return writeStored(STORAGE_KEY, JSON.stringify(tasks)); }
     function loadChat() {
       try {
         const raw = window.localStorage.getItem(CHAT_KEY);
@@ -53,7 +171,7 @@ window.__ModuleLoader__.load({
         return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
       } catch { return null; }
     }
-    function saveChat(messages) { try { window.localStorage.setItem(CHAT_KEY, JSON.stringify(messages.slice(-40))); } catch { /* ignore */ } }
+    function saveChat(messages) { return writeStored(CHAT_KEY, JSON.stringify(messages.slice(-40))); }
     function loadTheme() {
       try {
         const saved = window.localStorage.getItem(THEME_KEY);
@@ -64,7 +182,7 @@ window.__ModuleLoader__.load({
       } catch { /* ignore */ }
       return 'light';
     }
-    function saveTheme(theme) { try { window.localStorage.setItem(THEME_KEY, theme); } catch { /* ignore */ } }
+    function saveTheme(theme) { return writeStored(THEME_KEY, theme); }
 
     // ---- v2: work records, artifacts, report snapshots ---------------------
     // Work records and artifacts live in their own append-only stores so a
@@ -119,22 +237,24 @@ window.__ModuleLoader__.load({
         const raw = window.localStorage.getItem(LOGS_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.filter((l) => l && typeof l.id === 'string' && typeof l.taskId === 'string' && typeof l.text === 'string');
-      } catch { return []; }
+        if (!Array.isArray(parsed)) throw new Error('invalid-store');
+        if (!parsed.every((l) => l && typeof l.id === 'string' && typeof l.taskId === 'string' && typeof l.text === 'string')) throw new Error('invalid-log');
+        return parsed;
+      } catch { readProblem(LOGS_KEY); return []; }
     }
-    function saveLogs(logs) { try { window.localStorage.setItem(LOGS_KEY, JSON.stringify(logs)); } catch { /* ignore */ } }
+    function saveLogs(logs) { return writeStored(LOGS_KEY, JSON.stringify(logs)); }
 
     function loadArtifacts() {
       try {
         const raw = window.localStorage.getItem(ARTIFACTS_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.filter((a) => a && typeof a.id === 'string' && typeof a.taskId === 'string');
-      } catch { return []; }
+        if (!Array.isArray(parsed)) throw new Error('invalid-store');
+        if (!parsed.every((a) => a && typeof a.id === 'string' && typeof a.taskId === 'string')) throw new Error('invalid-artifact');
+        return parsed;
+      } catch { readProblem(ARTIFACTS_KEY); return []; }
     }
-    function saveArtifacts(artifacts) { try { window.localStorage.setItem(ARTIFACTS_KEY, JSON.stringify(artifacts)); } catch { /* ignore */ } }
+    function saveArtifacts(artifacts) { return writeStored(ARTIFACTS_KEY, JSON.stringify(artifacts)); }
 
     /** Records of one task, oldest first. */
     function logsOf(logs, taskId) {
@@ -455,15 +575,16 @@ window.__ModuleLoader__.load({
         const raw = window.localStorage.getItem(PROJECTS_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.filter((p) => p && typeof p.id === 'string' && typeof p.name === 'string');
-      } catch { return []; }
+        if (!Array.isArray(parsed)) throw new Error('invalid-store');
+        if (!parsed.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')) throw new Error('invalid-project');
+        return parsed;
+      } catch { readProblem(PROJECTS_KEY); return []; }
     }
-    function saveProjects(projects) { try { window.localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch { /* ignore */ } }
+    function saveProjects(projects) { return writeStored(PROJECTS_KEY, JSON.stringify(projects)); }
     function projectsMigrated() { try { return window.localStorage.getItem(PROJECTS_MIGRATION_KEY) === 'v1'; } catch { return false; } }
-    function markProjectsMigrated() { try { window.localStorage.setItem(PROJECTS_MIGRATION_KEY, 'v1'); } catch { /* ignore */ } }
+    function markProjectsMigrated() { return writeStored(PROJECTS_MIGRATION_KEY, 'v1'); }
     function backupBeforeMigration(state) {
-      try { window.localStorage.setItem(PROJECTS_BACKUP_KEY, JSON.stringify({ ...state, at: new Date().toISOString() })); } catch { /* ignore */ }
+      return writeStored(PROJECTS_BACKUP_KEY, JSON.stringify({ ...state, at: new Date().toISOString() }));
     }
 
     /** Live (non-deleted) task count per project id. */
@@ -611,7 +732,7 @@ window.__ModuleLoader__.load({
         return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
       } catch { return []; }
     }
-    function saveInboxAck(ids) { try { window.localStorage.setItem(INBOX_ACK_KEY, JSON.stringify(ids.slice(-300))); } catch { /* ignore */ } }
+    function saveInboxAck(ids) { return writeStored(INBOX_ACK_KEY, JSON.stringify(ids.slice(-300))); }
 
     // ---- backup / restore --------------------------------------------------
     function buildBackup(state) {
@@ -626,6 +747,7 @@ window.__ModuleLoader__.load({
         artifacts: state.artifacts,
         reports: state.reports,
         inboxAck: state.inboxAck || [],
+        reportEdits: state.reportEdits || {},
       };
     }
 
@@ -648,14 +770,48 @@ window.__ModuleLoader__.load({
       return Array.isArray(value) ? value.slice(0, limit) : [];
     }
 
-    /** Rejects anything that is not a plausible work-panel backup. */
-    function validateBackup(raw) {
-      if (!raw || typeof raw !== 'object') return 'not-an-object';
+    const IMPORT_LIMITS = { tasks: 5000, projects: 500, logs: 20000, artifacts: 5000, reports: 500 };
+    function validPeriod(period) {
+      return period && typeof period.start === 'string' && typeof period.end === 'string'
+        && /^\d{4}-\d{2}-\d{2}$/.test(period.start) && /^\d{4}-\d{2}-\d{2}$/.test(period.end)
+        && period.start <= period.end;
+    }
+    /** Validate every record; never turn a malformed non-empty import into a clear. */
+    function validateBackup(raw, mode) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'not-an-object';
       if (raw.app && raw.app !== 'work-panel') return 'wrong-app';
       if (typeof raw.schema === 'number' && raw.schema > BACKUP_SCHEMA) return 'newer-schema';
-      const hasData = ['tasks', 'projects', 'logs', 'artifacts', 'reports']
-        .some((key) => Array.isArray(raw[key]) && raw[key].length > 0);
-      if (!hasData) return 'empty-backup';
+      const keys = Object.keys(IMPORT_LIMITS);
+      const complete = keys.every((key) => Array.isArray(raw[key]));
+      if (mode === 'replace' && !complete) return 'incomplete-backup';
+      let count = 0;
+      for (const key of keys) {
+        if (raw[key] === undefined) continue;
+        if (!Array.isArray(raw[key])) return 'invalid-record';
+        if (raw[key].length > IMPORT_LIMITS[key]) return 'too-large';
+        count += raw[key].length;
+        const ids = new Set();
+        for (const item of raw[key]) {
+          if (!item || typeof item !== 'object' || typeof item.id !== 'string' || !item.id.trim()
+            || ids.has(item.id)) return 'invalid-record';
+          ids.add(item.id);
+          if (key === 'tasks' && (typeof item.title !== 'string' || !item.title.trim())) return 'invalid-record';
+          if (key === 'projects' && (typeof item.name !== 'string' || !item.name.trim())) return 'invalid-record';
+          if ((key === 'logs' || key === 'artifacts') && (typeof item.taskId !== 'string' || !item.taskId)) return 'invalid-record';
+          if (key === 'logs' && typeof item.text !== 'string') return 'invalid-record';
+          if (key === 'artifacts' && item.links !== undefined
+            && (!Array.isArray(item.links) || !item.links.every((link) => typeof link === 'string'))) return 'invalid-record';
+          if (key === 'reports' && (typeof item.body !== 'string' || !validPeriod(item.period)
+            || !['week', 'month'].includes(item.kind)
+            || (item.refs !== undefined && !Array.isArray(item.refs)))) return 'invalid-record';
+        }
+      }
+      if (raw.inboxAck !== undefined && (!Array.isArray(raw.inboxAck)
+        || !raw.inboxAck.every((id) => typeof id === 'string'))) return 'invalid-record';
+      if (raw.reportEdits !== undefined && !validReportEdits(raw.reportEdits)) return 'invalid-record';
+      // A full empty envelope is a valid workspace: undoing the first import
+      // must restore an empty database. An arbitrary {} is not a backup.
+      if (!count && !(complete && raw.app === 'work-panel' && raw.schema === BACKUP_SCHEMA)) return 'empty-backup';
       return '';
     }
 
@@ -671,7 +827,7 @@ window.__ModuleLoader__.load({
         const after = String(item.updatedAt || item.at || '');
         if (after > before) map.set(item.id, item);
       }
-      return { items: Array.from(map.values()).slice(0, limit), added };
+      return { items: Array.from(map.values()), added };
     }
 
     function mergeAckIds(current, incoming) {
@@ -687,7 +843,7 @@ window.__ModuleLoader__.load({
      *   free-text project names are migrated afterwards in both modes.
      */
     function applyImport(current, raw, mode) {
-      const problem = validateBackup(raw);
+      const problem = validateBackup(raw, mode);
       if (problem) return { error: problem };
       const replace = mode === 'replace';
       const incomingTasks = asArray(raw.tasks, 5000)
@@ -740,6 +896,10 @@ window.__ModuleLoader__.load({
         counts.reports = mergedReports.added;
       }
 
+      // Refuse oversize workspaces rather than silently slicing existing data.
+      if (Object.keys(IMPORT_LIMITS).some((key) => next[key].length > IMPORT_LIMITS[key])) return { error: 'too-large' };
+      next.reportEdits = replace ? { ...(raw.reportEdits || {}) }
+        : { ...(raw.reportEdits || {}), ...(current.reportEdits || {}) };
       const migrated = migrateProjectRefs(next.tasks, next.projects, next.reports);
       return {
         next: {
@@ -906,11 +1066,12 @@ window.__ModuleLoader__.load({
         const raw = window.localStorage.getItem(REPORTS_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.filter((r) => r && typeof r.id === 'string' && typeof r.body === 'string');
-      } catch { return []; }
+        if (!Array.isArray(parsed)) throw new Error('invalid-store');
+        if (!parsed.every((r) => r && typeof r.id === 'string' && typeof r.body === 'string' && validPeriod(r.period) && ['week', 'month'].includes(r.kind))) throw new Error('invalid-report');
+        return parsed;
+      } catch { readProblem(REPORTS_KEY); return []; }
     }
-    function saveReports(reports) { try { window.localStorage.setItem(REPORTS_KEY, JSON.stringify(reports)); } catch { /* ignore */ } }
+    function saveReports(reports) { return writeStored(REPORTS_KEY, JSON.stringify(reports)); }
 
     /**
      * Evidence for one period: tasks completed inside it, plus unfinished
@@ -2090,6 +2251,12 @@ window.__ModuleLoader__.load({
       .wp-data-hint { margin: 0; font-size: 12px; line-height: 1.6; color: var(--wp-text-tertiary); }
       .wp-data-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .wp-data-file { display: none; }
+      .wp-storage-warning {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px;
+        background: var(--wp-fill-secondary); border-bottom: 1px solid var(--wp-border);
+        color: var(--wp-error); font-size: 12px;
+      }
+      .wp-storage-warning > span { flex: 1; min-width: 180px; }
 
       /* ---- weekly report ---- */
       .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
@@ -2312,6 +2479,7 @@ window.__ModuleLoader__.load({
     };
 
     function WorkPanel() {
+      recoverStorageTransaction();
       const [tasks, setTasks] = useState(loadTasks);
       const [logs, setLogs] = useState(loadLogs);
       const [artifacts, setArtifacts] = useState(loadArtifacts);
@@ -2372,6 +2540,50 @@ window.__ModuleLoader__.load({
       const [importMode, setImportMode] = useState('merge');
       const [preImportReady, setPreImportReady] = useState(() => !!readBackupSlot(PRE_IMPORT_KEY));
       const [clearConfirm, setClearConfirm] = useState(false);
+      const [storageIssue, setStorageIssue] = useState(storageMessage);
+      const [workspaceEpoch, setWorkspaceEpoch] = useState(0);
+      const [inboxIssue, setInboxIssue] = useState('');
+      const workspaceRef = useRef(null);
+      const epochRef = useRef(0);
+      if (epochRef.current == null) epochRef.current = 0;
+      const reportsRef = useRef(reports);
+      reportsRef.current = reports;
+      const reportEditsRef = useRef(null);
+      if (!reportEditsRef.current) reportEditsRef.current = loadReportEdits();
+      const polishSelectionRef = useRef(0);
+      if (polishSelectionRef.current == null) polishSelectionRef.current = 0;
+      const editorRevision = useRef(0);
+      if (editorRevision.current == null) editorRevision.current = 0;
+      const editorRef = useRef(null);
+      editorRef.current = { key: reportEditorKey(reportKind, reportPeriod, reportScope), body: reportBody, dirty: reportDirty };
+      workspaceRef.current = { tasks, projects, logs, artifacts, reports, inboxAck, reportEdits: reportEditsRef.current };
+      useEffect(() => {
+        const listener = (message) => setStorageIssue(message);
+        storageListeners.add(listener);
+        listener(storageMessage());
+        const beforeUnload = (event) => {
+          if (storageMessage()) { event.preventDefault(); event.returnValue = ''; }
+        };
+        const onStorage = (event) => {
+          if ([STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, REPORT_EDITS_KEY, INBOX_ACK_KEY, null].includes(event.key)) {
+            if (storageBlockKind === 'transaction') return;
+            storageBlockKind = 'conflict';
+            storageBlock = '另一窗口已修改工作数据，已暂停本页写入。请先导出本页修改，再刷新加载最新数据。';
+            notifyStorage();
+          }
+        };
+        if (window.addEventListener) {
+          window.addEventListener('beforeunload', beforeUnload);
+          window.addEventListener('storage', onStorage);
+        }
+        return () => {
+          storageListeners.delete(listener);
+          if (window.removeEventListener) {
+            window.removeEventListener('beforeunload', beforeUnload);
+            window.removeEventListener('storage', onStorage);
+          }
+        };
+      }, []);
       const chatScrollRef = useRef(null);
       const sendingRef = useRef(false);
       const quickInputRef = useRef(null);
@@ -2379,6 +2591,10 @@ window.__ModuleLoader__.load({
       const calRef = useRef(null);
       const inboxAckRef = useRef(inboxAck);
       const dataFileRef = useRef(null);
+      const selectedTaskRef = useRef(selectedId); selectedTaskRef.current = selectedId;
+      const logTextRef = useRef(logText); logTextRef.current = logText;
+      const adoptingIdsRef = useRef(new Set());
+      if (!adoptingIdsRef.current) adoptingIdsRef.current = new Set();
       useEffect(() => { inboxAckRef.current = inboxAck; }, [inboxAck]);
 
       useEffect(() => {
@@ -2403,7 +2619,23 @@ window.__ModuleLoader__.load({
             if (!res.ok) return;
             const data = await res.json();
             if (stopped) return;
-            const items = (Array.isArray(data && data.items) ? data.items : [])
+            if (!data || data.error || !Array.isArray(data.items)) {
+              setInboxIssue('回传收件箱暂不可用，已有内容未清空。');
+              return;
+            }
+            const handled = data.items.filter((item) => item && inboxAckRef.current.includes(item.id)).map((item) => item.id);
+            if (handled.length) {
+              try {
+                const ack = await fetch(INBOX_ACK_ENDPOINT, {
+                  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: handled }),
+                });
+                const result = await ack.json();
+                if (!ack.ok || !result || result.error) throw new Error('ack-failed');
+                if (!stopped) setInboxIssue('');
+              } catch { if (!stopped) setInboxIssue('本机已记录处理结果，服务端确认待重试。'); }
+            } else setInboxIssue('');
+            if (stopped) return;
+            const items = data.items
               .filter((item) => item && typeof item.id === 'string' && inboxAckRef.current.indexOf(item.id) === -1);
             const added = items.filter((item) => !known.has(item.id));
             known = new Set(items.map((item) => item.id));
@@ -2423,10 +2655,12 @@ window.__ModuleLoader__.load({
         if (projectsMigrated()) return;
         const result = migrateProjectRefs(tasks, projects, reports);
         if (result.changed) {
-          backupBeforeMigration({ tasks, projects, reports });
-          setTasks(result.tasks); saveTasks(result.tasks);
-          setProjects(result.projects); saveProjects(result.projects);
-          setReports(result.reports); saveReports(result.reports);
+          if (!backupBeforeMigration({ tasks, projects, reports })) return;
+          if (!writeStoredTransaction([
+            [STORAGE_KEY, JSON.stringify(result.tasks)], [PROJECTS_KEY, JSON.stringify(result.projects)],
+            [REPORTS_KEY, JSON.stringify(result.reports)],
+          ])) return;
+          setTasks(result.tasks); setProjects(result.projects); setReports(result.reports);
         }
         markProjectsMigrated();
       }, []);
@@ -2458,15 +2692,29 @@ window.__ModuleLoader__.load({
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
       useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
-      // Load the draft that belongs to the selected period (one draft per week).
+      // A report's identity includes project scope. Unrelated batch inserts
+      // must not reload the editor; workspace restores explicitly invalidate it.
       useEffect(() => {
-        const draft = reports.find((r) => r.kind === reportKind && periodKey(r.period) === periodKey(reportPeriod)) || null;
-        setReportBody(draft ? draft.body : '');
-        setReportExcluded(draft && Array.isArray(draft.excluded) ? draft.excluded : []);
-        setReportDirty(false);
-        setReportNotice(null);
+        const key = reportEditorKey(reportKind, reportPeriod, reportScope);
+        const draft = reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === key) || null;
+        const edit = reportEditsRef.current[key];
+        editorRevision.current += 1;
+        setReportBody(edit ? edit.body : draft ? draft.body : '');
+        setReportExcluded(edit ? edit.excluded : draft && Array.isArray(draft.excluded) ? draft.excluded : []);
+        setReportDirty(!!edit);
+        setReportNotice(edit ? { kind: 'warn', text: '已恢复尚未保存的编辑，保存草稿后可纳入报告。' } : null);
         setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
-      }, [reportPeriod.start, reportPeriod.end, reportKind, reportScope, reports.length]);
+      }, [reportPeriod.start, reportPeriod.end, reportKind, reportScope, workspaceEpoch]);
+
+      const editReportBody = (text) => {
+        const key = reportEditorKey(reportKind, reportPeriod, reportScope);
+        editorRevision.current += 1;
+        reportEditsRef.current = { ...reportEditsRef.current,
+          [key]: { body: text, excluded: reportExcluded.slice(), updatedAt: new Date().toISOString() } };
+        writeStored(REPORT_EDITS_KEY, JSON.stringify(reportEditsRef.current));
+        setReportBody(text);
+        setReportDirty(true);
+      };
 
       useEffect(() => {
         // Switching tasks closes the inline composers so a draft never leaks
@@ -2526,7 +2774,28 @@ window.__ModuleLoader__.load({
         commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
       };
 
-      const showToast = (text, kind) => setToast({ text, kind: kind || 'ok', id: Date.now() });
+      const showToast = (text, kind) => setToast({
+        text: storageMessage() && (!kind || kind === 'ok') ? text + '（存在未保存数据，请查看保存提示）' : text,
+        kind: storageMessage() && !kind ? 'danger' : kind || 'ok', id: Date.now(),
+      });
+      const commitTaskStores = (next) => {
+        if (!writeStoredTransaction([
+          [STORAGE_KEY, JSON.stringify(next.tasks)], [LOGS_KEY, JSON.stringify(next.logs)],
+          [ARTIFACTS_KEY, JSON.stringify(next.artifacts)],
+        ])) { showToast('保存失败，变更未生效，原数据已保留。', 'danger'); return false; }
+        workspaceRef.current = { ...workspaceRef.current, ...next };
+        setTasks(next.tasks); setLogs(next.logs); setArtifacts(next.artifacts);
+        return true;
+      };
+      const commitProjectStores = (nextProjects, nextTasks) => {
+        if (!writeStoredTransaction([
+          [PROJECTS_KEY, JSON.stringify(nextProjects)], [STORAGE_KEY, JSON.stringify(nextTasks)],
+        ])) { showToast('项目变更未保存，原数据已保留。', 'danger'); return false; }
+        setLastApply(null);
+        workspaceRef.current = { ...workspaceRef.current, projects: nextProjects, tasks: nextTasks };
+        setProjects(nextProjects); setTasks(nextTasks);
+        return true;
+      };
 
       // ---- recycle bin ---------------------------------------------------
       /** Soft delete: recoverable from the recycle bin. */
@@ -2548,10 +2817,11 @@ window.__ModuleLoader__.load({
         // keep their snapshots, so their history still resolves.
         setLastApply(null);
         const next = purgeTaskData({ tasks, logs, artifacts }, task.id);
-        setTasks(next.tasks);
-        saveTasks(next.tasks);
-        commitLogs(next.logs);
-        commitArtifacts(next.artifacts);
+        if (!writeStoredTransaction([
+          [STORAGE_KEY, JSON.stringify(next.tasks)], [LOGS_KEY, JSON.stringify(next.logs)],
+          [ARTIFACTS_KEY, JSON.stringify(next.artifacts)],
+        ])) { showToast('删除未完成，原数据已保留。', 'danger'); return; }
+        setTasks(next.tasks); setLogs(next.logs); setArtifacts(next.artifacts);
         if (selectedId === task.id) setSelectedId(null);
         setPurgeConfirmId(null);
         showToast('已彻底删除，关联记录与成果一并移除', 'danger');
@@ -2591,12 +2861,10 @@ window.__ModuleLoader__.load({
         if (!name) return null;
         const existing = projects.find((project) => projectKey(project.name) === projectKey(name));
         const project = existing || makeProject({ name });
-        if (!existing) {
-          const next = projects.concat([project]);
-          setProjects(next);
-          saveProjects(next);
-        }
-        if (assignToTaskId) updateTask(assignToTaskId, { projectId: project.id });
+        const nextProjects = existing ? projects : projects.concat([project]);
+        const nextTasks = assignToTaskId ? tasks.map((task) => task.id === assignToTaskId
+          ? { ...task, projectId: project.id, updatedAt: new Date().toISOString() } : task) : tasks;
+        if (!commitProjectStores(nextProjects, nextTasks)) return null;
         setNewProject({ mode: '', name: '' });
         showToast(existing ? '已归入同名项目「' + project.name + '」' : '已创建项目「' + project.name + '」');
         return project;
@@ -2609,8 +2877,7 @@ window.__ModuleLoader__.load({
         const result = renameProject(projects, tasks, activeProjectEntity.id, name);
         if (result.error) { showToast('项目已不存在', 'danger'); return; }
         if (result.merged) {
-          setTasks(result.tasks); saveTasks(result.tasks);
-          setProjects(result.projects); saveProjects(result.projects);
+          if (!commitProjectStores(result.projects, result.tasks)) return;
           setProjectSettingsOpen(false);
           setActiveView('proj:' + result.mergedInto);
           showToast('同名项目已存在，已合并进去');
@@ -2620,7 +2887,7 @@ window.__ModuleLoader__.load({
         const next = result.projects.map((project) => (project.id === activeProjectEntity.id
           ? { ...project, description, updatedAt: new Date().toISOString() }
           : project));
-        setProjects(next); saveProjects(next);
+        if (!commitProjectStores(next, tasks)) return;
         setProjectSettingsOpen(false);
         showToast('项目信息已保存');
       };
@@ -2629,15 +2896,14 @@ window.__ModuleLoader__.load({
         if (!activeProjectEntity) return;
         const archived = activeProjectEntity.status === 'archived';
         const next = setProjectArchived(projects, activeProjectEntity.id, !archived);
-        setProjects(next); saveProjects(next);
+        if (!commitProjectStores(next, tasks)) return;
         showToast(archived ? '项目已取消归档' : '项目已归档，任务保留');
       };
 
       const removeProject = () => {
         if (!activeProjectEntity) return;
         const next = deleteProject(projects, tasks, activeProjectEntity.id);
-        setProjects(next.projects); saveProjects(next.projects);
-        setTasks(next.tasks); saveTasks(next.tasks);
+        if (!commitProjectStores(next.projects, next.tasks)) return;
         setProjectDeleteConfirm(false);
         setProjectSettingsOpen(false);
         setActiveView('all');
@@ -2665,11 +2931,9 @@ window.__ModuleLoader__.load({
 
       // ---- AI actions: preview -> confirm -> apply -> undo ----------------
       const runActions = (actions) => {
-        const result = applyActions({ tasks, logs, artifacts, projects }, actions);
+        const result = applyActions(workspaceRef.current, actions);
         if (result.applied > 0) {
-          setTasks(result.next.tasks); saveTasks(result.next.tasks);
-          commitLogs(result.next.logs);
-          commitArtifacts(result.next.artifacts);
+          if (!commitTaskStores(result.next)) return { ...result, applied: 0, persistenceFailed: true };
           setLastApply({ before: result.before, at: new Date().toISOString() });
         }
         return result;
@@ -2683,6 +2947,7 @@ window.__ModuleLoader__.load({
       const confirmPending = () => {
         if (!pendingActions) return;
         const result = runActions(pendingActions.actions);
+        if (result.persistenceFailed) return;
         setMessages((prev) => prev.concat([{ role: 'assistant', text: summarizeOutcomes(result) }]));
         setPendingActions(null);
       };
@@ -2698,9 +2963,7 @@ window.__ModuleLoader__.load({
 
       const undoLastApply = () => {
         if (!lastApply) return;
-        setTasks(lastApply.before.tasks); saveTasks(lastApply.before.tasks);
-        commitLogs(lastApply.before.logs);
-        commitArtifacts(lastApply.before.artifacts);
+        if (!commitTaskStores(lastApply.before)) return;
         setLastApply(null);
         setMessages((prev) => prev.concat([{ role: 'assistant', text: '已撤销上一次变更，数据已恢复到变更前。' }]));
       };
@@ -2708,6 +2971,7 @@ window.__ModuleLoader__.load({
       // ---- in-task AI: advice and record tidying -------------------------
       const analyzeTask = async (task) => {
         if (!task || aiLoading) return;
+        const epoch = epochRef.current;
         setAiPanelOpen(true);
         setAiLoading(true);
         setAiResult(null);
@@ -2731,11 +2995,13 @@ window.__ModuleLoader__.load({
           if (!res.ok) throw new Error('http-' + res.status);
           const data = await res.json();
           if (!data || data.error) throw new Error((data && data.error) || 'model-error');
+          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
           setAiResult({
             reply: typeof data.reply === 'string' ? data.reply : '',
             suggestion: data.suggestion || null,
           });
         } catch {
+          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
           setAiResult({ reply: 'AI 暂时不可用，稍后再试。', suggestion: null, error: true });
         } finally {
           setAiLoading(false);
@@ -2755,6 +3021,7 @@ window.__ModuleLoader__.load({
       const tidyLog = async (task) => {
         const raw = logText.trim();
         if (!raw || tidyLoading || !task) return;
+        const epoch = epochRef.current;
         setTidyLoading(true);
         setTidyNote('');
         try {
@@ -2773,10 +3040,12 @@ window.__ModuleLoader__.load({
           if (!data || data.error) throw new Error((data && data.error) || 'model-error');
           const proposal = data.proposal && typeof data.proposal.text === 'string' ? data.proposal.text.trim() : '';
           if (!proposal) throw new Error('empty-proposal');
+          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id || logTextRef.current.trim() !== raw) return;
           setLogText(proposal);
           if (data.proposal && LOG_KINDS[data.proposal.kind]) setLogKind(data.proposal.kind);
           setTidyNote('AI 已整理。确认无误后再保存，保存的才是你确认的事实。');
         } catch {
+          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
           setTidyNote('AI 暂时不可用，已保留你的原文。');
         } finally {
           setTidyLoading(false);
@@ -2802,6 +3071,7 @@ window.__ModuleLoader__.load({
         if (pendingActions) return;
         const text = (typeof textArg === 'string' ? textArg : cmdInput).trim();
         if (!text || sendingRef.current) return;
+        const epoch = epochRef.current;
         if (typeof textArg !== 'string') setCmdInput('');
         setAssistantOpen(true);
         sendingRef.current = true;
@@ -2821,16 +3091,9 @@ window.__ModuleLoader__.load({
           if (parsed) {
             // Local fallback goes through the same action pipeline, so the
             // duplicate guard applies even when the model is unavailable.
-            const result = runActions([{
-              op: 'create',
-              title: parsed.title,
-              deadline: parsed.deadline || '',
-              urgency: parsed.urgency,
-            }]);
-            if (result.applied > 0) {
-              return '（模型暂不可用，本次由本地规则解析）\n' + buildConfirmation(result.next.tasks[0]);
-            }
-            return '（模型暂不可用，本次由本地规则解析）\n已存在相同或相似的任务，未重复创建。';
+            const actions = [{ op: 'create', title: parsed.title, deadline: parsed.deadline || '', urgency: parsed.urgency }];
+            setPendingActions({ actions, reply: '本地规则已解析，确认后创建。' });
+            return '（模型暂不可用，本次由本地规则解析）请确认下方变更后创建任务。';
           }
           return '模型暂时不可用，我也没理解这条任务。可以试试「明天10点前完成季度报告，紧急」。';
         };
@@ -2853,6 +3116,7 @@ window.__ModuleLoader__.load({
           if (!res.ok) throw new Error('http-' + res.status);
           const data = await res.json();
           if (!data || data.error) throw new Error((data && data.error) || 'model-error');
+          if (epoch !== epochRef.current) return;
           const reply = typeof data.reply === 'string' ? data.reply : '';
           const actions = Array.isArray(data.actions) ? data.actions : [];
           if (actions.length > 0) {
@@ -2866,7 +3130,9 @@ window.__ModuleLoader__.load({
             setMessages((prev) => prev.concat([{ role: 'assistant', text: reply || '已处理。' }]));
           }
         } catch {
-          setMessages((prev) => [...prev, { role: 'assistant', text: fallback() }]);
+          if (epoch !== epochRef.current) return;
+          const reply = fallback();
+          setMessages((prev) => [...prev, { role: 'assistant', text: reply }]);
         } finally {
           sendingRef.current = false;
           setSending(false);
@@ -3053,50 +3319,45 @@ window.__ModuleLoader__.load({
       const saveReport = (body, options) => {
         const opts = options || {};
         const scopeId = opts.scopeId !== undefined ? opts.scopeId : reportScope;
+        const kind = opts.kind || reportKind;
+        const period = opts.period || reportPeriod;
         const evidence = opts.evidence || reportEvidenceAll;
+        const key = reportEditorKey(kind, period, scopeId);
         const text = String(body == null ? reportBody : body);
         const now = new Date().toISOString();
-        const existing = reports.find((r) => r.kind === reportKind
-          && periodKey(r.period) === periodKey(reportPeriod)
-          && (r.projectId || '') === scopeId) || null;
-        // A+B decision: refs keep the id (navigation) and the snapshot captured
-        // now (so editing a task later never rewrites this report).
-        const refs = parseRefs(text, evidence).map((ref) => ({
-          type: ref.type,
-          id: ref.id,
-          taskId: ref.item.taskId,
-          snapshot: ref.item.snapshot,
-          entry: ref.entry ? { at: ref.entry.at, kind: ref.entry.kind, text: ref.entry.text } : null,
-          artifact: ref.artifact ? { summary: ref.artifact.summary, links: ref.artifact.links } : null,
-        }));
+        const previous = reportsRef.current;
+        const existing = previous.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === key) || null;
+        const refs = parseRefs(text, evidence, existing).map((ref) => {
+          // Preserve generation-time evidence even after the source was purged.
+          const old = existing && (existing.refs || []).find((item) => item.type === ref.type && item.id === ref.id);
+          return old || {
+            type: ref.type, id: ref.id, taskId: ref.item.taskId, snapshot: ref.item.snapshot,
+            entry: ref.entry ? { at: ref.entry.at, kind: ref.entry.kind, text: ref.entry.text } : null,
+            artifact: ref.artifact ? { summary: ref.artifact.summary, links: ref.artifact.links } : null,
+          };
+        });
         const record = {
           id: existing ? existing.id : 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
-          kind: reportKind,
-          period: { start: reportPeriod.start, end: reportPeriod.end },
-          projectId: scopeId,
-          projectName: scopeId ? projectNameOf(scopeId) : '',
-          body: text,
-          refs,
-          excluded: reportExcluded.slice(),
+          kind, period: { start: period.start, end: period.end }, projectId: scopeId,
+          projectName: scopeId ? projectNameOf(scopeId) : '', body: text, refs,
+          excluded: opts.excluded || reportExcluded.slice(),
           derivedFromReportIds: existing ? existing.derivedFromReportIds || [] : [],
-          status: 'draft',
-          createdAt: existing ? existing.createdAt : now,
-          updatedAt: now,
+          status: 'draft', createdAt: existing ? existing.createdAt : now, updatedAt: now,
         };
-        // Functional update: a batch writes several drafts in one run, so a
-        // stale closure must never overwrite an earlier record.
-        setReports((prev) => {
-          const current = prev.find((r) => r.kind === record.kind
-            && periodKey(r.period) === periodKey(record.period)
-            && (r.projectId || '') === (record.projectId || '')) || null;
-          const saved = current ? { ...record, id: current.id, createdAt: current.createdAt } : record;
-          const next = current ? prev.map((r) => (r.id === current.id ? saved : r)) : prev.concat([saved]);
-          saveReports(next);
-          return next;
-        });
-        if (opts.applyToEditor !== false) {
-          setReportBody(text);
-          setReportDirty(false);
+        const next = existing ? previous.map((r) => r.id === existing.id ? record : r) : previous.concat([record]);
+        const edits = { ...reportEditsRef.current };
+        if (opts.applyToEditor !== false) delete edits[key];
+        if (!writeStoredTransaction([
+          [REPORTS_KEY, JSON.stringify(next)], [REPORT_EDITS_KEY, JSON.stringify(edits)],
+        ])) {
+          setReportNotice({ kind: 'err', text: '草稿未保存，编辑内容仍保留；请释放空间后重试或先导出备份。' });
+          return null;
+        }
+        reportsRef.current = next;
+        reportEditsRef.current = edits;
+        setReports(next);
+        if (opts.applyToEditor !== false && editorRef.current.key === key) {
+          setReportBody(text); setReportDirty(false);
         }
         return record;
       };
@@ -3148,26 +3409,37 @@ window.__ModuleLoader__.load({
       };
 
       const generateReport = async () => {
-        if (reportGenerating) return;
-        setReportGenerating(true);
-        setReportNotice(null);
+        if (reportGenerating || batch.running) return;
+        if (reportDirty) {
+          setReportNotice({ kind: 'warn', text: '请先保存当前编辑，再重新生成。' });
+          return;
+        }
+        const token = { epoch: epochRef.current, revision: editorRevision.current,
+          key: reportEditorKey(reportKind, reportPeriod, reportScope) };
+        const baseReport = JSON.stringify(reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === token.key));
+        const baseEdit = JSON.stringify(reportEditsRef.current[token.key]);
+        setReportGenerating(true); setReportNotice(null);
         try {
           const result = await requestReport(reportScope, reportEvidence);
-          saveReport(result.body, { evidence: reportEvidence });
-          resetPolish();
-          setReportMode('preview');
+          if (token.epoch !== epochRef.current) return;
+          const sourceReport = JSON.stringify(reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === token.key));
+          if (sourceReport !== baseReport || JSON.stringify(reportEditsRef.current[token.key]) !== baseEdit) {
+            showToast('原报告正文已变化，本次生成未替换你的编辑。', 'danger'); return;
+          }
+          const applyToEditor = token.key === editorRef.current.key && token.revision === editorRevision.current;
+          if (!saveReport(result.body, { evidence: reportEvidence, applyToEditor })) return;
+          if (!applyToEditor) { showToast('原范围的报告已保存，当前编辑未改动。'); return; }
+          resetPolish(); setReportMode('preview');
           const notices = [];
           if (result.droppedRefs) notices.push('已移除 ' + result.droppedRefs + ' 个无法核对的依据标记');
           if (parseRefs(result.body, reportEvidenceAll).length === 0) notices.push('正文没有引用任何依据，请人工核对');
-          setReportNotice({
-            kind: notices.length ? 'warn' : 'ok',
-            text: notices.length ? notices.join('；') : '报告已生成并保存为草稿，可继续编辑后复制或导出。',
-          });
+          setReportNotice({ kind: notices.length ? 'warn' : 'ok', text: notices.length ? notices.join('；')
+            : '报告已生成并保存为草稿，可继续编辑后复制或导出。' });
         } catch {
-          setReportNotice({ kind: 'err', text: '生成失败：模型暂时不可用或返回无法解析。你的草稿没有被改动。' });
-        } finally {
-          setReportGenerating(false);
-        }
+          if (token.epoch === epochRef.current && token.key === editorRef.current.key) {
+            setReportNotice({ kind: 'err', text: '生成失败：模型暂时不可用或返回无法解析。你的草稿没有被改动。' });
+          }
+        } finally { setReportGenerating(false); }
       };
 
       /**
@@ -3176,24 +3448,37 @@ window.__ModuleLoader__.load({
        * editor, so unfinished text is never replaced behind the user's back.
        */
       const generateForAllProjects = async () => {
-        if (batch.running || !batchTargets.length) return;
+        if (batch.running || reportGenerating || reportDirty || !batchTargets.length) return;
+        const epoch = epochRef.current;
+        const baseVersions = new Map(reportsRef.current.map((r) => [reportEditorKey(r.kind, r.period, r.projectId), JSON.stringify(r)]));
         setBatchConfirm(false);
         setBatch({ running: true, total: batchTargets.length, done: 0, failed: 0, message: '' });
         let done = 0;
         let failed = 0;
         for (const target of batchTargets) {
+          if (epoch !== epochRef.current) break;
           try {
+            const key = reportEditorKey(reportKind, reportPeriod, target.project.id);
+            if (reportEditsRef.current[key]) throw new Error('unsaved-project-draft');
             const result = await requestReport(target.project.id, target.evidence);
-            saveReport(result.body, {
+            if (epoch !== epochRef.current) break;
+            const current = reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === key);
+            if (reportEditsRef.current[key] || JSON.stringify(current) !== baseVersions.get(key)) throw new Error('draft-changed');
+            const saved = saveReport(result.body, {
               evidence: target.evidence,
               scopeId: target.project.id,
               applyToEditor: false,
             });
+            if (!saved) throw new Error('save-failed');
           } catch {
             failed += 1;
           }
           done += 1;
           setBatch({ running: true, total: batchTargets.length, done, failed, message: '' });
+        }
+        if (epoch !== epochRef.current) {
+          setBatch({ running: false, total: 0, done: 0, failed: 0, message: '数据已切换，旧批次已停止。' });
+          return;
         }
         setBatch({
           running: false,
@@ -3210,19 +3495,53 @@ window.__ModuleLoader__.load({
         'not-an-object': '文件内容不是对象',
         'wrong-app': '不是工作面板的备份文件',
         'newer-schema': '备份来自更新的版本，请先升级插件',
-        'empty-backup': '备份里没有数据',
+        'empty-backup': '备份里没有可识别的数据',
+        'incomplete-backup': '覆盖导入需要完整备份，缺少数据分区；可尝试合并模式',
+        'invalid-record': '备份包含格式错误或重复的记录，未导入任何数据',
+        'too-large': '数据量超过本版本可安全导入的范围，未截断或修改现有数据',
       };
 
       const applyWorkspace = (next) => {
-        setTasks(next.tasks); saveTasks(next.tasks);
-        setProjects(next.projects); saveProjects(next.projects);
-        commitLogs(next.logs);
-        commitArtifacts(next.artifacts);
-        setReports(next.reports); saveReports(next.reports);
-        setInboxAck(next.inboxAck || []); saveInboxAck(next.inboxAck || []);
+        const oldBlock = storageBlock;
+        // Only an intentional, validated workspace restore may replace a bad
+        // JSON store. First retain its exact raw bytes for forensic recovery.
+        if (storageBlockKind === 'read') {
+          const raw = workspaceEntries(next).map(([key]) => [key, window.localStorage.getItem(key)]);
+          if (!writeBackupSlot('@local/work-panel:backup:raw-before-restore:v1', { at: new Date().toISOString(), raw })) {
+            showToast('无法保留损坏数据的原始副本，恢复已取消。', 'danger'); return false;
+          }
+          storageBlock = '';
+        }
+        if (!writeStoredTransaction(workspaceEntries(next))) {
+          if (oldBlock && !storageBlock) { storageBlock = oldBlock; storageBlockKind = 'read'; notifyStorage(); }
+          showToast('保存失败，操作未完成；原数据已保留，请检查存储空间。', 'danger');
+          return false;
+        }
+        storageBlockKind = '';
+        retryStorageWrites(); notifyStorage();
+        epochRef.current += 1;
+        setWorkspaceEpoch(epochRef.current);
+        setLastApply(null); setPendingActions(null);
+        setAiResult(null); setAiPanelOpen(false); setAiLoading(false);
+        setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+        reportEditsRef.current = next.reportEdits || {};
+        reportsRef.current = next.reports;
+        workspaceRef.current = { ...next, reportEdits: reportEditsRef.current };
+        setTasks(next.tasks); setProjects(next.projects);
+        setLogs(next.logs); setArtifacts(next.artifacts); setReports(next.reports);
+        inboxAckRef.current = next.inboxAck || [];
+        setInboxAck(next.inboxAck || []);
+        return true;
       };
 
-      const currentWorkspace = () => ({ tasks, projects, logs, artifacts, reports, inboxAck });
+      const currentWorkspace = () => workspaceRef.current;
+      const protectBeforeReplace = () => {
+        if (!writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) })) {
+          showToast('无法保存安全快照，已取消操作。请先导出备份或释放本地空间。', 'danger');
+          return false;
+        }
+        return true;
+      };
 
       const exportBackup = () => {
         try {
@@ -3242,14 +3561,29 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const exportRawStorage = () => {
+        try {
+          const raw = {};
+          for (let i = 0; i < window.localStorage.length; i += 1) {
+            const key = window.localStorage.key(i);
+            if (key && key.startsWith(DATA_PREFIX)) raw[key] = window.localStorage.getItem(key);
+          }
+          const blob = new Blob([JSON.stringify({ app: 'work-panel-raw-recovery', at: new Date().toISOString(), raw }, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a'); link.href = url;
+          link.download = 'work-panel-raw-recovery-' + todayDate() + '.json';
+          link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+          showToast('已导出原始存储副本；该文件用于故障恢复，不是普通导入备份。');
+        } catch { showToast('原始数据导出失败，请勿清理存储。', 'danger'); }
+      };
+
       const importBackup = (raw, mode) => {
         const result = applyImport(currentWorkspace(), raw, mode);
         if (result.error) {
           showToast('导入失败：' + (IMPORT_ERRORS[result.error] || result.error), 'danger');
           return;
         }
-        writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) });
-        applyWorkspace(result.next);
+        if (!protectBeforeReplace() || !applyWorkspace(result.next)) return;
         setPreImportReady(true);
         const c = result.counts;
         showToast((result.replaced ? '已覆盖导入' : '已合并导入')
@@ -3261,8 +3595,8 @@ window.__ModuleLoader__.load({
         if (!slot || !slot.backup) { showToast('没有可撤销的导入', 'danger'); return; }
         const result = applyImport(currentWorkspace(), slot.backup, 'replace');
         if (result.error) { showToast('撤销失败', 'danger'); return; }
-        applyWorkspace(result.next);
-        try { window.localStorage.removeItem(PRE_IMPORT_KEY); } catch { /* ignore */ }
+        if (!applyWorkspace(result.next)) return;
+        try { window.localStorage.removeItem(PRE_IMPORT_KEY); } catch { /* Keep recoverable if cleanup failed. */ }
         setPreImportReady(false);
         showToast('已恢复到导入前的数据');
       };
@@ -3272,15 +3606,15 @@ window.__ModuleLoader__.load({
         if (!slot || !slot.backup) { showToast('还没有每日快照', 'danger'); return; }
         const result = applyImport(currentWorkspace(), slot.backup, 'replace');
         if (result.error) { showToast('恢复失败', 'danger'); return; }
-        writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) });
-        applyWorkspace(result.next);
+        if (!protectBeforeReplace() || !applyWorkspace(result.next)) return;
         setPreImportReady(true);
         showToast('已恢复到 ' + (slot.day || '快照') + ' 的数据');
       };
 
       const clearAllData = () => {
-        writeBackupSlot(PRE_IMPORT_KEY, { at: new Date().toISOString(), backup: buildBackup(currentWorkspace()) });
-        applyWorkspace({ tasks: [], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [] });
+        if (!protectBeforeReplace() || !applyWorkspace({
+          tasks: [], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {},
+        })) return;
         setPreImportReady(true);
         setClearConfirm(false);
         showToast('已清空本地数据，可用「撤销上次操作」恢复一次', 'danger');
@@ -3290,29 +3624,36 @@ window.__ModuleLoader__.load({
         const input = event && event.target;
         const file = input && input.files && input.files[0];
         if (!file) return;
+        const epoch = epochRef.current;
         try {
+          if (file.size > 20 * 1024 * 1024) throw new Error('file-too-large');
           const text = await file.text();
+          if (epoch !== epochRef.current) { showToast('读取文件期间数据已切换，请重新选择备份。', 'danger'); return; }
           importBackup(JSON.parse(text), importMode);
         } catch {
           showToast('文件不是有效的备份 JSON', 'danger');
+        } finally {
+          if (input) input.value = '';
         }
-        if (input) input.value = '';
       };
 
       // ---- execution report-back inbox -----------------------------------
-      const ackInbox = (ids) => {
-        setInboxAck((prev) => {
-          const next = prev.concat(ids).slice(-300);
-          inboxAckRef.current = next;
-          saveInboxAck(next);
-          return next;
-        });
-        setInbox((prev) => prev.filter((item) => ids.indexOf(item.id) === -1));
+      const ackInbox = (ids, alreadySaved) => {
+        const next = Array.from(new Set(inboxAckRef.current.concat(ids))).slice(-300);
+        if (!alreadySaved && !saveInboxAck(next)) {
+          showToast('未能保存处理结果，回传仍保留在收件箱。', 'danger');
+          return false;
+        }
+        inboxAckRef.current = next;
+        setInboxAck(next);
+        setInbox((prev) => prev.filter((item) => !ids.includes(item.id)));
         fetch(INBOX_ACK_ENDPOINT, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ids }),
-        }).catch(() => { /* the Host may have restarted; local ack still holds */ });
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }),
+        }).then(async (res) => {
+          const data = await res.json();
+          if (!res.ok || !data || data.error) setInboxIssue('本机已记录处理结果，服务端确认待重试。');
+        }).catch(() => setInboxIssue('本机已记录处理结果，服务端确认待重试。'));
+        return true;
       };
 
       /**
@@ -3320,9 +3661,10 @@ window.__ModuleLoader__.load({
        * task, and it batches the whole list into one state write.
        */
       const adoptInboxItems = (list) => {
-        let state = { tasks, logs, artifacts };
+        let state = { ...currentWorkspace() };
         const accepted = [];
         for (const item of list) {
+          if (inboxAckRef.current.includes(item.id) || adoptingIdsRef.current.has(item.id)) continue;
           const task = resolveInboxTask(state.tasks, item)
             || state.tasks.find((t) => t.id === inboxPicks[item.id])
             || null;
@@ -3338,14 +3680,18 @@ window.__ModuleLoader__.load({
             });
           }
           const result = applyActions({ ...state, projects }, actions);
-          if (result.applied > 0) state = result.next;
-          accepted.push(item.id);
+          if (result.applied > 0) { state = { ...state, ...result.next }; accepted.push(item.id); }
         }
         if (accepted.length) {
-          setTasks(state.tasks); saveTasks(state.tasks);
-          commitLogs(state.logs);
-          commitArtifacts(state.artifacts);
-          ackInbox(accepted);
+          state.inboxAck = Array.from(new Set(inboxAckRef.current.concat(accepted))).slice(-300);
+          if (!writeStoredTransaction(workspaceEntries(state))) {
+            showToast('采纳未完成，回传与原数据已保留。', 'danger');
+            return 0;
+          }
+          accepted.forEach((id) => adoptingIdsRef.current.add(id));
+          workspaceRef.current = state;
+          setTasks(state.tasks); setLogs(state.logs); setArtifacts(state.artifacts);
+          ackInbox(accepted, true);
         }
         return accepted.length;
       };
@@ -3357,8 +3703,7 @@ window.__ModuleLoader__.load({
       };
 
       const ignoreInboxItem = (item) => {
-        ackInbox([item.id]);
-        showToast('已忽略这条回传');
+        if (ackInbox([item.id])) showToast('已忽略这条回传');
       };
 
       const adoptAllInbox = () => {
@@ -3369,8 +3714,7 @@ window.__ModuleLoader__.load({
       const ignoreAllInbox = () => {
         const ids = inbox.map((item) => item.id);
         if (!ids.length) return;
-        ackInbox(ids);
-        showToast('已清空 ' + ids.length + ' 条回传');
+        if (ackInbox(ids)) showToast('已忽略 ' + ids.length + ' 条回传');
       };
 
       const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll, reportDraft);
@@ -3440,16 +3784,21 @@ window.__ModuleLoader__.load({
       };
 
       // ---- paragraph polishing -------------------------------------------
-      const resetPolish = () => setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+      const resetPolish = () => {
+        polishSelectionRef.current += 1;
+        setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+      };
 
       const selectParagraph = (index) => {
         const line = String(reportBody).split('\n')[index] || '';
         if (!line.trim() || /^#{1,4}\s+/.test(line)) return;
+        polishSelectionRef.current += 1;
         setPolish({ index, source: line, loading: false, error: '', result: '', reply: '' });
       };
 
       const polishParagraph = async () => {
         if (polish.index < 0 || polish.loading || !polish.source.trim()) return;
+        const token = { epoch: epochRef.current, revision: editorRevision.current, key: editorRef.current.key, selection: polishSelectionRef.current };
         setPolish((prev) => ({ ...prev, loading: true, error: '', result: '', reply: '' }));
         try {
           const res = await fetch(CHAT_ENDPOINT, {
@@ -3468,6 +3817,7 @@ window.__ModuleLoader__.load({
             if (data && data.error === 'lost-evidence') throw new Error('lost-evidence');
             throw new Error((data && data.error) || 'model-error');
           }
+          if (token.epoch !== epochRef.current || token.key !== editorRef.current.key || token.revision !== editorRevision.current || token.selection !== polishSelectionRef.current) return;
           const polished = typeof data.polished === 'string' ? data.polished.trim() : '';
           if (!polished) throw new Error('empty-polish');
           setPolish((prev) => ({
@@ -3475,6 +3825,7 @@ window.__ModuleLoader__.load({
             reply: typeof data.reply === 'string' ? data.reply : '',
           }));
         } catch (error) {
+          if (token.epoch !== epochRef.current || token.key !== editorRef.current.key || token.revision !== editorRevision.current || token.selection !== polishSelectionRef.current) return;
           const lost = String((error && error.message) || '') === 'lost-evidence';
           setPolish((prev) => ({
             ...prev,
@@ -3496,8 +3847,7 @@ window.__ModuleLoader__.load({
           return;
         }
         lines[polish.index] = polish.result;
-        setReportBody(lines.join('\n'));
-        setReportDirty(true);
+        editReportBody(lines.join('\n'));
         resetPolish();
         showToast('已替换这一段，记得保存草稿');
       };
@@ -3725,12 +4075,12 @@ window.__ModuleLoader__.load({
               : batch.message)
           : null,
         polishPanel,
-        reportBody.trim()
+        (reportBody.trim() || reportMode === 'edit')
           ? (reportMode === 'edit'
               ? h('textarea', {
                   className: 'wp-report-editor', value: reportBody, spellCheck: false,
                   placeholder: '用 [[task:id]] / [[log:id]] / [[artifact:id]] 标注依据',
-                  onChange: (e) => { setReportBody(e.target.value); setReportDirty(true); },
+                  onChange: (e) => editReportBody(e.target.value),
                 })
               : h('div', { className: 'wp-report-preview' }, reportLines))
           : h('div', { className: 'wp-report-empty' },
@@ -4481,7 +4831,17 @@ window.__ModuleLoader__.load({
         h('style', null, CSS),
         h('div', { className: 'wp-workbench' },
           sidenav,
-          h('section', { className: 'wp-mid' }, middleHeader, middleBody),
+          h('section', { className: 'wp-mid' },
+            storageIssue ? h('div', { className: 'wp-storage-warning', role: 'alert' },
+              h('span', null, storageIssue),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => {
+                const ok = retryStorageWrites();
+                showToast(ok ? '待保存的修改已写入本机。' : '重试未成功，请先导出备份。', ok ? 'ok' : 'danger');
+              } }, '重试保存'),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportBackup }, '导出当前备份'),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportRawStorage }, '导出原始数据')) : null,
+            inboxIssue ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, inboxIssue) : null,
+            middleHeader, middleBody),
           isReportsView ? evidencePanel : (isInboxView || isDataView) ? null : (trashDetailPanel || detailPanel)),
         toastNode,
         drawer);
@@ -4510,6 +4870,8 @@ window.__ModuleLoader__.load({
         makeProject, projectKey, migrateProjectRefs, renameProject, setProjectArchived, deleteProject, countProjectTasks,
         projectHealth, resolveInboxTask, loadInboxAck, saveInboxAck,
         buildBackup, validateBackup, applyImport, estimateStorageUsage, formatBytes, PANEL_VERSION, BACKUP_SCHEMA,
+        writeStoredTransaction, recoverStorageTransaction, retryStorageWrites, storageMessage,
+        reportEditorKey, workspaceEntries, loadReportEdits,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,
