@@ -3949,6 +3949,8 @@ window.__ModuleLoader__.load({
       .wp-data-label { width: 72px; flex-shrink: 0; color: var(--wp-text-secondary); }
       .wp-data-value { color: var(--wp-text); }
       .wp-data-section-title { font-size: 13px; font-weight: 600; color: var(--wp-text); }
+      .wp-auto { display: flex; flex-direction: column; gap: 10px; }
+      .wp-auto-card { display: flex; flex-direction: column; gap: 8px; }
       .wp-radar { display: flex; flex-direction: column; gap: 10px; }
       .wp-radar-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 12px; border-radius: 8px;
         background: var(--wp-fill-secondary); color: var(--wp-text-secondary); font-size: 12px; }
@@ -5294,6 +5296,153 @@ window.__ModuleLoader__.load({
         artifacts: item.artifacts.map((artifact) => ({ id: artifact.id, summary: artifact.summary, links: artifact.links })),
       });
 
+      // ---------- 1.5.0 automatic report drafts ----------
+      // Generation runs only while this page is open; the panel never promises a
+      // background delivery it cannot perform. Nothing here overwrites a report
+      // the user has edited, and the same period is never generated twice.
+      // Evidence scope for automatic drafts: one project, or everything live.
+      // 'all' is the sentinel for "every live task"; any other value is a project
+      // id. Treating 'all' as an id silently filtered every task out.
+      const autoScopeId = (scope) => (scope && scope !== 'all' ? scope : '');
+      const scopeTasksFor = (scopeId) => {
+        const project = autoScopeId(scopeId);
+        return project ? liveTasks(tasks).filter((t) => t.projectId === project) : liveTasks(tasks);
+      };
+      const autoRunRef = useRef(false);
+      const runAutoReport = async (reason) => {
+        if (autoRunRef.current) return;
+        const settings = normalizeAutoSettings(autoSettings);
+        if (!settings.enabled) return;
+        const todayPeriod = periodForDate(settings.kind, todayDate());
+        if (!todayPeriod) return;
+        const todayKey = periodKeyForPeriod(todayPeriod);
+        const todayEvidence = collectEvidence(scopeTasksFor(settings.scope), logs, artifacts, todayPeriod);
+        // A catch-up decision concerns the PREVIOUS period, so hand the rules that
+        // period's record count; otherwise a quiet current week would suppress a
+        // report for a week that actually has work.
+        const prevPeriod = shiftPeriod(settings.kind, todayPeriod, -1);
+        const prevEvidence = collectEvidence(scopeTasksFor(settings.scope), logs, artifacts, prevPeriod);
+        const decisionState = { ...autoState };
+        decisionState.evidenceByPeriod = {
+          ...(autoState.evidenceByPeriod || {}), [periodKeyForPeriod(prevPeriod)]: prevEvidence.length,
+        };
+        // A manual run is the user's explicit request: it targets the period they
+        // are viewing and is not gated by the timer or by a scheduled run having
+        // "not arrived" yet. Only genuine blockers (disabled/paused/offline work)
+        // stop it, so a click never silently does nothing.
+        if (reason === 'manual') {
+          if (autoState.paused) { setAutoNotice('自动化已暂停，请先恢复再生成。'); return; }
+          // A manual run ignores the timetable, but never an unusable time zone:
+          // the draft is stamped with the period that zone defines.
+          if (!nextDue(settings, Date.now(), settings.timeZone)) {
+            setAutoNotice('时区无法识别（' + settings.timeZone + '），请改成常用时区后再生成。');
+            return;
+          }
+          if (!todayEvidence.length) {
+            setAutoNotice(periodLabelFor(settings.kind, todayPeriod) + ' 还没有工作依据，无法生成有依据的报告。'
+);
+            return;
+          }
+          const manualKey = reportEditorKey(settings.kind, todayPeriod, autoScopeId(settings.scope));
+          const manualExisting = reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === manualKey);
+          if ((manualExisting && manualExisting.auto !== true) || reportEditsRef.current[manualKey]) {
+            setAutoNotice('本期已有你的手工草稿，自动生成会覆盖它，已跳过。');
+            return;
+          }
+          await generateAutoDraft(settings, todayPeriod, todayEvidence);
+          return;
+        }
+        const decision = dueGeneration(settings, { ...decisionState, evidenceCount: todayEvidence.length }, Date.now());
+        if (!decision.due) return;
+        // A catch-up run targets the PREVIOUS period and its own evidence set, so a
+        // draft is never labelled with another period's work.
+        const targetPeriod = decision.period;
+        const targetKey = periodKeyForPeriod(targetPeriod);
+        const evidence = collectEvidence(scopeTasksFor(settings.scope), logs, artifacts, targetPeriod);
+        if (evidence.length < settings.minEvidence) {
+          // Record the empty period so it is not probed on every mount.
+          updateAutoState({ lastPeriodKey: periodKeyForPeriod(targetPeriod), lastRunOk: true, lastRunAt: new Date().toISOString(),
+            generatedKeys: (autoState.generatedKeys || []).concat([periodKeyForPeriod(targetPeriod)]).slice(-200) });
+          return;
+        }
+        await generateAutoDraft(settings, targetPeriod, evidence);
+      };
+
+      // One place actually produces a draft. Both the timer and the explicit
+      // manual click call it, so behaviour cannot drift between them.
+      const generateAutoDraft = async (settings, targetPeriod, evidence) => {
+        if (autoRunRef.current) return;
+        autoRunRef.current = true;
+        const targetKey = reportEditorKey(settings.kind, targetPeriod, autoScopeId(settings.scope));
+        setAutoNotice('正在生成 ' + periodLabelFor(settings.kind, targetPeriod) + ' 草稿…');
+        try {
+          const existing = reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === targetKey);
+          const unsavedEdit = reportEditsRef.current[targetKey];
+          // A draft the user edited (or is editing) always wins over generation.
+          if ((existing && existing.auto !== true) || unsavedEdit) {
+            setAutoNotice('本期已有你的手工草稿，自动生成已跳过，不会覆盖你的编辑。');
+            return;
+          }
+          const res = await fetch(CHAT_ENDPOINT, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'report', kind: settings.kind, projectId: autoScopeId(settings.scope),
+              project: autoScopeId(settings.scope) ? { name: projectNameOf(autoScopeId(settings.scope)), description: (projectById.get(autoScopeId(settings.scope)) || {}).description || '' } : null,
+              period: { start: targetPeriod.start, end: targetPeriod.end },
+              weeklies: settings.kind === 'month'
+                ? reports.filter((r) => r.kind === 'week' && (r.projectId || '') === autoScopeId(settings.scope)
+                    && r.period.start >= targetPeriod.start && r.period.end <= targetPeriod.end)
+                    .slice(-6).map((r) => ({ period: r.period, body: r.body }))
+                : [],
+              evidence: evidence.map(compactEvidence),
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data || data.error) throw new Error((data && data.error) || 'model-error');
+          const body = data.report && typeof data.report.body === 'string' ? data.report.body.trim() : '';
+          if (!body) throw new Error('empty-report');
+          const record = saveReport(body, { kind: settings.kind, period: targetPeriod, scopeId: autoScopeId(settings.scope),
+            evidence, applyToEditor: false });
+          if (!record) throw new Error('save-failed');
+          // Machine-generated markers let a later run refresh its own draft while a
+          // manual edit always blocks replacement.
+          const marked = reportsRef.current.map((r) => r.id === record.id
+            ? { ...r, auto: true, autoGeneratedAt: new Date().toISOString() } : r);
+          writeStored(REPORTS_KEY, JSON.stringify(marked));
+          reportsRef.current = marked; setReports(marked);
+          const nextKey = periodKeyForPeriod(targetPeriod);
+          updateAutoState({ lastRunAt: new Date().toISOString(), lastRunOk: true, lastPeriodKey: nextKey, attempts: 0,
+            generatedKeys: (autoState.generatedKeys || []).concat([nextKey]).slice(-200) });
+          setAutoNotice('已生成 ' + periodLabelFor(settings.kind, targetPeriod) + ' 草稿，可在报告页编辑后采用。');
+        } catch (error) {
+          const attempt = (autoState.attempts || 0) + 1;
+          const wait = nextBackoff(attempt);
+          updateAutoState({ lastRunAt: new Date().toISOString(), lastRunOk: false, attempts: attempt,
+            retryAfter: wait ? Date.now() + wait : null });
+          setAutoNotice('自动生成失败：' + String((error && error.message) || error) + '。' + (wait
+            ? ' ' + Math.round(wait / 60000) + ' 分钟后可重试（第 ' + attempt + ' 次）。'
+            : ' 已停止自动重试；请到自动化设置里手动重试。'));
+        } finally { autoRunRef.current = false; }
+      };
+
+      const autoReasonText = (reason) => ({
+        disabled: '功能未开启', 'no-evidence': '本期还没有足够依据', 'already-generated': '本期已生成过',
+        paused: '已暂停', backoff: '失败后等待重试', 'clock-rollback': '检测到系统时间回拨',
+        'not-due': '还没到设定时间', 'invalid-timezone': '时区无法识别',
+      }[reason] || reason);
+
+      useEffect(() => {
+        if (!autoSettings.enabled) return undefined;
+        // Check on mount and every 5 minutes while the page stays open. This is
+        // deliberately not a Host schedule: the panel never claims delivery
+        // while the app is closed, and a missed period is caught up once.
+        const tick = () => { runAutoReport('auto'); };
+        const timer = setInterval(tick, 5 * 60 * 1000);
+        tick();
+        return () => clearInterval(timer);
+      }, [autoSettings.enabled, autoSettings.kind, autoSettings.scope, autoSettings.weekday, autoSettings.dayOfMonth, autoSettings.timeOfDay]);
+
+
       const weekliesFor = (scopeId) => (reportKind === 'month'
         ? reports
             .filter((r) => r.kind === 'week'
@@ -5972,6 +6121,70 @@ window.__ModuleLoader__.load({
                 '恢复已隐藏的 ' + (radarScan.hidden.snoozed + radarScan.hidden.dismissed) + ' 条') : null),
         radarList);
 
+      // ---------- 1.5.0 automation controls ----------
+      const autoPanel = h('div', { className: 'wp-auto' },
+        h('div', { className: 'wp-card wp-auto-card' },
+          h('div', { className: 'wp-data-section-title' }, '自动生成工作报告'),
+          h('p', { className: 'wp-data-hint' },
+            '开启后，在面板打开期间按设定时间生成' + (autoSettings.kind === 'month' ? '月报' : '周报') + '草稿。'
+            + '它不会覆盖你手工编辑过的报告；应用关闭时不会执行，下次打开只会补最近一期。'),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '启用'),
+            h('button', {
+              className: 'wp-btn ' + (autoSettings.enabled ? 'wp-btn-primary' : 'wp-btn-default') + ' wp-act-btn',
+              type: 'button', 'aria-pressed': autoSettings.enabled ? 'true' : 'false',
+              onClick: () => {
+                updateAutoSettings({ enabled: !autoSettings.enabled });
+                showToast(autoSettings.enabled ? '已关闭自动生成。' : '已开启自动生成；只有面板打开时才会执行。');
+              },
+            }, autoSettings.enabled ? '已开启 · 点击关闭' : '未开启 · 点击开启')),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '报告类型'),
+            h('select', { className: 'wp-sort-select', value: autoSettings.kind,
+              onChange: (e) => updateAutoSettings({ kind: e.target.value === 'month' ? 'month' : 'week' }) },
+              h('option', { value: 'week' }, '周报'), h('option', { value: 'month' }, '月报'))),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, autoSettings.kind === 'month' ? '每月几号' : '每周几'),
+            autoSettings.kind === 'month'
+              ? h('select', { className: 'wp-sort-select', value: String(autoSettings.dayOfMonth),
+                  onChange: (e) => updateAutoSettings({ dayOfMonth: Number(e.target.value) }) },
+                  Array.from({ length: 28 }, (_, i) => h('option', { key: i + 1, value: String(i + 1) }, (i + 1) + ' 号')))
+              : h('select', { className: 'wp-sort-select', value: String(autoSettings.weekday),
+                  onChange: (e) => updateAutoSettings({ weekday: Number(e.target.value) }) },
+                  ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+                    .map((label, i) => h('option', { key: i, value: String(i + 1) }, label)))),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '时间'),
+            h('input', { className: 'wp-detail-input wp-detail-small', type: 'time', value: autoSettings.timeOfDay,
+              onChange: (e) => updateAutoSettings({ timeOfDay: e.target.value || '18:00' }) })),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '时区'),
+            h('input', { className: 'wp-detail-input wp-detail-small', type: 'text', value: autoSettings.timeZone,
+              onChange: (e) => updateAutoSettings({ timeZone: e.target.value }) }),
+            h('span', { className: 'wp-data-hint' }, '支持常用时区；无法识别时会明确提示，不会按错误时间执行。')),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '数据范围'),
+            h('select', { className: 'wp-sort-select', value: autoSettings.scope,
+              onChange: (e) => updateAutoSettings({ scope: e.target.value }) },
+              h('option', { value: 'all' }, '全部任务'), projects.map((p) => h('option', { key: p.id, value: p.id }, p.name)))),
+          h('div', { className: 'wp-data-actions' },
+            h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              onClick: () => runAutoReport('manual') }, '立即生成一次'),
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+              onClick: () => { updateAutoState({ paused: !autoState.paused, pausedUntil: null }); } },
+              autoState.paused ? '恢复' : '暂停'),
+            autoState.attempts ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+              onClick: () => { updateAutoState({ retryAfter: null, attempts: 0 }); runAutoReport('manual'); } }, '手动重试') : null),
+          autoNotice ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, autoNotice) : null,
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '最近结果'),
+            h('span', { className: 'wp-data-value' }, autoState.lastRunAt
+              ? formatDateTime(autoState.lastRunAt) + (autoState.lastRunOk ? ' · 成功' : ' · 失败')
+              : '尚未运行过')),
+          h('p', { className: 'wp-data-hint' },
+            '本页只在你打开面板时执行，创建的是可编辑草稿，不会自动发布，也不会修改任务状态。'
+            + (autoSettings.enabled ? '' : ' 当前未开启，不会产生任何自动生成。'))));
+
       // ---------- weekly report ----------
       const renderRefs = (text) => {
         const index = buildEvidenceIndex(reportEvidenceAll);
@@ -6198,6 +6411,7 @@ window.__ModuleLoader__.load({
       const autoSnapshot = readBackupSlot(AUTO_BACKUP_KEY);
       const beforeHostSnapshot = readBackupSlot(HOST_MIGRATION_BACKUP_KEY);
       const dataPanel = h('div', { className: 'wp-data' },
+        autoPanel,
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-row' },
             h('span', { className: 'wp-data-label' }, '版本'),
@@ -7006,7 +7220,7 @@ window.__ModuleLoader__.load({
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,
-        REPORT_SECTIONS,
+        REPORT_SECTIONS, normalizeAutoSettings, normalizeAutoState, dueGeneration, periodForDate, periodKeyForPeriod, nextBackoff,
       },
     };
   },
