@@ -142,6 +142,40 @@ test('a single-signal task shows no grouping controls', async () => {
   } finally { ui.close(); }
 });
 
+test('typing in a task field never shows the sync banner or shifts the header', async () => {
+  const ui = harness(state([task('a')])); await ui.settle();
+  try {
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onClick');
+    const title = ui.byClass('wp-detail-title-input');
+    assert.ok(title, 'title field is open');
+    // Type one character at a time, exactly as a user would.
+    for (const value of ['任务 a1', '任务 a12', '任务 a123']) {
+      ui.fire(title, 'onChange', { target: { value } });
+      // The banner is the layout-shifting element; a quiet sync must not render it.
+      assert.equal(ui.nodes().filter(n => has(n, 'wp-host-sync')).length, 0, 'no banner while typing: ' + value);
+      assert.equal(ui.byClass('wp-detail-title-input').props.value, value, 'the field stays responsive');
+    }
+    // A small inline indicator may appear instead, and it must not participate in layout.
+    const dots = ui.nodes().filter(n => has(n, 'wp-sync-dot'));
+    assert.ok(dots.length <= 1, 'at most one quiet indicator');
+    ui.timers.advance(500); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].title, '任务 a123', 'the final value is persisted');
+  } finally { ui.close(); }
+});
+
+test('a debounced edit is not lost when the selection changes immediately', async () => {
+  const ui = harness(state([task('a'), task('b')])); await ui.settle();
+  try {
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onClick');
+    ui.fire(ui.byClass('wp-detail-title-input'), 'onChange', { target: { value: '改过的标题' } });
+    // Switch away before the debounce fires.
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 b')), 'onClick');
+    await ui.settle();
+    const titles = ui.storage.json('@local/work-panel:tasks:v1').map(t => t.title).sort();
+    assert.ok(titles.includes('改过的标题'), 'the switched-away edit was flushed, not dropped');
+  } finally { ui.close(); }
+});
+
 test('automation is disabled by default and no scheduled generation is promised', async () => {
   const ui = harness(state([task('a')])); await ui.settle();
   try {

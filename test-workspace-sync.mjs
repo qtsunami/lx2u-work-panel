@@ -76,6 +76,23 @@ test('first migration backs up and initializes using durable stable pending requ
   await r.sync.start(); assert.equal(r.posts()[0].action, 'initialize'); assert.equal(r.posts()[0].baseRevision, 0);
   assert.deepEqual(r.posts()[0].workspace, ws('local')); assert.equal(r.state.pending, null); assert.equal(r.state.meta.revision, 1); assert.equal(r.state.meta.storeId, 'new-store');
 });
+test('an edit-triggered sync is quiet so callers need not reflow their layout', async () => {
+  const r = rig({ meta: known() }); await r.sync.start();
+  assert.equal(r.status().phase, 'ready');
+  r.edit('typing');
+  const status = r.status();
+  assert.equal(status.phase, 'syncing');
+  assert.equal(status.quiet, true, 'routine sync must be marked quiet');
+  assert.equal(status.canEdit, true, 'editing stays available during a quiet sync');
+  await r.tick();
+  assert.equal(r.status().phase, 'ready');
+  assert.equal(r.status().quiet, false, 'a completed sync is not quiet');
+});
+test('a user-visible phase is never marked quiet', async () => {
+  const r = rig({ meta: known(), failures: { networkGET: 1 } }); await r.sync.start();
+  assert.equal(r.status().phase, 'offline');
+  assert.ok(!r.status().quiet, 'offline must stay visible');
+});
 test('600ms changes coalesce into the newest local snapshot', async () => {
   const r = rig({ meta: known() }); await r.sync.start();
   r.edit('one'); r.edit('two'); r.edit('three'); assert.equal(r.posts().length, 0); assert.equal(r.state.timers.size, 1); assert.equal(r.state.meta.dirty, true);

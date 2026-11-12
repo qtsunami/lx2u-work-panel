@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.1';
+    const PANEL_VERSION = '1.5.2';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -81,7 +81,7 @@ window.__ModuleLoader__.load({
         this.meta = { ...this.meta, dirty: true };
         if (!this._persistMeta()) return this.getStatus();
         if (this.status.phase === 'ready' || this.status.phase === 'syncing') {
-          this._set('syncing', '本页修改已保存到缓存，等待同步主存。');
+          this._set('syncing', '本页修改已保存到缓存，等待同步主存。', true);
           if (!this.running) {
             this._cancelTimer();
             this.timer = this.d.schedule(() => { this.timer = null; return this.flush(); }, 600);
@@ -146,11 +146,11 @@ window.__ModuleLoader__.load({
         if (this.timer !== null) { this.d.cancel(this.timer); this.timer = null; }
       }
 
-      _set(phase, message) {
+      _set(phase, message, quiet) {
         if (this.disposed) return;
         const known = this._known();
         this.status = {
-          phase, message, revision: this.meta ? this.meta.revision : null,
+          phase, message, quiet: !!quiet, revision: this.meta ? this.meta.revision : null,
           canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known)
             || (phase === 'local' && this.localOnly),
         };
@@ -4001,6 +4001,10 @@ window.__ModuleLoader__.load({
       .wp-sync-guard { display: flex; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; border: 0; }
       .wp-host-sync { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; background: var(--wp-fill-secondary); color: var(--wp-text-secondary); font-size: 12px; }
       .wp-host-sync > span { flex: 1; min-width: 160px; }
+      .wp-sync-dot { position: absolute; top: 6px; right: 10px; width: 6px; height: 6px; border-radius: 50%;
+        background: var(--wp-primary); opacity: .55; pointer-events: none; animation: wp-sync-pulse 1.2s ease-in-out infinite; z-index: 5; }
+      @keyframes wp-sync-pulse { 0%, 100% { opacity: .25; } 50% { opacity: .8; } }
+      .wp-root { position: relative; }
 
       /* ---- weekly report ---- */
       .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
@@ -4315,6 +4319,8 @@ window.__ModuleLoader__.load({
       if (epochRef.current == null) epochRef.current = 0;
       const reportsRef = useRef(reports);
       reportsRef.current = reports;
+      const tasksRef = useRef(tasks);
+      tasksRef.current = tasks;
       const reportEditsRef = useRef(null);
       if (!reportEditsRef.current) reportEditsRef.current = loadReportEdits();
       const polishSelectionRef = useRef(0);
@@ -4340,6 +4346,8 @@ window.__ModuleLoader__.load({
           } catch { return false; }
         };
         const beforeUnload = (event) => {
+          // A pending text edit must be written before the page can disappear.
+          flushDraftsRef.current();
           if (storageMessage() || hostUnsynced()) { event.preventDefault(); event.returnValue = ''; }
         };
         const onStorage = (event) => {
@@ -4523,7 +4531,9 @@ window.__ModuleLoader__.load({
 
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
-      useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
+      // A pending text edit belongs to the task that was open; write it before the
+      // selection (or the page) moves on, so a fast switch cannot drop characters.
+      useEffect(() => () => { flushDraftsRef.current(); }, [selectedId]);
       // A report's identity includes project scope. Unrelated batch inserts
       // must not reload the editor; workspace restores explicitly invalidate it.
       useEffect(() => {
@@ -4641,6 +4651,47 @@ window.__ModuleLoader__.load({
         setLastApply(null);
         commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
       };
+
+      // Free-text fields update the visible value immediately but write to storage
+      // once the typing pauses. Per-keystroke writes made the sync status flicker
+      // on every character and re-serialized the whole workspace needlessly.
+      const draftTimers = useRef({});
+      const draftValues = useRef({});
+      const flushDraftsRef = useRef(() => 0);
+      const updateTaskDebounced = (id, patch) => {
+        setLastApply(null);
+        const text = String(patch.title !== undefined ? patch.title : patch.description);
+        // Keep the field responsive: the local value changes now.
+        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+        const field = patch.title !== undefined ? 'title' : 'description';
+        const key = id + ':' + field;
+        draftValues.current[key] = { id, patch };
+        if (draftTimers.current[key]) clearTimeout(draftTimers.current[key]);
+        draftTimers.current[key] = setTimeout(() => {
+          delete draftTimers.current[key];
+          const pending = draftValues.current[key];
+          delete draftValues.current[key];
+          if (!pending) return;
+          commit(tasksRef.current.map((t) => (t.id === pending.id
+            ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t)));
+        }, 500);
+        return text;
+      };
+      const flushDrafts = () => {
+        const keys = Object.keys(draftTimers.current);
+        if (!keys.length) return 0;
+        for (const key of keys) { clearTimeout(draftTimers.current[key]); delete draftTimers.current[key]; }
+        let next = tasksRef.current;
+        for (const key of keys) {
+          const pending = draftValues.current[key];
+          delete draftValues.current[key];
+          if (pending) next = next.map((t) => (t.id === pending.id
+            ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t));
+        }
+        commit(next);
+        return keys.length;
+      };
+      flushDraftsRef.current = flushDrafts;
 
       const showToast = (text, kind) => setToast({
         text: storageMessage() && (!kind || kind === 'ok') ? text + '（存在未保存数据，请查看保存提示）' : text,
@@ -7003,12 +7054,12 @@ window.__ModuleLoader__.load({
           h('textarea', {
             className: 'wp-detail-input wp-detail-title-input', rows: 2, value: selectedTask.title,
             placeholder: '任务标题', spellCheck: false,
-            onChange: (e) => updateTask(selectedTask.id, { title: e.target.value }),
+            onChange: (e) => updateTaskDebounced(selectedTask.id, { title: e.target.value }),
           }),
           h('textarea', {
             className: 'wp-detail-input wp-detail-desc-input', rows: 4, value: selectedTask.description || '',
             placeholder: '添加任务描述',
-            onChange: (e) => updateTask(selectedTask.id, { description: e.target.value }),
+            onChange: (e) => updateTaskDebounced(selectedTask.id, { description: e.target.value }),
           }),
           h('div', { className: 'wp-detail-field' },
             h('label', { className: 'wp-detail-field-label' }, '项目'),
@@ -7220,7 +7271,12 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'wp-root', 'data-theme': theme },
         h('style', null, CSS),
-        hostSyncStatus.phase !== 'ready' ? h('div', { className: 'wp-host-sync', role: 'status' },
+        // Routine background sync: one absolutely-positioned dot, so typing never
+        // reflows the page and the header never jumps.
+        hostSyncStatus.quiet && hostSyncStatus.phase === 'syncing'
+          ? h('span', { className: 'wp-sync-dot', role: 'status', 'aria-label': '正在同步到本机主存', title: '正在同步到本机主存' })
+          : null,
+        hostSyncStatus.phase !== 'ready' && !hostSyncStatus.quiet ? h('div', { className: 'wp-host-sync', role: 'status' },
           h('span', null, hostSyncStatus.message),
           hostSyncStatus.phase === 'local'
             ? h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', title: '主存为空时把本页数据写入主存；主存已有数据会拒绝',

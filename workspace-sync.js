@@ -34,7 +34,7 @@ export class WorkspaceSync {
     this.meta = { ...this.meta, dirty: true };
     if (!this._persistMeta()) return this.getStatus();
     if (this.status.phase === 'ready' || this.status.phase === 'syncing') {
-      this._set('syncing', '本页修改已保存到缓存，等待同步主存。');
+      this._set('syncing', '本页修改已保存到缓存，等待同步主存。', true);
       if (!this.running) {
         this._cancelTimer();
         this.timer = this.d.schedule(() => { this.timer = null; return this.flush(); }, 600);
@@ -99,11 +99,11 @@ export class WorkspaceSync {
     if (this.timer !== null) { this.d.cancel(this.timer); this.timer = null; }
   }
 
-  _set(phase, message) {
+  _set(phase, message, quiet) {
     if (this.disposed) return;
     const known = this._known();
     this.status = {
-      phase, message, revision: this.meta ? this.meta.revision : null,
+      phase, message, quiet: !!quiet, revision: this.meta ? this.meta.revision : null,
       canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known)
         || (phase === 'local' && this.localOnly),
     };
