@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 export const INBOX_LIMIT = 200;
 export const RECEIPT_LIMIT = 1000;
 export const INBOX_DESCRIPTOR = Object.freeze({
-  name: 'work-panel-inbox', version: 1, tables: Object.freeze([]), hasGlobal: true, layout: 'single',
+  name: 'work_panel_inbox', version: 1, tables: Object.freeze([]), hasGlobal: true, layout: 'single',
 });
 
 export class InboxError extends Error {

@@ -7,6 +7,9 @@ function mockStorage() {
   const state = { disk: null, units: {}, failNext: false, opens: 0, closes: 0, writes: 0 };
   const backend = { kv: { open: async (descriptor) => {
     const name = descriptor.name;
+    // Mirror the real Host backend's UNIT_NAME_RE so an invalid unit name can
+    // never pass here while failing live (hyphens are rejected by the Host).
+    if (!/^[a-z][a-z0-9_]*$/.test(name)) { const error = new Error(`invalid unit name '${name}'`); error.code = 'malformed-medium'; throw error; }
     state.opens += 1;
     let memory = structuredClone(state.units[name] ?? null);
     return {
@@ -16,7 +19,7 @@ function mockStorage() {
         memory = structuredClone(value);
         if (state.failNext) { state.failNext = false; throw new Error('disk full'); }
         state.units[name] = structuredClone(value);
-        if (name === 'work-panel-inbox') state.disk = structuredClone(value);
+        if (name === 'work_panel_inbox') state.disk = structuredClone(value);
       },
       close: async () => { state.closes += 1; },
     };
@@ -470,7 +473,7 @@ const snapshot = { tasks: [{ id: 't-1', title: 'Host任务', status: 'todo', pro
 const initWorkspace = { action: 'initialize', baseRevision: 0, requestId: 'workspace-init', workspace: snapshot, storeId: null };
 const initialized = await callRoute('/api/work-panel/workspace', initWorkspace);
 check('workspace-init-success', [initialized.ok, initialized.revision, initialized.currentRevision, typeof initialized.storeId], [true, 1, 1, 'string']);
-check('workspace-migration-backup', workspaceStorage.state.units['work-panel-workspace'].migrationBackup.workspace, snapshot);
+check('workspace-migration-backup', workspaceStorage.state.units['work_panel_workspace'].migrationBackup.workspace, snapshot);
 const commitWorkspace = { action: 'commit', baseRevision: 1, requestId: 'workspace-commit', workspace: { ...snapshot, tasks: [{ ...snapshot.tasks[0], title: '已修改' }] }, storeId: initialized.storeId };
 const committed = await callRoute('/api/work-panel/workspace', commitWorkspace);
 check('workspace-commit-success', [committed.ok, committed.revision, committed.storeId], [true, 2, initialized.storeId]);

@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.4.1';
+    const PANEL_VERSION = '1.4.2';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 export const WORKSPACE_DESCRIPTOR = Object.freeze({
-  name: 'work-panel-workspace', version: 1, tables: Object.freeze([]), hasGlobal: true, layout: 'single',
+  name: 'work_panel_workspace', version: 1, tables: Object.freeze([]), hasGlobal: true, layout: 'single',
 });
 export const WORKSPACE_MAX_BYTES = 32 * 1024 * 1024;
 const RECEIPT_LIMIT = 100;
@@ -196,8 +196,11 @@ export class WorkspaceStore {
       if (unit) { try { await unit.close(); } catch { this.blockOnCloseFailure(unit); } }
       if (error instanceof WorkspaceError) throw error;
       const storageCode = typeof error?.code === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(error.code) ? error.code : null;
+      const detail = typeof error?.message === 'string' ? error.message.slice(0, 300) : null;
+      const root = typeof backend?.root === 'string' ? backend.root : null;
       throw new WorkspaceError('workspace-load-failed', '无法读取持久工作区；未覆盖原数据，请检查存储后重试。', {
-        retryable: true, ...(storageCode ? { storageCode } : {}),
+        retryable: true, ...(storageCode ? { storageCode } : {}), ...(detail ? { storageDetail: detail } : {}),
+        ...(root ? { storageRoot: root } : {}),
       });
     }
   }

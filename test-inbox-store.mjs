@@ -8,6 +8,8 @@ function mockStorage(initial = null) {
   const state = { disk: copy(initial), opens: 0, closes: 0, writes: 0, active: 0, maxActive: 0, failures: [], beforeWrite: null };
   const backend = { kv: { open: async (descriptor) => {
     assert.deepEqual(descriptor, INBOX_DESCRIPTOR);
+    // Faithful to the Host backend's UNIT_NAME_RE (no hyphens allowed).
+    assert.match(descriptor.name, /^[a-z][a-z0-9_]*$/);
     state.opens += 1;
     // Real single-layout backends cache state; loadAll does not reread disk.
     let memory = copy(state.disk);

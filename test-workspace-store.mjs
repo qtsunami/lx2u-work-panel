@@ -10,8 +10,11 @@ const initialize = (value = workspace(), requestId = 'initialize') => ({ action:
 const commit = (storeId, baseRevision, value = workspace(), requestId = 'commit-' + baseRevision) => ({ action: 'commit', baseRevision, requestId, workspace: value, storeId });
 function mockStorage(initial = null) {
   const state = { disk: copy(initial), opens: 0, closes: 0, writes: 0, active: 0, maxActive: 0, failures: [], closeFailures: 0, beforeWrite: null };
-  const backend = { kv: { open: async (descriptor) => {
+  const backend = { root: '/test/storages', kv: { open: async (descriptor) => {
     assert.deepEqual(descriptor, WORKSPACE_DESCRIPTOR);
+    // The real Host rejects unit/table names outside ^[a-z][a-z0-9_]*$; keep the
+    // mock faithful so a hyphenated name fails here instead of only live.
+    assert.match(descriptor.name, /^[a-z][a-z0-9_]*$/);
     state.opens += 1;
     let memory = copy(state.disk);
     let closed = false;
@@ -37,7 +40,7 @@ function mockStorage(initial = null) {
       },
     };
   } } };
-  return { state, backend, storage: { backend: { names: () => ['json'], get: (name) => name === 'json' ? backend : undefined } } };
+  return { state, root: backend.root, backend, storage: { backend: { names: () => ['json'], get: (name) => name === 'json' ? backend : undefined } } };
 }
 const makeStore = (mock, options) => new WorkspaceStore(() => mock.storage, options);
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
@@ -301,7 +304,7 @@ test('size/depth limits reject explicitly, and a transient load failure can reop
     if (failLoad) { failLoad = false; unit.loadAll = async () => { const error = new Error('read failed'); error.code = 'EACCES'; throw error; }; }
     return unit;
   };
-  await assert.rejects(store.get(), { code: 'workspace-load-failed', details: { retryable: true, storageCode: 'EACCES' } });
+  await assert.rejects(store.get(), { code: 'workspace-load-failed', details: { retryable: true, storageCode: 'EACCES', storageDetail: 'read failed', storageRoot: mock.root } });
   assert.equal((await store.write(initialize())).ok, true);
   assert.equal(mock.state.opens, 2);
   await store.close();
