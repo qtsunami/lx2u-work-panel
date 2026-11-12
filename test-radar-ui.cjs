@@ -111,6 +111,37 @@ test('AI explanation is labelled as advice and does not alter the issue', async 
   } finally { ui.close(); }
 });
 
+test('repeated reminders for one task are grouped and can be cleared at once', async () => {
+  // One task that is both overdue and long-blocked: two separate signals, still
+  // individually actionable, but shown as one grouped row.
+  const old = '2026-09-01T00:00:00.000Z';
+  const ui = harness(state([task('a', { deadline: '2026-11-01', blockedReason: '等对方回复', updatedAt: old })]));
+  await ui.settle();
+  try {
+    radarView(ui);
+    assert.equal(rows(ui).length, 1, 'one grouped row for the task');
+    const body = ui.text();
+    // This fixture legitimately yields three signals: overdue, long-blocked and
+    // no recent record. All are disclosed and all are cleared by the batch action.
+    assert.ok(body.includes('同一任务还有 2 条提示'), 'the other signals are disclosed, not hidden');
+    assert.ok(body.includes('全部 3 天后') && body.includes('全部忽略'), 'batch actions offered');
+    ui.click('全部忽略'); await ui.settle();
+    assert.equal(rows(ui).length, 0, 'both signals cleared together');
+    const extras = ui.storage.json('@local/work-panel:workspace-extras:v1');
+    assert.equal(Object.keys(extras.radarState.dismissed).length, 3, 'every grouped id dismissed and persisted');
+  } finally { ui.close(); }
+});
+
+test('a single-signal task shows no grouping controls', async () => {
+  const ui = harness(state([task('a', { deadline: '2026-11-01' })])); await ui.settle();
+  try {
+    radarView(ui);
+    assert.equal(rows(ui).length, 1);
+    assert.ok(!ui.text().includes('同一任务还有'));
+    assert.ok(!ui.text().includes('全部忽略'));
+  } finally { ui.close(); }
+});
+
 test('automation is disabled by default and no scheduled generation is promised', async () => {
   const ui = harness(state([task('a')])); await ui.settle();
   try {

@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.0';
+    const PANEL_VERSION = '1.5.1';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -34,6 +34,14 @@ window.__ModuleLoader__.load({
     const HOST_MIGRATION_BACKUP_KEY = '@local/work-panel:backup:before-host:v1';
     const workspaceWriteListeners = new Set();
     const CORE_WORKSPACE_FIELDS = ['tasks', 'projects', 'logs', 'artifacts', 'reports', 'inboxAck', 'reportEdits'];
+
+    // Report-model choices. Only ids the Harness routes here are listed; the
+    // empty option means "keep the plugin's configured default". A model the
+    // Host cannot serve falls back to that default instead of failing.
+    const AUTO_MODEL_CHOICES = [
+      { id: 'deepseek-flash', label: 'DeepSeek Flash（快，默认）' },
+      { id: 'deepseek-chat', label: 'DeepSeek Chat' },
+    ];
 
     // @generated workspace-sync begin
     // Generated from workspace-sync.js by build-client.mjs; do not edit this region.
@@ -3969,6 +3977,10 @@ window.__ModuleLoader__.load({
       .wp-radar-title:disabled { cursor: default; }
       .wp-radar-fact { margin: 0; color: var(--wp-text-secondary); font-size: 12px; line-height: 1.6; }
       .wp-radar-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+      .wp-radar-related { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 6px; background: var(--wp-fill-secondary); }
+      .wp-radar-related-label { color: var(--wp-text-tertiary); font-size: 11px; }
+      .wp-radar-related-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wp-text-secondary); }
+      .wp-radar-related-item > span:nth-child(2) { flex: 1; min-width: 0; }
       .wp-radar-explain { padding: 8px 10px; border-radius: 6px; background: var(--wp-fill-secondary); font-size: 12px; line-height: 1.7; }
       .wp-radar-explain-label { color: var(--wp-text-tertiary); font-size: 11px; margin-bottom: 4px; }
       .wp-radar-explain p { margin: 0; color: var(--wp-text-secondary); white-space: pre-wrap; }
@@ -5386,7 +5398,8 @@ window.__ModuleLoader__.load({
           const res = await fetch(CHAT_ENDPOINT, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              mode: 'report', kind: settings.kind, projectId: autoScopeId(settings.scope),
+              mode: 'report', kind: settings.kind, ...(settings.model ? { model: settings.model } : {}),
+            projectId: autoScopeId(settings.scope),
               project: autoScopeId(settings.scope) ? { name: projectNameOf(autoScopeId(settings.scope)), description: (projectById.get(autoScopeId(settings.scope)) || {}).description || '' } : null,
               period: { start: targetPeriod.start, end: targetPeriod.end },
               weeklies: settings.kind === 'month'
@@ -6080,6 +6093,32 @@ window.__ModuleLoader__.load({
       };
 
       const radarItems = radarScan.items || [];
+      // Repeated reminders about one task are grouped in the UI so a single task
+      // cannot occupy the list several times; each signal stays individually
+      // actionable, and the group can be snoozed or dismissed at once.
+      const radarGroups = [];
+      for (const issue of radarItems) {
+        const key = issue.taskId ? 'task:' + issue.taskId : 'group:' + issue.kind;
+        const found = radarGroups.find((group) => group.key === key);
+        if (found) found.items.push(issue); else radarGroups.push({ key, items: [issue] });
+      }
+      const snoozeGroup = (issues, days) => {
+        const until = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+        updateRadarState((prev) => {
+          const snoozed = { ...prev.snoozed };
+          for (const issue of issues) snoozed[issue.id] = until;
+          return { ...prev, snoozed };
+        });
+        showToast('已稍后提醒 ' + issues.length + ' 条，' + days + ' 天后重新出现。');
+      };
+      const dismissGroup = (issues) => {
+        updateRadarState((prev) => {
+          const dismissed = { ...prev.dismissed };
+          for (const issue of issues) dismissed[issue.id] = true;
+          return { ...prev, dismissed };
+        });
+        showToast('已忽略 ' + issues.length + ' 条提示。');
+      };
       const radarList = radarItems.length === 0
         ? h('div', { className: 'wp-card' }, h('div', { className: 'wp-empty' },
             h('p', { className: 'wp-empty-desc' }, radarScan.error
@@ -6087,9 +6126,12 @@ window.__ModuleLoader__.load({
               : (radarScan.hidden.snoozed + radarScan.hidden.dismissed > 0
                 ? '当前没有需要注意的事项（' + (radarScan.hidden.snoozed + radarScan.hidden.dismissed) + ' 条已稍后或忽略）。'
                 : '当前没有需要特别注意的事项。'))))
-        : h('div', { className: 'wp-radar-list' }, radarItems.map((issue) => {
+        : h('div', { className: 'wp-radar-list' }, radarGroups.map((group) => {
+            const [lead, ...rest] = group.items;
+            const issue = lead;
+            const grouped = rest.length > 0;
             const explained = radarExplain && radarExplain.id === issue.id ? radarExplain.text : '';
-            return h('div', { className: 'wp-radar-item wp-radar-' + issue.severity, key: issue.id },
+            return h('div', { className: 'wp-radar-item wp-radar-' + issue.severity, key: group.key },
               h('div', { className: 'wp-radar-head' },
                 h('span', { className: 'wp-radar-kind' }, RADAR_KIND_LABEL[issue.kind] || issue.kind),
                 h('button', {
@@ -6097,6 +6139,15 @@ window.__ModuleLoader__.load({
                   onClick: () => { if (issue.taskId) { setSelectedId(issue.taskId); setActiveView('all'); } },
                 }, issue.title)),
               h('p', { className: 'wp-radar-fact' }, issue.fact),
+              grouped ? h('div', { className: 'wp-radar-related' },
+                h('div', { className: 'wp-radar-related-label' }, '同一任务还有 ' + rest.length + ' 条提示'),
+                rest.map((extra) => h('div', { className: 'wp-radar-related-item', key: extra.id },
+                  h('span', { className: 'wp-radar-kind' }, RADAR_KIND_LABEL[extra.kind] || extra.kind),
+                  h('span', null, extra.fact),
+                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                    onClick: () => snoozeRadar(extra.id, 3) }, '3 天后'),
+                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                    onClick: () => dismissRadar(extra.id) }, '忽略')))) : null,
               h('div', { className: 'wp-radar-actions' },
                 issue.taskId ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
                   onClick: () => { setSelectedId(issue.taskId); setActiveView('all'); } }, '打开任务') : null,
@@ -6106,7 +6157,11 @@ window.__ModuleLoader__.load({
                   onClick: () => explainRadar(issue) }, radarBusy === issue.id ? '分析中…' : 'AI 解释'),
                 h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => snoozeRadar(issue.id, 3) }, '3 天后'),
                 h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => snoozeRadar(issue.id, 7) }, '7 天后'),
-                h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => dismissRadar(issue.id) }, '忽略')),
+                h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => dismissRadar(issue.id) }, '忽略'),
+                grouped ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                  onClick: () => snoozeGroup(group.items, 3) }, '全部 3 天后') : null,
+                grouped ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                  onClick: () => dismissGroup(group.items) }, '全部忽略') : null),
               explained ? h('div', { className: 'wp-radar-explain' },
                 h('div', { className: 'wp-radar-explain-label' }, 'AI 解释（仅供参考，不是事实判定）'),
                 h('p', null, explained)) : null);
@@ -6162,6 +6217,15 @@ window.__ModuleLoader__.load({
             h('input', { className: 'wp-detail-input wp-detail-small', type: 'text', value: autoSettings.timeZone,
               onChange: (e) => updateAutoSettings({ timeZone: e.target.value }) }),
             h('span', { className: 'wp-data-hint' }, '支持常用时区；无法识别时会明确提示，不会按错误时间执行。')),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '模型'),
+            h('select', { className: 'wp-sort-select', value: autoSettings.model || '',
+              onChange: (e) => updateAutoSettings({ model: e.target.value || null }) },
+              h('option', { value: '' }, '使用默认模型'),
+              ...AUTO_MODEL_CHOICES.map((choice) => h('option', { key: choice.id, value: choice.id }, choice.label))),
+            h('span', { className: 'wp-data-hint' }, autoSettings.model
+              ? '仅影响自动生成的报告；对话与任务记录仍用默认模型。'
+              : '留空即使用插件配置的默认模型。')),
           h('div', { className: 'wp-data-row' },
             h('span', { className: 'wp-data-label' }, '数据范围'),
             h('select', { className: 'wp-sort-select', value: autoSettings.scope,

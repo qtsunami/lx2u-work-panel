@@ -538,6 +538,12 @@ export function apply(ctx, config) {
       if (!llm || typeof preferredProvider !== 'string' || typeof preferredModel !== 'string') {
         return json({ error: 'model-unavailable' });
       }
+      // A caller may name a model for report generation. It never changes chat,
+      // and an unusable value falls back to the configured default instead of
+      // failing the request.
+      const requestedModel = body && typeof body.model === 'string' && /^[A-Za-z0-9._:-]{1,120}$/.test(body.model)
+        ? body.model : null;
+      const reportModel = requestedModel || preferredModel;
       const mode = body && body.mode === 'report'
         ? 'report'
         : body && body.mode === 'polish'
@@ -580,7 +586,7 @@ export function apply(ctx, config) {
             }
           }
           const raw = await complete(
-            llm, preferredProvider, preferredModel,
+            llm, preferredProvider, reportModel,
             buildReportSystemPrompt(body && body.period, body && body.kind === 'month' ? 'month' : 'week'),
             buildReportUserText(body),
             2200,

@@ -533,6 +533,22 @@ check('log-local-path-metadata', selectedReply.actions[1].files, ['/tmp/check.tx
 // one-file-per-unit single layout) accept our descriptors and persist a byte-
 // level document on disk. Mocks elsewhere stay in-memory; this writes only to a
 // private temporary directory.
+console.log('\n# report model override');
+const modelCapture = mockLlm('{"reply":"ok","body":"## 一、本期主要成果\n内容"}');
+const seenModels = [];
+const captureStream = modelCapture.stream;
+modelCapture.stream = function (options) { seenModels.push([options.provider, options.model]); return captureStream.call(this, options); };
+apply(makeCtx(modelCapture), { provider: 'test-provider', model: 'test-model' });
+const reportBody = { mode: 'report', kind: 'week', period: { start: '2026-11-09', end: '2026-11-15' }, evidence: [], model: 'deepseek-chat' };
+await call(reportBody);
+check('report-uses-requested-model', seenModels.at(-1)[1], 'deepseek-chat');
+await call({ ...reportBody, model: 'not a valid model!' });
+check('invalid-model-falls-back-to-default', seenModels.at(-1)[1], 'test-model');
+await call({ ...reportBody, model: undefined, mode: 'report' });
+check('absent-model-uses-default', seenModels.at(-1)[1], 'test-model');
+await call({ mode: 'chat', messages: [{ text: 'hi' }], tasks: [], model: 'deepseek-chat' });
+check('chat-ignores-model-override', seenModels.at(-1)[1], 'test-model');
+
 console.log('\n# real file layout and unit-name grammar');
 const fs = await import('node:fs/promises');
 const os = await import('node:os');
