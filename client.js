@@ -2989,8 +2989,19 @@ window.__ModuleLoader__.load({
         const listener = (message) => setStorageIssue(message);
         storageListeners.add(listener);
         listener(storageMessage());
+        // Closing the page is also risky while the canonical copy has not
+        // reached the Host: local-only mode, or a durable request still pending.
+        const hostUnsynced = () => {
+          try {
+            const status = hostSyncRef.current ? hostSyncRef.current.getStatus() : null;
+            if (!status) return false;
+            if (status.phase === 'local') return true;
+            return window.localStorage.getItem(WORKSPACE_PENDING_KEY) !== null
+              && ['offline', 'conflict', 'error', 'syncing'].includes(status.phase);
+          } catch { return false; }
+        };
         const beforeUnload = (event) => {
-          if (storageMessage()) { event.preventDefault(); event.returnValue = ''; }
+          if (storageMessage() || hostUnsynced()) { event.preventDefault(); event.returnValue = ''; }
         };
         const onStorage = (event) => {
           if ([STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, REPORT_EDITS_KEY, INBOX_ACK_KEY, null].includes(event.key)) {

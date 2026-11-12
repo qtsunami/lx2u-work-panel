@@ -216,6 +216,9 @@ test('Host storage load failure allows ordinary local add and completion without
   try {
     assert.equal(ui.byClass('wp-sync-guard').props.disabled, false);
     assert.ok(ui.text().includes('仅本页保存'));
+    let warned = false;
+    for (const handler of ui.events.get('beforeunload') || []) handler({ preventDefault() { warned = true; }, returnValue: '' });
+    assert.equal(warned, true, 'unsynced local-only edits must warn before the page closes');
     ui.change('wp-quick-input', '新的待办事项'); ui.click('添加任务');
     assert.equal(ui.storage.json(TASK_KEY).length, 2);
     assert.equal(ui.server.workspace.tasks.length, 1, 'Host must never be silently overwritten');

@@ -528,5 +528,66 @@ check('artifact-local-path-metadata', selectedReply.actions[0].files, ['/tmp/res
 check('artifact-local-path-not-url', selectedReply.actions[0].links, []);
 check('log-local-path-metadata', selectedReply.actions[1].files, ['/tmp/check.txt']);
 
+
+// End-to-end proof that the real Host JSON backend rules (unit-name grammar and
+// one-file-per-unit single layout) accept our descriptors and persist a byte-
+// level document on disk. Mocks elsewhere stay in-memory; this writes only to a
+// private temporary directory.
+console.log('\n# real file layout and unit-name grammar');
+const fs = await import('node:fs/promises');
+const os = await import('node:os');
+const path = await import('node:path');
+const UNIT_RE = /^[a-z][a-z0-9_]*$/;
+const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'wp-host-'));
+try {
+  const diskBackend = { root: realRoot, kv: { open: async (descriptor) => {
+    if (!UNIT_RE.test(descriptor.name)) { const error = new Error("invalid unit name '" + descriptor.name + "'"); error.code = 'malformed-medium'; throw error; }
+    const file = path.join(realRoot, descriptor.name + '.json');
+    let closed = false;
+    const read = async () => {
+      let text;
+      try { text = await fs.readFile(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      const document = JSON.parse(text);
+      if (document.unit.name !== descriptor.name || document.unit.version !== descriptor.version) { const error = new Error('foreign header'); error.code = 'malformed-medium'; throw error; }
+      return document.global;
+    };
+    return {
+      loadAll: async () => {
+        if (closed) { const error = new Error('closed'); error.code = 'closed'; throw error; }
+        const global = await read();
+        return { tables: {}, global: global === undefined ? null : global };
+      },
+      setGlobal: async (value) => {
+        if (closed) { const error = new Error('closed'); error.code = 'closed'; throw error; }
+        const temp = file + '.tmp';
+        await fs.writeFile(temp, JSON.stringify({ unit: { name: descriptor.name, version: descriptor.version }, global: value, tables: {} }, null, 2) + '\n');
+        await fs.rename(temp, file);
+      },
+      close: async () => { closed = true; },
+    };
+  } } };
+  const realStorage = { backend: { names: () => ['json'], get: (name) => name === 'json' ? diskBackend : undefined } };
+  const realCtx = makeCtx(mockLlm('{}'), { storage: realStorage });
+  apply(realCtx, { inboxBackend: 'json' });
+  const fresh = await callRoute('/api/work-panel/workspace');
+  check('real-layout-starts-uninitialized', [fresh.ok, fresh.initialized, fresh.revision, fresh.storeId, fresh.workspace], [true, false, 0, null, null]);
+  const seed = { tasks: [{ id: 't-1', title: '真实文件任务', status: 'todo', urgency: 'medium', deadline: '', nextStep: '', blockedReason: '' }],
+    projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {} };
+  const initialized = await callRoute('/api/work-panel/workspace', { action: 'initialize', baseRevision: 0, requestId: 'real-init', workspace: seed, storeId: null });
+  check('real-layout-initialize', [initialized.ok, initialized.revision], [true, 1]);
+  const files = (await fs.readdir(realRoot)).sort();
+  check('one-legal-unit-file-only', files, ['work_panel_workspace.json']);
+  const onDisk = JSON.parse(await fs.readFile(path.join(realRoot, 'work_panel_workspace.json'), 'utf8'));
+  check('document-identity-matches-descriptor', [onDisk.unit.name, onDisk.unit.version], ['work_panel_workspace', 1]);
+  check('document-persists-workspace', onDisk.global.workspace.tasks[0].title, '真实文件任务');
+  check('document-keeps-migration-backup', onDisk.global.migrationBackup.workspace.tasks[0].title, '真实文件任务');
+  const reread = await callRoute('/api/work-panel/workspace');
+  check('real-layout-reloads-same-workspace', [reread.revision, reread.storeId, reread.workspace.tasks.length], [1, initialized.storeId, 1]);
+  const conflict = await callRoute('/api/work-panel/workspace', { action: 'commit', baseRevision: 0, requestId: 'real-stale', workspace: seed, storeId: initialized.storeId });
+  check('real-layout-rejects-stale-base', [conflict.ok, conflict.error, conflict.currentRevision], [false, 'revision-conflict', 1]);
+  await realCtx.dispose();
+} finally {
+  await fs.rm(realRoot, { recursive: true, force: true });
+}
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);
