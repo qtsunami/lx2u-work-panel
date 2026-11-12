@@ -38,6 +38,9 @@ The source and test tooling are repository development files, not additional run
 
 Host restart and real DSH navigation/visual acceptance are still required before treating this build as live-verified. The VM service adapters verify the contract and interaction logic, not a real window launch.
 
+- **Task row right-click menu**: priority (高/中/低/无), move to a project (or 未分组), toggle done, open detail, and move to the recycle bin. It uses the same operations as the detail panel and closes on outside click, Escape, resize or selection change.
+- **Project binding moved out of the detail panel**: the task detail no longer carries a project selector; assignment happens from the row's right-click menu so the detail stays focused on the task itself.
+
 ## Proactive and automatic (v1.5.0)
 
 - **Repeated reminders**: several signals about one task appear as one grouped row with the leading signal, the others listed beneath, and batch `全部 3 天后` / `全部忽略`. Each signal remains individually snoozable/dismissable.

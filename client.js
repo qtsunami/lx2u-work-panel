@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.4';
+    const PANEL_VERSION = '1.5.5';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -3757,6 +3757,25 @@ window.__ModuleLoader__.load({
       }
       .wp-detail-select:focus { outline: none; border-color: var(--wp-primary); }
       .wp-detail-project-select { max-width: 100%; }
+      .wp-row-menu { position: fixed; z-index: 60; min-width: 190px; max-width: 260px; padding: 6px;
+        border: 1px solid var(--wp-border); border-radius: 8px; background: var(--wp-bg-container);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-size: 12.5px; }
+      .wp-row-menu-title { padding: 2px 6px 6px; color: var(--wp-text-tertiary); font-size: 11px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .wp-row-menu-section { padding: 2px 6px; color: var(--wp-text-tertiary); font-size: 11px; }
+      .wp-row-menu-row { display: flex; gap: 4px; padding: 2px 4px 4px; }
+      .wp-row-menu-chip { flex: 1; height: 24px; padding: 0 6px; border: 1px solid var(--wp-border); border-radius: 6px;
+        background: transparent; color: var(--wp-text-secondary); font: inherit; cursor: pointer; }
+      .wp-row-menu-chip.wp-active { border-color: var(--wp-primary); color: var(--wp-primary); }
+      .wp-row-menu-list { display: flex; flex-direction: column; max-height: 160px; overflow: auto; }
+      .wp-row-menu-item { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: 5px;
+        background: transparent; color: var(--wp-text); font: inherit; text-align: left; cursor: pointer; }
+      .wp-row-menu-item:hover { background: var(--wp-fill-secondary); }
+      .wp-row-menu-item.wp-active { color: var(--wp-primary); }
+      .wp-row-menu-empty { padding: 4px 8px; color: var(--wp-text-tertiary); font-size: 11px; }
+      .wp-row-menu-danger { color: var(--wp-error); }
+      .wp-row-menu-sep { height: 1px; margin: 4px 6px; background: var(--wp-border); }
+      .wp-row.wp-row-menu-open { background: var(--wp-fill-secondary); }
       .wp-inline-new { display: flex; gap: 6px; margin-top: 6px; }
       .wp-inline-new-input {
         flex: 1; min-width: 0; height: 28px; padding: 0 8px;
@@ -4668,6 +4687,23 @@ window.__ModuleLoader__.load({
       // once the typing pauses. Per-keystroke writes made the sync status flicker
       // on every character and re-serialized the whole workspace needlessly.
       const [draftText, setDraftText] = useState({});
+      // Right-click task menu: {taskId, x, y} or null. Position is viewport-based.
+      const [rowMenu, setRowMenu] = useState(null);
+      // Close the row menu on any outside interaction, so it can never linger
+      // over stale state.
+      useEffect(() => {
+        if (!rowMenu) return undefined;
+        const close = () => setRowMenu(null);
+        const onKey = (e) => { if (e && e.key === 'Escape') close(); };
+        document.addEventListener('click', close);
+        document.addEventListener('keydown', onKey);
+        window.addEventListener('resize', close);
+        return () => {
+          document.removeEventListener('click', close);
+          document.removeEventListener('keydown', onKey);
+          window.removeEventListener('resize', close);
+        };
+      }, [rowMenu]);
       const draftTimers = useRef({});
       const draftValues = useRef({});
       const flushDraftsRef = useRef(() => 0);
@@ -5304,9 +5340,16 @@ window.__ModuleLoader__.load({
         const dl = rowDeadline(task);
         const recent = lastLogByTask[task.id] || null;
         return h('div', {
-          className: 'wp-row',
+          className: 'wp-row' + (rowMenu && rowMenu.taskId === task.id ? ' wp-row-menu-open' : ''),
           key: task.id,
           onClick: () => setSelectedId(selectedId === task.id ? null : task.id),
+          onContextMenu: (e) => {
+            // Keep the browser menu out of the way and offer the task actions
+            // exactly where the user pointed.
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            setSelectedId(null);
+            setRowMenu({ taskId: task.id, x: (e && e.clientX) || 0, y: (e && e.clientY) || 0 });
+          },
         },
           h('button', {
             className: 'wp-row-check wp-check-' + task.urgency + (done ? ' wp-checked' : ''),
@@ -5322,6 +5365,49 @@ window.__ModuleLoader__.load({
               h('span', { className: 'wp-row-log-text' }, recent.text)) : null),
           dl ? h('span', { className: 'wp-row-time ' + dl.cls }, dl.text) : null);
       };
+
+      // Right-click menu for a task row. Every entry routes through the same
+      // operation the detail panel uses, so behaviour cannot diverge.
+      const rowMenuTask = rowMenu ? tasks.find((t) => t.id === rowMenu.taskId) : null;
+      const closeRowMenu = () => setRowMenu(null);
+      const rowMenuNode = rowMenuTask ? h('div', {
+        className: 'wp-row-menu', role: 'menu',
+        style: { left: Math.max(8, Math.min(rowMenu.x, 0)) + 'px', top: Math.max(8, rowMenu.y) + 'px' },
+        onClick: (e) => e.stopPropagation(),
+        onContextMenu: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+      },
+        h('div', { className: 'wp-row-menu-title' }, rowMenuTask.title),
+        h('div', { className: 'wp-row-menu-section' }, '优先级'),
+        h('div', { className: 'wp-row-menu-row' }, URGENCY_ORDER.map((level) => h('button', {
+          className: 'wp-row-menu-chip' + ((rowMenuTask.urgency || 'medium') === level ? ' wp-active' : ''),
+          type: 'button', role: 'menuitemradio', 'aria-checked': (rowMenuTask.urgency || 'medium') === level ? 'true' : 'false',
+          key: level,
+          onClick: () => { updateTask(rowMenuTask.id, { urgency: level }); closeRowMenu(); },
+        }, URGENCY[level] || level))),
+        h('div', { className: 'wp-row-menu-sep' }),
+        h('div', { className: 'wp-row-menu-section' }, '移动到项目'),
+        h('div', { className: 'wp-row-menu-list' },
+          h('button', { className: 'wp-row-menu-item' + (!rowMenuTask.projectId ? ' wp-active' : ''), type: 'button', role: 'menuitem',
+            onClick: () => { updateTask(rowMenuTask.id, { projectId: '' }); closeRowMenu(); } }, '未分组'),
+          sortedProjects.length === 0 ? h('div', { className: 'wp-row-menu-empty' }, '还没有项目') : null,
+          sortedProjects.map((project) => h('button', {
+            className: 'wp-row-menu-item' + (rowMenuTask.projectId === project.id ? ' wp-active' : ''),
+            type: 'button', role: 'menuitem', key: project.id,
+            onClick: () => { updateTask(rowMenuTask.id, { projectId: project.id }); closeRowMenu(); },
+          }, project.name + (project.status === 'archived' ? '（已归档）' : '')))),
+        h('div', { className: 'wp-row-menu-sep' }),
+        h('button', {
+          className: 'wp-row-menu-item', type: 'button', role: 'menuitem',
+          onClick: () => { toggleDone(rowMenuTask); closeRowMenu(); },
+        }, rowMenuTask.status === 'done' ? '标记为未完成' : '标记为已完成'),
+        h('button', {
+          className: 'wp-row-menu-item', type: 'button', role: 'menuitem',
+          onClick: () => { setSelectedId(rowMenuTask.id); closeRowMenu(); },
+        }, '打开详情'),
+        h('button', {
+          className: 'wp-row-menu-item wp-row-menu-danger', type: 'button', role: 'menuitem',
+          onClick: () => { softDeleteTask(rowMenuTask); closeRowMenu(); },
+        }, '移到回收站')) : null;
 
       // ---- weekly report --------------------------------------------------
       const saveReport = (body, options) => {
@@ -7091,38 +7177,6 @@ window.__ModuleLoader__.load({
             onChange: (e) => updateTaskDebounced(selectedTask.id, { description: e.target.value }),
           }),
           h('div', { className: 'wp-detail-field' },
-            h('label', { className: 'wp-detail-field-label' }, '项目'),
-            h('select', {
-              className: 'wp-detail-select wp-detail-project-select', value: selectedTask.projectId || '',
-              onChange: (e) => {
-                const value = e.target.value;
-                if (value === '__new__') { setNewProject({ mode: 'task', name: '' }); return; }
-                updateTask(selectedTask.id, { projectId: value });
-              },
-            },
-              h('option', { value: '' }, '未分组'),
-              sortedProjects.map((project) => h('option', { value: project.id, key: project.id },
-                project.name + (project.status === 'archived' ? '（已归档）' : ''))),
-              h('option', { value: '__new__' }, '+ 新建项目…')),
-            newProject.mode === 'task' ? h('div', { className: 'wp-inline-new' },
-              h('input', {
-                className: 'wp-inline-new-input', type: 'text', value: newProject.name,
-                placeholder: '新项目名，回车创建',
-                onChange: (e) => setNewProject({ mode: 'task', name: e.target.value }),
-                onKeyDown: (e) => {
-                  if (e.key === 'Enter') createProject(newProject.name, selectedTask.id);
-                  if (e.key === 'Escape') setNewProject({ mode: '', name: '' });
-                },
-              }),
-              h('button', {
-                className: 'wp-inline-new-ok', type: 'button',
-                onClick: () => createProject(newProject.name, selectedTask.id),
-              }, '创建'),
-              h('button', {
-                className: 'wp-inline-new-cancel', type: 'button',
-                onClick: () => setNewProject({ mode: '', name: '' }),
-              }, '取消')) : null),
-          h('div', { className: 'wp-detail-field' },
             h('label', { className: 'wp-detail-field-label' }, '预期结果'),
             h('textarea', {
               className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.expected,
@@ -7332,6 +7386,7 @@ window.__ModuleLoader__.load({
             middleHeader, middleBody),
           isReportsView ? evidencePanel : (isInboxView || isDataView || isRadarView) ? null : (trashDetailPanel || detailPanel))),
         toastNode,
+        rowMenuNode,
         drawer);
     }
 

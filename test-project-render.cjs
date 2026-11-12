@@ -148,22 +148,16 @@ assert(projectView.text.indexOf('无项目任务') === -1, 'project view must no
 const emptyProject = render({ 4: 'proj:p-3' });
 assert(emptyProject.has('wp-empty'), 'empty project should show the empty state');
 
-// ---- 4. task detail uses a project selector, not free text ----
+// ---- 4. the task detail no longer carries a project binding ----
+// Project assignment moved to the task row's right-click menu, so the detail
+// panel must not offer one (this replaces the earlier selector assertion).
 const detail = render({ 7: 't-1' });
-assert(detail.has('wp-detail-project-select'), 'task detail should render the project selector');
-const select = detail.nodes.find((n) => n.props && n.props.className && n.props.className.indexOf('wp-detail-project-select') !== -1);
-assert(select && select.props.value === 'p-1', 'selector should hold the current project id, got ' + (select && select.props.value));
-const options = flatten(select.children);
-const optionValues = options.map((o) => o.props.value);
-assert(optionValues[0] === '', 'selector needs an ungrouped option');
-assert(optionValues.indexOf('p-1') !== -1 && optionValues.indexOf('p-2') !== -1, 'selector should list projects by id');
-assert(optionValues[optionValues.length - 1] === '__new__', 'selector should offer creating a project');
-assert(textOf(options.find((o) => o.props.value === 'p-2')).indexOf('已归档') !== -1, 'archived project should be labelled');
+assert(!detail.has('wp-detail-project-select'), 'task detail should not render a project selector');
+assert(detail.has('wp-detail-title-input'), 'the rest of the detail panel still renders');
 
-// ---- 5. creating a project from the task detail ----
+// ---- 5. project creation lives in the sidebar, not the task detail ----
 const creating = render({ 7: 't-1', 49: { mode: 'task', name: '新项目' } });
-assert(creating.has('wp-inline-new'), 'new-project row should render in the detail');
-assert(creating.has('wp-inline-new-input'), 'new-project input missing');
+assert(!creating.has('wp-inline-new'), 'the detail no longer offers inline project creation');
 
 // ---- 6. reports can be scoped to a project id ----
 const report = render({ 4: 'reports', 38: '## 一、本期主要成果\n- 完成 [[task:t-2]]', 47: 'p-1' });

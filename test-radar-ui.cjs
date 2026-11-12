@@ -191,6 +191,68 @@ test('a debounced edit is not lost when the selection changes immediately', asyn
   } finally { ui.close(); }
 });
 
+test('right-clicking a task offers priority, project move and delete', async () => {
+  const seeded = state([task('a'), task('b')],
+    { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] });
+  const ui = harness(seeded); await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 40, clientY: 60, preventDefault() {} });
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 1, 'menu opens');
+    const body = ui.text();
+    for (const label of ['优先级', '移动到项目', '未分组', '项目一', '标记为已完成', '移到回收站']) {
+      assert.ok(body.includes(label), 'menu offers ' + label);
+    }
+    // Priority is applied through the same operation the detail panel uses.
+    ui.click('高'); await ui.settle();
+    assert.equal(Object.keys(ui.nodes().filter(n => has(n, 'wp-row-menu'))).length, 0, 'menu closes after acting');
+    const after = ui.storage.json('@local/work-panel:tasks:v1').find(t => t.id === 'a');
+    assert.equal(after.urgency, 'high', 'priority changed');
+    assert.equal(after.projectId, '', 'moving was not implied by a priority change');
+  } finally { ui.close(); }
+});
+
+test('the row menu moves a task into a project and to the recycle bin', async () => {
+  const seeded = state([task('a')],
+    { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] });
+  const ui = harness(seeded); await ui.settle();
+  try {
+    const open = () => ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onContextMenu', { clientX: 10, clientY: 10, preventDefault() {} });
+    open();
+    const menu = ui.nodes().find(n => has(n, 'wp-row-menu'));
+    const walk = (node, out = []) => {
+      if (Array.isArray(node)) { node.forEach(child => walk(child, out)); return out; }
+      if (!node || typeof node !== 'object') return out;
+      out.push(node); walk(node.children || [], out); return out;
+    };
+    const moveBtn = walk(menu).find(n => n.type === 'button' && text(n) === '项目一');
+    assert.ok(moveBtn, 'the project entry inside the menu');
+    ui.fire(moveBtn, 'onClick'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].projectId, 'p1', 'moved into the project');
+    open(); ui.click('移到回收站'); await ui.settle();
+    const stored = ui.storage.json('@local/work-panel:tasks:v1')[0];
+    assert.ok(stored.deletedAt, 'soft-deleted, recoverable');
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 0, 'menu closed');
+  } finally { ui.close(); }
+});
+
+test('Escape and outside clicks dismiss the row menu without changing data', async () => {
+  const ui = harness(state([task('a')])); await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 5, clientY: 5, preventDefault() {} });
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 1);
+    for (const handler of ui.events.get('keydown') || []) handler({ key: 'Escape' });
+    await ui.settle();
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 0, 'Escape closes it');
+    ui.fire(row, 'onContextMenu', { clientX: 5, clientY: 5, preventDefault() {} });
+    for (const handler of ui.events.get('click') || []) handler({});
+    await ui.settle();
+    assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 0, 'outside click closes it');
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].urgency, 'medium', 'no accidental edit');
+  } finally { ui.close(); }
+});
+
 test('automation is disabled by default and no scheduled generation is promised', async () => {
   const ui = harness(state([task('a')])); await ui.settle();
   try {
