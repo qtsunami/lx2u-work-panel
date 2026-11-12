@@ -109,6 +109,16 @@ export class WorkspaceSync {
     return true;
   }
 
+  // Record count of the canonical collections, used only to detect a cleared
+  // browser cache. It never substitutes for comparing the workspace digest.
+  _records(value) {
+    let total = 0;
+    for (const key of ['tasks', 'projects', 'logs', 'artifacts', 'reports']) {
+      total += Array.isArray(value[key]) ? value[key].length : 0;
+    }
+    return total;
+  }
+
   _known() { return !!this.meta && Number.isSafeInteger(this.meta.revision) && this.meta.revision >= 1 && typeof this.meta.storeId === 'string' && !!this.meta.storeId; }
 
   _run(work) {
@@ -275,10 +285,19 @@ export class WorkspaceSync {
       if (server.revision !== this.meta.revision || digest !== this._digest(server.workspace)) {
         this._conflict('缓存缺少可验证的同步基线且与主存不同，请先备份再重新加载。'); return;
       }
-      this.meta = { ...this.meta, lastSyncedDigest: digest };
+      this.meta = { ...this.meta, lastSyncedDigest: digest, lastSyncedRecords: this._records(server.workspace) };
       if (!this._persistMeta()) return;
     }
     const dirty = this.meta.dirty || digest !== this.meta.lastSyncedDigest;
+    // A cache that suddenly reads as empty while the last synced baseline had
+    // records is almost certainly lost storage, not a deliberate deletion.
+    // Never replace canonical data with that emptiness automatically.
+    if (dirty && !this.meta.dirty && this._records(local) === 0
+      && Number.isSafeInteger(this.meta.lastSyncedRecords) && this.meta.lastSyncedRecords > 0) {
+      this._conflict('本页缓存为空，但主存上次同步有 ' + this.meta.lastSyncedRecords
+        + ' 条记录；缓存可能已被清除，已停止自动写入，请先导出本页数据，再明确选择加载主存或恢复备份。');
+      return;
+    }
     if (dirty) {
       this.meta = { ...this.meta, dirty: true };
       if (!this._persistMeta()) return;
@@ -302,7 +321,8 @@ export class WorkspaceSync {
     try {
       if (this.d.writeRemote(this._clone(server.workspace)) !== true) { this._fail('主存数据未能安全写入本页缓存，已停止编辑。'); return; }
     } catch { this._fail('本页缓存写入失败，原页面备份仍保留。'); return; }
-    this.meta = { revision: server.revision, storeId: server.storeId, dirty: false, lastSyncedDigest: this._digest(server.workspace) };
+    this.meta = { revision: server.revision, storeId: server.storeId, dirty: false,
+      lastSyncedDigest: this._digest(server.workspace), lastSyncedRecords: this._records(server.workspace) };
     if (!this._persistMeta()) return;
     if (clearPending && !this._persistPending(null)) return;
     if (this.localOnly) {
@@ -343,7 +363,7 @@ export class WorkspaceSync {
       this.meta = {
         revision: result.revision, storeId: result.storeId,
         dirty: this._digest(local) !== this._digest(request.workspace),
-        lastSyncedDigest: this._digest(request.workspace),
+        lastSyncedDigest: this._digest(request.workspace), lastSyncedRecords: this._records(request.workspace),
       };
       if (!this._persistMeta()) return;
       if (!this._persistPending(null)) return;

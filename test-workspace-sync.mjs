@@ -60,7 +60,7 @@ const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 const stable = value => Array.isArray(value) ? '[' + value.map(stable).join(',') + ']' : value && typeof value === 'object' ? '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}' : JSON.stringify(value);
 const digest = value => { const json = stable(value); let hash = 2166136261; for (let i = 0; i < json.length; i++) hash = Math.imul(hash ^ json.charCodeAt(i), 16777619) >>> 0; return 'v1:' + json.length + ':' + hash.toString(16); };
-const known = overrides => ({ revision: 3, storeId: 'store-A', dirty: false, lastSyncedDigest: digest(ws('local')), ...overrides });
+const known = overrides => ({ revision: 3, storeId: 'store-A', dirty: false, lastSyncedDigest: digest(ws('local')), lastSyncedRecords: 1, ...overrides });
 
 test('fresh cache backs up before hydrating existing canonical workspace', async () => {
   const r = rig(); await r.sync.start();
@@ -122,6 +122,19 @@ test('corrupt local-only marker blocks both editing and migration without overwr
 test('first handshake failure with no durable local-mode marker remains read-only', async () => {
   const r = rig({ failures: { networkGET: 1, writeLocalOnly: 1 } }); await r.sync.start();
   assert.equal(r.status().canEdit, false); assert.equal(r.state.localOnly, null); assert.equal(r.posts().length, 0);
+});
+test('an emptied browser cache never auto-commits over a non-empty canonical baseline', async () => {
+  const empty = ws('local'); empty.tasks = [];
+  const r = rig({ meta: known({ lastSyncedRecords: 3 }), local: empty });
+  await r.sync.start();
+  assert.equal(r.status().phase, 'conflict'); assert.equal(r.status().canEdit, false);
+  assert.equal(r.posts().length, 0); assert.deepEqual(r.state.local.tasks, []);
+  assert.deepEqual(r.state.remote, ws('local'), 'canonical data must be untouched');
+});
+test('a cache with records still commits after intentional deletions', async () => {
+  const fewer = ws('local'); fewer.tasks = [{ id: 'kept', title: 'kept' }];
+  const r = rig({ meta: known({ lastSyncedRecords: 3 }), local: fewer }); await r.sync.start();
+  assert.equal(r.status().phase, 'ready'); assert.deepEqual(r.state.remote.tasks.map(t => t.id), ['kept']);
 });
 test('known cache with retryable Host storage-load error stays editable and queues changes', async () => {
   const r = rig({ meta: known() });
