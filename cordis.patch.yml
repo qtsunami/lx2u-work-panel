@@ -7,3 +7,4 @@
         model: deepseek-flash
         # The standard DSH base profile provides the durable JSON KV backend.
         inboxBackend: json
+        workspaceBackend: json

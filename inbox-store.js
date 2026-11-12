@@ -30,18 +30,21 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fingerprint = (item) => createHash('sha256').update(JSON.stringify([
   item.taskId, item.taskTitle, item.source, item.kind, item.text,
-  item.artifacts.map((artifact) => [artifact.summary, artifact.links]),
+  // Preserve historical hashes when files are absent/empty; old receipts remain valid.
+  item.artifacts.map((artifact) => artifact.files?.length ? [artifact.summary, artifact.links, artifact.files] : [artifact.summary, artifact.links]),
 ])).digest('hex');
 
 function validItem(item) {
   return object(item) && typeof item.id === 'string' && item.id.length > 0
     && ['taskId', 'taskTitle', 'source', 'kind', 'text', 'receivedAt'].every((key) => typeof item[key] === 'string')
     && item.text.trim().length > 0 && Number.isFinite(Date.parse(item.receivedAt))
+    && (item.sourceSessionId === undefined || typeof item.sourceSessionId === 'string')
     && ['progress', 'issue', 'decision', 'ai'].includes(item.kind)
     && (item.requestId === undefined || (typeof item.requestId === 'string' && item.requestId.length > 0 && item.requestId.length <= 200))
     && Array.isArray(item.artifacts) && item.artifacts.every((artifact) => object(artifact)
       && typeof artifact.summary === 'string' && Array.isArray(artifact.links)
-      && artifact.links.every((link) => typeof link === 'string' && /^https?:\/\//i.test(link)));
+      && artifact.links.every((link) => typeof link === 'string' && /^https?:\/\//i.test(link))
+      && (artifact.files === undefined || (Array.isArray(artifact.files) && artifact.files.every((file) => typeof file === 'string'))));
 }
 
 function readState(global) {

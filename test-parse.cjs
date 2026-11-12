@@ -558,7 +558,9 @@ const inboxTasks = [
 check('routes by id', dbg.resolveInboxTask(inboxTasks, { taskId: 't-1' }).id, 't-1');
 check('ignores a deleted task id', dbg.resolveInboxTask(inboxTasks, { taskId: 't-3' }), null);
 check('routes by exact title', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完成 报告' }).id, 't-1');
-check('routes by fuzzy title', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完成季度报告' }).id, 't-1');
+check('fuzzy title requires explicit task selection', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完成季度报告' }), null);
+check('ambiguous exact title requires selection', dbg.resolveInboxTask(inboxTasks.concat([{ id: 'other', title: '完成报告' }]), { taskTitle: '完成报告' }), null);
+check('invalid explicit id never falls through to another title', dbg.resolveInboxTask(inboxTasks, { taskId: 'missing', taskTitle: '完成报告' }), null);
 check('unmatched title', dbg.resolveInboxTask(inboxTasks, { taskTitle: '完全无关的事情' }), null);
 check('empty report has no target', dbg.resolveInboxTask(inboxTasks, {}), null);
 

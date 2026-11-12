@@ -4,17 +4,19 @@ import { apply } from './index.js';
 let registered;
 let routes = [];
 function mockStorage() {
-  const state = { disk: null, failNext: false, opens: 0, closes: 0, writes: 0 };
-  const backend = { kv: { open: async () => {
+  const state = { disk: null, units: {}, failNext: false, opens: 0, closes: 0, writes: 0 };
+  const backend = { kv: { open: async (descriptor) => {
+    const name = descriptor.name;
     state.opens += 1;
-    let memory = structuredClone(state.disk);
+    let memory = structuredClone(state.units[name] ?? null);
     return {
       loadAll: async () => ({ tables: {}, global: structuredClone(memory) }),
       setGlobal: async (value) => {
         state.writes += 1;
         memory = structuredClone(value);
         if (state.failNext) { state.failNext = false; throw new Error('disk full'); }
-        state.disk = structuredClone(value);
+        state.units[name] = structuredClone(value);
+        if (name === 'work-panel-inbox') state.disk = structuredClone(value);
       },
       close: async () => { state.closes += 1; },
     };
@@ -83,8 +85,8 @@ function routeFor(path) {
   if (!route) throw new Error('missing route: ' + path);
   return route;
 }
-async function callRoute(path, body) {
-  const res = await routeFor(path).fetch({ json: async () => body });
+async function callRoute(path, body, method = body === undefined ? 'GET' : 'POST') {
+  const res = await routeFor(path).fetch({ method, json: async () => body });
   return res.json();
 }
 
@@ -364,16 +366,19 @@ console.log('\n# execution report tool');
 const toolDefs = [];
 registered = undefined;
 apply(makeCtx(mockLlm('{}'), { tools: { register: (definition) => { toolDefs.push(definition); return () => {}; } } }));
-check('tool-registered', toolDefs.length, 1);
+check('tools-registered', toolDefs.map((definition) => definition.name), ['work_panel_report', 'work_panel_context']);
 const tool = toolDefs[0];
 check('tool-name', tool.name, 'work_panel_report');
 check('tool-requires-text', (tool.description || '').length > 20, true);
 check('tool-params-require-text', tool.parameters.required, ['text']);
-const toolCall = await tool.execute({ taskId: 't-1', text: '用脚本生成周报草稿' });
+const toolCall = await tool.execute({ taskId: 't-1', text: '用脚本生成周报草稿', sourceSessionId: 'spoofed', artifacts: [{ files: ['/tmp/产物.txt'], links: ['file:///tmp/产物.txt', '/tmp/产物.txt'] }] }, { agent: { id: 'real-session' } });
 check('tool-enqueues', [toolCall.ok, toolCall.pending], [true, 1]);
 const inboxFromTool = await callRoute('/api/work-panel/inbox', {});
 check('tool-item-visible', inboxFromTool.items[0].text, '用脚本生成周报草稿');
 check('tool-item-source', inboxFromTool.items[0].source, 'execution');
+check('tool-true-source-session', inboxFromTool.items[0].sourceSessionId, 'real-session');
+check('tool-files-plain-text', inboxFromTool.items[0].artifacts[0].files, ['/tmp/产物.txt']);
+check('tool-local-path-not-open-link', inboxFromTool.items[0].artifacts[0].links, []);
 const toolEmpty = await tool.execute({});
 check('tool-rejects-empty', [toolEmpty.ok, toolEmpty.error], [false, 'empty-report']);
 check('tool-render-reports-failure', tool.output.render({}, toolEmpty)[0].text.includes('未确认成功'), true);
@@ -452,6 +457,73 @@ check('capacity-persisted-count', capacity.state.disk.items.length, 200);
 console.log('\n# explicit backend configuration does not guess');
 apply(makeCtx(mockLlm('{}')), { inboxBackend: 'missing' });
 check('configured-missing-backend', (await callRoute('/api/work-panel/report-back', { text: 'x' })).error, 'storage-backend-unavailable');
+
+console.log('\n# Host authoritative workspace and shared read-only context');
+const workspaceStorage = mockStorage();
+const workspaceTools = [];
+let workspaceCtx = makeCtx(mockLlm('{}'), { storage: workspaceStorage, tools: { register: (definition) => { workspaceTools.push(definition); return () => {}; } } });
+apply(workspaceCtx, { inboxBackend: 'json' });
+const initialWorkspace = await callRoute('/api/work-panel/workspace');
+check('workspace-route-methods', routeFor('/api/work-panel/workspace').methods, ['GET', 'POST']);
+check('uninitialized-workspace-explicit', [initialWorkspace.ok, initialWorkspace.initialized, initialWorkspace.revision, initialWorkspace.workspace, initialWorkspace.storeId], [true, false, 0, null, null]);
+const snapshot = { tasks: [{ id: 't-1', title: 'Host任务', status: 'todo', projectId: '', expected: '通过验收' }], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {}, settings: { density: 'compact' }, future: ['保留'] };
+const initWorkspace = { action: 'initialize', baseRevision: 0, requestId: 'workspace-init', workspace: snapshot, storeId: null };
+const initialized = await callRoute('/api/work-panel/workspace', initWorkspace);
+check('workspace-init-success', [initialized.ok, initialized.revision, initialized.currentRevision, typeof initialized.storeId], [true, 1, 1, 'string']);
+check('workspace-migration-backup', workspaceStorage.state.units['work-panel-workspace'].migrationBackup.workspace, snapshot);
+const commitWorkspace = { action: 'commit', baseRevision: 1, requestId: 'workspace-commit', workspace: { ...snapshot, tasks: [{ ...snapshot.tasks[0], title: '已修改' }] }, storeId: initialized.storeId };
+const committed = await callRoute('/api/work-panel/workspace', commitWorkspace);
+check('workspace-commit-success', [committed.ok, committed.revision, committed.storeId], [true, 2, initialized.storeId]);
+const conflictWorkspace = await callRoute('/api/work-panel/workspace', { ...commitWorkspace, requestId: 'stale' });
+check('workspace-cas-conflict', [conflictWorkspace.ok, conflictWorkspace.error, conflictWorkspace.currentRevision], [false, 'revision-conflict', 2]);
+const storeConflict = await callRoute('/api/work-panel/workspace', { ...commitWorkspace, requestId: 'wrong-store', baseRevision: 2, storeId: 'other-store' });
+check('workspace-store-id-conflict', [storeConflict.ok, storeConflict.error], [false, 'store-id-conflict']);
+const repeatedInit = await callRoute('/api/work-panel/workspace', initWorkspace);
+check('workspace-replay-keeps-applied-revision', [repeatedInit.duplicate, repeatedInit.revision, repeatedInit.currentRevision], [true, 1, 2]);
+const contextTool = workspaceTools.find((definition) => definition.name === 'work_panel_context');
+const contextReadRoute = await callRoute('/api/work-panel/context', { action: 'read', taskId: 't-1' });
+const contextReadTool = await contextTool.execute({ action: 'read', taskId: 't-1' });
+check('context-route-tool-identical', contextReadRoute, contextReadTool);
+check('context-read-latest-host-state', [contextReadRoute.task.title, contextReadRoute.revision], ['已修改', 2]);
+const contextList = await contextTool.execute({ action: 'list' });
+check('context-bounded-task-list', contextList.items, [{ id: 't-1', title: '已修改', projectId: '', status: 'todo' }]);
+const preparedTask = await contextTool.execute({ action: 'prepare', taskId: 't-1' });
+check('context-prepare-includes-acceptance', preparedTask.prompt.includes('通过验收'), true);
+check('context-prepare-not-execution', (await callRoute('/api/work-panel/workspace')).revision, 2);
+check('context-no-task-write-action', (await contextTool.execute({ action: 'complete', taskId: 't-1' })).error, 'invalid-context-action');
+check('workspace-extensions-kept', (await callRoute('/api/work-panel/workspace')).workspace.future, ['保留']);
+const badWorkspaceJson = await routeFor('/api/work-panel/workspace').fetch({ method: 'POST', json: async () => { throw new Error('bad'); } });
+check('workspace-bad-json-structured', (await badWorkspaceJson.json()).error, 'bad-json');
+workspaceStorage.state.failNext = true;
+const workspaceWriteFailure = await callRoute('/api/work-panel/workspace', { ...commitWorkspace, baseRevision: 2, requestId: 'failed-workspace' });
+check('workspace-write-failure-not-ok', [workspaceWriteFailure.ok, workspaceWriteFailure.error, workspaceWriteFailure.uncertain], [false, 'workspace-write-failed', true]);
+check('workspace-failed-write-preserves-revision', (await callRoute('/api/work-panel/workspace')).revision, 2);
+await workspaceCtx.dispose();
+workspaceCtx = makeCtx(mockLlm('{}'), { storage: workspaceStorage }); apply(workspaceCtx, { inboxBackend: 'json' });
+const workspaceRestarted = await callRoute('/api/work-panel/workspace');
+check('workspace-restart-recovers', [workspaceRestarted.revision, workspaceRestarted.storeId, workspaceRestarted.workspace.tasks[0].title], [2, initialized.storeId, '已修改']);
+// The two stores use different units even though they share a backend.
+await callRoute('/api/work-panel/report-back', { text: '独立回传', sourceSessionId: 'spoofed-http' });
+const independentInbox = await callRoute('/api/work-panel/inbox', {});
+check('inbox-is-separate-unit', independentInbox.items.length, 1);
+check('http-cannot-spoof-source-session', 'sourceSessionId' in independentInbox.items[0], false);
+check('inbox-write-does-not-replace-workspace', (await callRoute('/api/work-panel/workspace')).revision, 2);
+await workspaceCtx.dispose();
+
+console.log('\n# selected context and local path action metadata');
+const selectedLlm = captureLlm(JSON.stringify({ reply: '待确认', actions: [
+  { op: 'artifact', taskId: 't-2', files: ['/tmp/result.md'], links: ['file:///tmp/result.md'] },
+  { op: 'log', taskId: 't-2', text: '已完成校验', files: ['/tmp/check.txt'] },
+] }));
+apply(makeCtx(selectedLlm));
+const selectedReply = await call({ tasks: TASKS, projects: PROJECTS, messages: [{ text: '这条' }], context: { taskId: 't-2', projectId: 'p-1', report: { kind: 'week', period: { start: '2026-11-01', end: '2026-11-07' }, body: 'x'.repeat(5000) } } });
+check('selected-task-first-in-prompt', selectedLlm.captured.user.indexOf('"id":"t-2"') < selectedLlm.captured.user.indexOf('"id":"t-1"'), true);
+check('selected-context-explicit', selectedLlm.captured.user.includes('"taskId":"t-2"'), true);
+check('report-context-bounded', selectedLlm.captured.user.includes('x'.repeat(4001)), false);
+check('prompt-distinguishes-proposal-from-history', selectedLlm.captured.system.includes('建议、计划、假设不得写成log'), true);
+check('artifact-local-path-metadata', selectedReply.actions[0].files, ['/tmp/result.md']);
+check('artifact-local-path-not-url', selectedReply.actions[0].links, []);
+check('log-local-path-metadata', selectedReply.actions[1].files, ['/tmp/check.txt']);
 
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

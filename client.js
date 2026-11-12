@@ -4,6 +4,10 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const { useState, useMemo, useRef, useEffect } = React;
     const h = React.createElement;
+    let clientContext;
+    function clientService(name) {
+      return clientContext && typeof clientContext.get === 'function' ? clientContext.get(name) : undefined;
+    }
 
     const STORAGE_KEY = '@local/work-panel:tasks:v1';
     const CHAT_KEY = '@local/work-panel:chat:v1';
@@ -18,9 +22,362 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.3.2';
+    const PANEL_VERSION = '1.4.0';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
+    const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
+    const CONTEXT_ENDPOINT = '/api/work-panel/context';
+    const WORKSPACE_META_KEY = '@local/work-panel:host-meta:v1';
+    const WORKSPACE_PENDING_KEY = '@local/work-panel:host-pending:v1';
+    const WORKSPACE_EXTRAS_KEY = '@local/work-panel:workspace-extras:v1';
+    const HOST_MIGRATION_BACKUP_KEY = '@local/work-panel:backup:before-host:v1';
+    const workspaceWriteListeners = new Set();
+    const CORE_WORKSPACE_FIELDS = ['tasks', 'projects', 'logs', 'artifacts', 'reports', 'inboxAck', 'reportEdits'];
+
+    // @generated workspace-sync begin
+    // Generated from workspace-sync.js by build-client.mjs; do not edit this region.
+    // Canonical browser-safe source; the build embeds this class into client.js.
+    // No imports, browser globals, real storage, Node APIs or automatic conflict repair.
+    class WorkspaceSync {
+      constructor(deps) {
+        this.d = deps;
+        this.meta = null;
+        this.pending = null;
+        this.loaded = false;
+        this.started = false;
+        this.disposed = false;
+        this.running = null;
+        this.timer = null;
+        this.changeVersion = 0;
+        this.status = { phase: 'loading', message: '正在连接工作数据主存。', revision: null, canEdit: false };
+      }
+
+      getStatus() { return { ...this.status }; }
+
+      start() {
+        if (this.started) return this.running || Promise.resolve(this.getStatus());
+        this.started = true;
+        return this._run(() => this._connect(false));
+      }
+
+      changed() {
+        if (this.disposed) return this.getStatus();
+        this.changeVersion += 1;
+        if (!this.loaded || !this.meta || !this._known()) {
+          this._fail('尚未确认主存版本，不能自动提交本页修改。');
+          return this.getStatus();
+        }
+        this.meta = { ...this.meta, dirty: true };
+        if (!this._persistMeta()) return this.getStatus();
+        if (this.status.phase === 'ready' || this.status.phase === 'syncing') {
+          this._set('syncing', '本页修改已保存到缓存，等待同步主存。');
+          if (!this.running) {
+            this._cancelTimer();
+            this.timer = this.d.schedule(() => { this.timer = null; return this.flush(); }, 600);
+          }
+        }
+        return this.getStatus();
+      }
+
+      flush() {
+        this._cancelTimer();
+        if (!this.started) return this.start();
+        if (this.running) return this.running;
+        if (this.disposed || ['offline', 'error', 'conflict', 'loading'].includes(this.status.phase)) return Promise.resolve(this.getStatus());
+        return this._run(() => this._drain());
+      }
+
+      retry() {
+        this._cancelTimer();
+        if (this.running) return this.running;
+        if (this.disposed || this.status.phase === 'conflict') return Promise.resolve(this.getStatus());
+        if (!this.started) return this.start();
+        return this._run(() => this._connect(false));
+      }
+
+      // Explicit user action only: backup is mandatory before replacing this page.
+      reload() {
+        this._cancelTimer();
+        if (this.running) return this.running;
+        if (this.disposed) return Promise.resolve(this.getStatus());
+        this.started = true;
+        return this._run(() => this._connect(true));
+      }
+
+      dispose() {
+        this.disposed = true;
+        this._cancelTimer();
+      }
+
+      _cancelTimer() {
+        if (this.timer !== null) { this.d.cancel(this.timer); this.timer = null; }
+      }
+
+      _set(phase, message) {
+        if (this.disposed) return;
+        const known = this._known();
+        this.status = {
+          phase, message, revision: this.meta ? this.meta.revision : null,
+          canEdit: phase === 'ready' || (phase === 'syncing' && known) || (phase === 'offline' && known),
+        };
+        this.d.onStatus(this.getStatus());
+      }
+
+      _fail(message) { this._cancelTimer(); this._set('error', message); return false; }
+      _conflict(message) { this._cancelTimer(); this._set('conflict', message); return false; }
+      _known() { return !!this.meta && Number.isSafeInteger(this.meta.revision) && this.meta.revision >= 1 && typeof this.meta.storeId === 'string' && !!this.meta.storeId; }
+
+      _run(work) {
+        if (this.disposed) return Promise.resolve(this.getStatus());
+        if (this.running) return this.running;
+        this.running = Promise.resolve().then(async () => {
+          try { await work(); }
+          catch (error) { if (!this.disposed) this._fail('本地同步状态无法安全读取或保存：' + String(error && error.message || error)); }
+          return this.getStatus();
+        }).finally(() => { this.running = null; });
+        return this.running;
+      }
+
+      _clone(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('工作区必须是完整对象，不能把缺失数据当作空库');
+        return JSON.parse(JSON.stringify(value));
+      }
+
+      _local() { return this._clone(this.d.readLocal()); }
+
+      _stable(value) {
+        if (Array.isArray(value)) return '[' + value.map(item => this._stable(item)).join(',') + ']';
+        if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + this._stable(value[key])).join(',') + '}';
+        return JSON.stringify(value);
+      }
+
+      // Change detector only, not an authenticity/security hash.
+      _digest(value) {
+        const json = this._stable(value);
+        let hash = 2166136261;
+        for (let i = 0; i < json.length; i++) hash = Math.imul(hash ^ json.charCodeAt(i), 16777619) >>> 0;
+        return 'v1:' + json.length + ':' + hash.toString(16);
+      }
+
+      _readState() {
+        if (this.loaded) return;
+        const meta = this.d.readMeta();
+        const pending = this.d.readPending();
+        if (meta !== null && (!meta || typeof meta !== 'object' || !Number.isSafeInteger(meta.revision) || meta.revision < 0
+          || typeof meta.dirty !== 'boolean' || (meta.revision >= 1 ? typeof meta.storeId !== 'string' || !meta.storeId : meta.storeId !== null)
+          || (meta.lastSyncedDigest !== undefined && meta.lastSyncedDigest !== null && typeof meta.lastSyncedDigest !== 'string'))) throw new Error('同步元数据损坏，已停止自动操作');
+        if (pending !== null && (!pending || !['initialize', 'commit'].includes(pending.action)
+          || !Number.isSafeInteger(pending.baseRevision) || pending.baseRevision < 0
+          || typeof pending.requestId !== 'string' || !pending.requestId
+          || (pending.action === 'initialize' ? pending.baseRevision !== 0 || pending.storeId !== null : pending.baseRevision < 1 || typeof pending.storeId !== 'string' || !pending.storeId))) throw new Error('待提交事务损坏，已停止自动操作');
+        this.meta = meta ? JSON.parse(JSON.stringify(meta)) : null;
+        this.pending = pending ? { ...pending, workspace: this._clone(pending.workspace) } : null;
+        this._local(); // A read failure is not a fresh/empty workspace.
+        this.loaded = true;
+      }
+
+      _persistMeta() {
+        try {
+          if (this.d.writeMeta({ ...this.meta }) === true) return true;
+        } catch { /* Stop rather than submitting without recoverable local state. */ }
+        return this._fail('同步元数据未能保存，本页修改仍保留；请先备份再重试。');
+      }
+
+      _persistPending(value) {
+        try {
+          if (this.d.writePending(value ? JSON.parse(JSON.stringify(value)) : null) === true) { this.pending = value; return true; }
+        } catch { /* An unrecorded request must never reach the network. */ }
+        return this._fail('待提交事务未能保存，已停止发送；请先备份再重试。');
+      }
+
+      _backup(local) {
+        try { if (this.d.backup(this._clone(local)) === true) return true; } catch { /* fail closed */ }
+        return this._fail('无法保留本页数据的安全备份，已取消迁移或重新加载。');
+      }
+
+      async _request(method, payload) {
+        let response;
+        try {
+          response = await this.d.fetch('/api/work-panel/workspace', method === 'GET' ? { method: 'GET' } : {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+          });
+        } catch {
+          if (!this.disposed) this._set('offline', this._known() ? '主存暂时离线，可继续本页编辑；请联网后重试同步。' : '无法连接主存，尚未确认版本；本页数据已保留，暂不能编辑。');
+          return null;
+        }
+        if (this.disposed) return null;
+        let data;
+        try { data = await response.json(); }
+        catch { this._fail('主存响应不是有效 JSON，已保留本页数据及待提交事务。'); return null; }
+        if (this.disposed) return null;
+        if (!data || typeof data !== 'object' || typeof data.ok !== 'boolean') { this._fail('主存响应格式无效，不能推断主存为空。'); return null; }
+        if (!response.ok || !data.ok) {
+          const error = String(data.error || 'host-error');
+          if (/conflict|uninitialized/.test(error)) this._conflict('主存版本或身份已变化，已保留本页数据；请先导出再明确重新加载。');
+          else this._fail('主存未确认保存（' + error + '），待提交事务仍保留，请重试或导出备份。');
+          return null;
+        }
+        return data;
+      }
+
+      _validServer(data) {
+        return data && typeof data.initialized === 'boolean' && Number.isSafeInteger(data.revision)
+          && (data.initialized ? data.revision >= 1 && typeof data.storeId === 'string' && !!data.storeId
+            && data.workspace && typeof data.workspace === 'object' && !Array.isArray(data.workspace)
+            : data.revision === 0 && data.storeId === null && data.workspace === null);
+      }
+
+      async _connect(explicitReload) {
+        this._readState();
+        // Retrying must first make all in-memory metadata durable, including a
+        // failed initial/ack write whose dirty flag can legitimately be false.
+        if (this.meta && !this._persistMeta()) return;
+        const version = this.changeVersion;
+        this._set('loading', explicitReload ? '正在安全重新加载主存，原页面将先备份。' : '正在核对主存身份与待同步事务。');
+        const server = await this._request('GET');
+        if (!server || this.disposed) return;
+        if (!this._validServer(server)) { this._fail('主存缺少合法版本、身份或完整工作区，已停止自动操作。'); return; }
+        if (explicitReload) {
+          if (!server.initialized) { this._conflict('主存尚未初始化；已绑定的页面不能自动迁移到缺失主存。'); return; }
+          if (version !== this.changeVersion) { this._conflict('重新加载期间本页又有修改，已取消覆盖。'); return; }
+          if (!this._backup(this._local())) return;
+          return this._hydrate(server, '本页旧数据已留安全备份，已重新加载主存。', true);
+        }
+        if (this.pending) {
+          if (this.pending.action === 'commit' && (!server.initialized || server.storeId !== this.pending.storeId)) {
+            this._conflict('待提交事务属于另一主存或主存已丢失，已保留缓存与事务。'); return;
+          }
+          if (this.meta && this.meta.storeId && (!server.initialized || this.meta.storeId !== server.storeId)) {
+            this._conflict('已绑定主存的身份发生变化，不能自动迁移本页数据。'); return;
+          }
+          if (!this.meta) {
+            this.meta = { revision: this.pending.baseRevision, storeId: this.pending.storeId, dirty: false, lastSyncedDigest: null };
+          }
+          // No hydration may precede resolution of this immutable request. Initial
+          // migration's null storeId can become known only after replaying its id.
+          return this._drain();
+        }
+        if (!this.meta) {
+          const local = this._local();
+          if (!this._backup(local)) return;
+          if (server.initialized) return this._hydrate(server, '旧本地数据已留安全备份，已加载主存。', false);
+          const requestId = this.d.makeId();
+          if (typeof requestId !== 'string' || !requestId) { this._fail('无法生成稳定事务编号，迁移已停止。'); return; }
+          const pending = { action: 'initialize', baseRevision: 0, requestId, workspace: local, storeId: null };
+          if (!this._persistPending(pending)) return;
+          this.meta = { revision: 0, storeId: null, dirty: false, lastSyncedDigest: null };
+          if (!this._persistMeta()) return;
+          return this._drain();
+        }
+        if (!this._known() || !server.initialized || this.meta.storeId !== server.storeId) {
+          this._conflict('缓存已绑定的主存丢失或身份变化，禁止自动初始化或覆盖。'); return;
+        }
+        const local = this._local();
+        const digest = this._digest(local);
+        // Legacy metadata without a digest can only be upgraded from an exactly
+        // matching canonical baseline; absence of evidence is not evidence of clean.
+        if (!this.meta.lastSyncedDigest && !this.meta.dirty) {
+          if (server.revision !== this.meta.revision || digest !== this._digest(server.workspace)) {
+            this._conflict('缓存缺少可验证的同步基线且与主存不同，请先备份再重新加载。'); return;
+          }
+          this.meta = { ...this.meta, lastSyncedDigest: digest };
+          if (!this._persistMeta()) return;
+        }
+        const dirty = this.meta.dirty || digest !== this.meta.lastSyncedDigest;
+        if (dirty) {
+          this.meta = { ...this.meta, dirty: true };
+          if (!this._persistMeta()) return;
+          if (server.revision !== this.meta.revision) { this._conflict('本页有未同步修改且主存版本已变化，已停止自动覆盖。'); return; }
+          return this._drain();
+        }
+        if (server.revision < this.meta.revision) { this._conflict('主存版本倒退，已保留本页缓存。'); return; }
+        if (server.revision === this.meta.revision) {
+          if (digest !== this._digest(server.workspace)) {
+            this._conflict('同一主存修订返回了不同正文，已保留本页缓存并停止自动操作。'); return;
+          }
+          // A focus/retry handshake of an unchanged canonical revision must not
+          // hydrate: the caller may invalidate undo, drafts and async editor work.
+          this._set('ready', '工作数据已与主存同步。');
+          return;
+        }
+        return this._hydrate(server, '工作数据已与主存同步。', false);
+      }
+
+      _hydrate(server, message, clearPending) {
+        try {
+          if (this.d.writeRemote(this._clone(server.workspace)) !== true) { this._fail('主存数据未能安全写入本页缓存，已停止编辑。'); return; }
+        } catch { this._fail('本页缓存写入失败，原页面备份仍保留。'); return; }
+        this.meta = { revision: server.revision, storeId: server.storeId, dirty: false, lastSyncedDigest: this._digest(server.workspace) };
+        if (!this._persistMeta()) return;
+        if (clearPending && !this._persistPending(null)) return;
+        this._set('ready', message);
+      }
+
+      async _drain() {
+        while (!this.disposed) {
+          if (!this.pending) {
+            if (!this._known()) { this._fail('未获得可验证的主存版本，不能创建提交。'); return; }
+            const local = this._local();
+            if (!this.meta.dirty && this._digest(local) === this.meta.lastSyncedDigest) { this._set('ready', '工作数据已与主存同步。'); return; }
+            const requestId = this.d.makeId();
+            if (typeof requestId !== 'string' || !requestId) { this._fail('无法生成稳定事务编号，已停止提交。'); return; }
+            if (!this._persistPending({ action: 'commit', baseRevision: this.meta.revision, requestId, workspace: local, storeId: this.meta.storeId })) return;
+            this.meta = { ...this.meta, dirty: false };
+            if (!this._persistMeta()) return;
+          }
+          const request = this.pending;
+          this._set(this._known() ? 'syncing' : 'loading', '正在向主存提交已持久记录的事务。');
+          const result = await this._request('POST', request);
+          if (!result || this.disposed) return;
+          if (!Number.isSafeInteger(result.revision) || result.revision !== request.baseRevision + 1 || !Number.isSafeInteger(result.currentRevision)
+            || result.currentRevision < result.revision || typeof result.storeId !== 'string' || !result.storeId) {
+            this._fail('保存响应缺少合法版本或身份，保留原事务等待重试。'); return;
+          }
+          if (request.storeId !== null && result.storeId !== request.storeId) {
+            this._conflict('保存响应属于不同主存，已停止后续提交。'); return;
+          }
+          if (result.currentRevision !== result.revision) {
+            this._conflict('原事务曾保存成功，但主存随后已更新；禁止跳过中间版本覆盖。'); return;
+          }
+          const local = this._local();
+          this.meta = {
+            revision: result.revision, storeId: result.storeId,
+            dirty: this._digest(local) !== this._digest(request.workspace),
+            lastSyncedDigest: this._digest(request.workspace),
+          };
+          if (!this._persistMeta()) return;
+          if (!this._persistPending(null)) return;
+          if (!this.meta.dirty) { this._set('ready', '工作数据已与主存同步。'); return; }
+          // The newer cache becomes a new immutable transaction, based on the
+          // applied revision, never a server-supplied unrelated current revision.
+        }
+      }
+    }
+    // @generated workspace-sync end
+
+    function notifyWorkspaceWrite(keys) {
+      const relevant = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
+      if (keys.some((key) => relevant.includes(key))) workspaceWriteListeners.forEach((listener) => listener());
+    }
+    function readWorkspaceExtras() {
+      try {
+        const raw = window.localStorage.getItem(WORKSPACE_EXTRAS_KEY);
+        const value = raw ? JSON.parse(raw) : {};
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid-extras');
+        return value;
+      } catch { readProblem(WORKSPACE_EXTRAS_KEY); return {}; }
+    }
+    function workspaceExtras(state) {
+      return Object.fromEntries(Object.entries(state).filter(([key]) => !CORE_WORKSPACE_FIELDS.includes(key) && !['app', 'schema', 'version', 'exportedAt'].includes(key)));
+    }
+    function readCachedWorkspace() {
+      const state = { ...readWorkspaceExtras(), tasks: loadTasks(), projects: loadProjects(), logs: loadLogs(),
+        artifacts: loadArtifacts(), reports: loadReports(), inboxAck: loadInboxAck(), reportEdits: loadReportEdits() };
+      if (storageBlock) throw new Error(storageBlock);
+      const workspaceKeys = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
+      if (workspaceKeys.some((key) => pendingWrites.has(key))) throw new Error('有修改尚未写入本地缓存，请重试保存或先导出。');
+      return state;
+    }
     const storageListeners = new Set();
     const pendingWrites = new Map();
     let storageBlock = '';
@@ -38,6 +395,7 @@ window.__ModuleLoader__.load({
           window.localStorage.setItem(key, value);
           pendingWrites.delete(key);
           notifyStorage();
+          notifyWorkspaceWrite([key]);
           return true;
         } catch { /* Keep the intended write in memory for retry/export. */ }
       }
@@ -93,6 +451,7 @@ window.__ModuleLoader__.load({
         window.localStorage.removeItem(TRANSACTION_KEY);
         entries.forEach(([key]) => pendingWrites.delete(key));
         notifyStorage();
+        notifyWorkspaceWrite(entries.map(([key]) => key));
         return true;
       } catch {
         if (prepared) {
@@ -121,6 +480,7 @@ window.__ModuleLoader__.load({
         [LOGS_KEY, JSON.stringify(state.logs)], [ARTIFACTS_KEY, JSON.stringify(state.artifacts)],
         [REPORTS_KEY, JSON.stringify(state.reports)], [INBOX_ACK_KEY, JSON.stringify(state.inboxAck || [])],
         [REPORT_EDITS_KEY, JSON.stringify(state.reportEdits || {})],
+        [WORKSPACE_EXTRAS_KEY, JSON.stringify(workspaceExtras(state))],
       ];
     }
     function reportEditorKey(kind, period, scopeId) {
@@ -529,7 +889,9 @@ window.__ModuleLoader__.load({
             outcomes.push({ op, status: 'skipped', reason: 'empty-text', taskId: task.id });
             continue;
           }
-          logs = logs.concat([makeLogEntry(task.id, body, action.kind, action.source || 'ai', stamp)]);
+          logs = logs.concat([{ ...makeLogEntry(task.id, body, action.kind, action.source || 'ai', stamp),
+            ...(action.originalText ? { originalText: action.originalText } : {}),
+            ...(action.sourceSessionId ? { sourceSessionId: action.sourceSessionId } : {}) }]);
           tasks[index] = { ...task, updatedAt: stamp };
           outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
           continue;
@@ -537,11 +899,14 @@ window.__ModuleLoader__.load({
         if (op === 'artifact') {
           const summary = String(action.summary || '').trim();
           const links = Array.isArray(action.links) ? action.links : [];
-          if (!summary && links.length === 0) {
+          const files = Array.isArray(action.files) ? action.files.filter((path) => typeof path === 'string' && path.trim()) : [];
+          if (!summary && links.length === 0 && files.length === 0) {
             outcomes.push({ op, status: 'skipped', reason: 'empty', taskId: task.id });
             continue;
           }
-          artifacts = artifacts.concat([makeArtifact(task.id, summary, links.join('\n'), stamp, action.source)]);
+          artifacts = artifacts.concat([{ ...makeArtifact(task.id, summary, links.join('\n'), stamp, action.source),
+            ...(files.length ? { files } : {}), ...(action.originalText ? { originalText: action.originalText } : {}),
+            ...(action.sourceSessionId ? { sourceSessionId: action.sourceSessionId } : {}) }]);
           tasks[index] = { ...task, updatedAt: stamp };
           outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
           continue;
@@ -712,31 +1077,30 @@ window.__ModuleLoader__.load({
       };
     }
 
-    /** Match an execution report to a live task: id first, then exact/fuzzy title. */
+    /** Never turn a fuzzy or ambiguous match into an authoritative task link. */
     function resolveInboxTask(tasks, item) {
       if (!item) return null;
-      if (item.taskId) {
-        const byId = tasks.find((task) => task && task.id === item.taskId && !task.deletedAt);
-        if (byId) return byId;
-      }
+      if (item.taskId) return tasks.find((task) => task && task.id === item.taskId && !task.deletedAt) || null;
       const title = String(item.taskTitle || '').trim();
       if (!title) return null;
-      const exact = tasks.find((task) => task && !task.deletedAt && normalizeTitle(task.title) === normalizeTitle(title));
-      return exact || findDuplicateTask(liveTasks(tasks), title);
+      const exact = tasks.filter((task) => task && !task.deletedAt && normalizeTitle(task.title) === normalizeTitle(title));
+      return exact.length === 1 ? exact[0] : null;
     }
 
     function loadInboxAck() {
       try {
         const raw = window.localStorage.getItem(INBOX_ACK_KEY);
         const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
-      } catch { return []; }
+        if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === 'string')) throw new Error('invalid-handled-ids');
+        return parsed;
+      } catch { readProblem(INBOX_ACK_KEY); return []; }
     }
     function saveInboxAck(ids) { return writeStored(INBOX_ACK_KEY, JSON.stringify(ids.slice(-300))); }
 
     // ---- backup / restore --------------------------------------------------
     function buildBackup(state) {
       return {
+        ...workspaceExtras(state),
         app: 'work-panel',
         schema: BACKUP_SCHEMA,
         version: PANEL_VERSION,
@@ -783,12 +1147,12 @@ window.__ModuleLoader__.load({
       if (typeof raw.schema === 'number' && raw.schema > BACKUP_SCHEMA) return 'newer-schema';
       const keys = Object.keys(IMPORT_LIMITS);
       const complete = keys.every((key) => Array.isArray(raw[key]));
-      if (mode === 'replace' && !complete) return 'incomplete-backup';
+      if ((mode === 'replace' || mode === 'hydrate') && !complete) return 'incomplete-backup';
       let count = 0;
       for (const key of keys) {
         if (raw[key] === undefined) continue;
         if (!Array.isArray(raw[key])) return 'invalid-record';
-        if (raw[key].length > IMPORT_LIMITS[key]) return 'too-large';
+        if (mode !== 'hydrate' && raw[key].length > IMPORT_LIMITS[key]) return 'too-large';
         count += raw[key].length;
         const ids = new Set();
         for (const item of raw[key]) {
@@ -898,6 +1262,7 @@ window.__ModuleLoader__.load({
 
       // Refuse oversize workspaces rather than silently slicing existing data.
       if (Object.keys(IMPORT_LIMITS).some((key) => next[key].length > IMPORT_LIMITS[key])) return { error: 'too-large' };
+      next = { ...(replace ? {} : workspaceExtras(current)), ...workspaceExtras(raw), ...next };
       next.reportEdits = replace ? { ...(raw.reportEdits || {}) }
         : { ...(raw.reportEdits || {}), ...(current.reportEdits || {}) };
       const migrated = migrateProjectRefs(next.tasks, next.projects, next.reports);
@@ -2097,7 +2462,19 @@ window.__ModuleLoader__.load({
       .wp-batch-text { flex: 1; min-width: 160px; }
       .wp-detail-field-label { display: block; margin-bottom: 2px; font-size: 12px; color: var(--wp-text-tertiary); }
       .wp-detail-small { font-size: 13px; line-height: 1.55; min-height: 38px; color: var(--wp-text); }
-      .wp-detail-actions { display: flex; gap: 8px; margin: 2px 0 14px; }
+      .wp-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 14px; }
+      .wp-delegation { display: flex; flex-direction: column; gap: 8px; padding: 12px; margin-bottom: 14px; border: 1px solid var(--wp-border); border-radius: 8px; }
+      .wp-delegation-prompt { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--wp-border); border-radius: 6px; background: var(--wp-bg-container); color: var(--wp-text); font: inherit; font-size: 12px; resize: vertical; }
+      .wp-source-session { padding: 1px 4px; border: none; background: transparent; color: var(--wp-primary); font: inherit; font-size: 11px; cursor: pointer; }
+      .wp-local-files { display: flex; flex-direction: column; gap: 4px; }
+      .wp-local-file { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .wp-local-file-path { overflow-wrap: anywhere; font-size: 12px; color: var(--wp-text-secondary); }
+      .wp-ai-disclosure { padding: 4px 16px; color: var(--wp-text-tertiary); font-size: 11px; }
+      .wp-ai-disclosure > summary { cursor: pointer; }
+      .wp-ai-disclosure p { line-height: 1.6; margin: 6px 0; }
+      .wp-record-original { color: var(--wp-text-tertiary); font-size: 11px; margin-top: 4px; }
+      .wp-record-original summary { cursor: pointer; }
+      .wp-record-original p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
       .wp-act-btn { height: 30px; padding: 0 12px; font-size: 12.5px; }
       .wp-composer-panel { margin: 0 0 16px; padding: 12px; border: 1px solid var(--wp-border-secondary); border-radius: 10px; background: var(--wp-fill); }
       .wp-composer-panel-input {
@@ -2257,6 +2634,9 @@ window.__ModuleLoader__.load({
         color: var(--wp-error); font-size: 12px;
       }
       .wp-storage-warning > span { flex: 1; min-width: 180px; }
+      .wp-sync-guard { display: flex; flex: 1; min-height: 0; min-width: 0; padding: 0; margin: 0; border: 0; }
+      .wp-host-sync { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 14px; background: var(--wp-fill-secondary); color: var(--wp-text-secondary); font-size: 12px; }
+      .wp-host-sync > span { flex: 1; min-width: 160px; }
 
       /* ---- weekly report ---- */
       .wp-mid-body-report { display: flex; flex-direction: column; padding: 14px 20px 16px; }
@@ -2543,6 +2923,14 @@ window.__ModuleLoader__.load({
       const [storageIssue, setStorageIssue] = useState(storageMessage);
       const [workspaceEpoch, setWorkspaceEpoch] = useState(0);
       const [inboxIssue, setInboxIssue] = useState('');
+      const [hostSyncStatus, setHostSyncStatus] = useState({ phase: 'loading', message: '正在连接本机数据主存…', canEdit: false });
+      const [delegation, setDelegation] = useState(null);
+      const [quickDeadlineTouched, setQuickDeadlineTouched] = useState(false);
+      const [restoreMigrationConfirm, setRestoreMigrationConfirm] = useState(false);
+      const hostSyncRef = useRef(null);
+      const suppressSyncRef = useRef(false);
+      const extrasRef = useRef(null);
+      if (!extrasRef.current) extrasRef.current = readWorkspaceExtras();
       const workspaceRef = useRef(null);
       const epochRef = useRef(0);
       if (epochRef.current == null) epochRef.current = 0;
@@ -2556,7 +2944,7 @@ window.__ModuleLoader__.load({
       if (editorRevision.current == null) editorRevision.current = 0;
       const editorRef = useRef(null);
       editorRef.current = { key: reportEditorKey(reportKind, reportPeriod, reportScope), body: reportBody, dirty: reportDirty };
-      workspaceRef.current = { tasks, projects, logs, artifacts, reports, inboxAck, reportEdits: reportEditsRef.current };
+      workspaceRef.current = { ...extrasRef.current, tasks, projects, logs, artifacts, reports, inboxAck, reportEdits: reportEditsRef.current };
       useEffect(() => {
         const listener = (message) => setStorageIssue(message);
         storageListeners.add(listener);
@@ -2593,6 +2981,7 @@ window.__ModuleLoader__.load({
       const dataFileRef = useRef(null);
       const selectedTaskRef = useRef(selectedId); selectedTaskRef.current = selectedId;
       const logTextRef = useRef(logText); logTextRef.current = logText;
+      const tidySourceRef = useRef(null);
       const adoptingIdsRef = useRef(new Set());
       if (!adoptingIdsRef.current) adoptingIdsRef.current = new Set();
       useEffect(() => { inboxAckRef.current = inboxAck; }, [inboxAck]);
@@ -2624,7 +3013,7 @@ window.__ModuleLoader__.load({
               return;
             }
             const handled = data.items.filter((item) => item && inboxAckRef.current.includes(item.id)).map((item) => item.id);
-            if (handled.length) {
+            if (handled.length && hostSyncRef.current && hostSyncRef.current.getStatus().phase === 'ready') {
               try {
                 const ack = await fetch(INBOX_ACK_ENDPOINT, {
                   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: handled }),
@@ -2689,6 +3078,53 @@ window.__ModuleLoader__.load({
         } catch { /* ignore quota errors: the snapshot is best effort */ }
       }, []);
 
+      useEffect(() => {
+        let stopped = false;
+        const readSyncSlot = (key) => {
+          const raw = window.localStorage.getItem(key);
+          return raw === null ? null : JSON.parse(raw);
+        };
+        const controller = new WorkspaceSync({
+          fetch: (url, options) => fetch(url, options),
+          readLocal: readCachedWorkspace,
+          writeRemote: (next) => {
+            if (validateBackup(buildBackup(next), 'hydrate')) return false;
+            suppressSyncRef.current = true;
+            try { return applyWorkspace(next); }
+            finally { suppressSyncRef.current = false; }
+          },
+          backup: (local) => {
+            const key = window.localStorage.getItem(HOST_MIGRATION_BACKUP_KEY) === null
+              ? HOST_MIGRATION_BACKUP_KEY : PRE_IMPORT_KEY;
+            return writeBackupSlot(key, { at: new Date().toISOString(), backup: buildBackup(local) });
+          },
+          readMeta: () => readSyncSlot(WORKSPACE_META_KEY),
+          writeMeta: (value) => writeBackupSlot(WORKSPACE_META_KEY, value),
+          readPending: () => readSyncSlot(WORKSPACE_PENDING_KEY),
+          writePending: (value) => {
+            if (value !== null) return writeBackupSlot(WORKSPACE_PENDING_KEY, value);
+            try { window.localStorage.removeItem(WORKSPACE_PENDING_KEY); return true; } catch { return false; }
+          },
+          makeId: () => 'wp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2),
+          schedule: (fn, delay) => setTimeout(fn, delay), cancel: (timer) => clearTimeout(timer),
+          onStatus: (status) => { if (!stopped) setHostSyncStatus(status); },
+        });
+        hostSyncRef.current = controller;
+        const onWrite = () => { if (!stopped && !suppressSyncRef.current) controller.changed(); };
+        workspaceWriteListeners.add(onWrite);
+        const onFocus = () => {
+          const status = controller.getStatus();
+          if (status.phase === 'ready' || status.phase === 'offline') controller.retry();
+        };
+        if (window.addEventListener) window.addEventListener('focus', onFocus);
+        controller.start();
+        return () => {
+          stopped = true; workspaceWriteListeners.delete(onWrite); controller.dispose();
+          if (window.removeEventListener) window.removeEventListener('focus', onFocus);
+          if (hostSyncRef.current === controller) hostSyncRef.current = null;
+        };
+      }, []);
+
       useEffect(() => { saveChat(messages); }, [messages]);
       useEffect(() => { saveTheme(theme); }, [theme]);
       useEffect(() => { setFlagOpen(false); setDetailCalOpen(false); }, [selectedId]);
@@ -2722,7 +3158,7 @@ window.__ModuleLoader__.load({
         setLogComposerOpen(false); setLogText(''); setLogKind('progress');
         setArtifactComposerOpen(false); setArtifactSummary(''); setArtifactLinks('');
         setAiPanelOpen(false); setAiResult(null); setAiAdopted({});
-        setTidyLoading(false); setTidyNote('');
+        setTidyLoading(false); setTidyNote(''); setDelegation(null); tidySourceRef.current = null;
       }, [selectedId]);
       useEffect(() => {
         if (!calOpen) return undefined;
@@ -2797,6 +3233,56 @@ window.__ModuleLoader__.load({
         return true;
       };
 
+      const copyText = async (text) => {
+        try {
+          if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('clipboard-unavailable');
+          await navigator.clipboard.writeText(String(text)); showToast('已复制'); return true;
+        } catch { showToast('当前环境无法自动复制，请选中文字手动复制。', 'danger'); return false; }
+      };
+      const openSourceSession = (sessionId) => {
+        const service = clientService('uiWorkspace');
+        if (!service || typeof service.openSession !== 'function') { showToast('当前环境不支持打开来源会话。', 'danger'); return; }
+        try { service.openSession(sessionId); } catch { showToast('来源会话暂不可用。', 'danger'); }
+      };
+      const sourceSessionLink = (sessionId) => sessionId ? h('button', {
+        className: 'wp-source-session', type: 'button', title: sessionId,
+        onClick: () => openSourceSession(sessionId),
+      }, '来源会话') : null;
+      const renderLocalFiles = (files) => Array.isArray(files) && files.length
+        ? h('div', { className: 'wp-local-files' }, files.map((path, index) => h('div', { className: 'wp-local-file', key: index },
+            h('code', { className: 'wp-local-file-path' }, path),
+            h('button', { className: 'wp-source-session', type: 'button', onClick: () => copyText(path) }, '复制路径')))) : null;
+      const prepareDelegation = async (task) => {
+        if (!task || delegation && delegation.loading) return;
+        const epoch = epochRef.current;
+        setDelegation({ taskId: task.id, prompt: '', loading: true, error: '' });
+        try {
+          if (!hostSyncRef.current) throw new Error('host-not-ready');
+          const status = await hostSyncRef.current.flush();
+          if (status.phase !== 'ready') throw new Error('host-not-ready');
+          const response = await fetch(CONTEXT_ENDPOINT, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action: 'prepare', taskId: task.id }),
+          });
+          const result = await response.json();
+          if (!response.ok || !result || result.error || typeof result.prompt !== 'string') throw new Error('prepare-failed');
+          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
+          setDelegation({ taskId: task.id, prompt: result.prompt, loading: false, error: '' });
+        } catch {
+          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
+          setDelegation({ taskId: task.id, prompt: '', loading: false, error: '请先同步本机主存，再准备执行指令。' });
+        }
+      };
+      const openDelegationDraft = () => {
+        if (!delegation || !delegation.prompt) return;
+        const service = clientService('uiWorkspace');
+        if (!service || typeof service.startSession !== 'function') { showToast('当前环境不支持直接打开草稿，请复制执行指令。', 'danger'); return; }
+        try {
+          service.startSession(undefined, { prompt: delegation.prompt, whenDraftExists: 'append' });
+          showToast('已请求打开执行草稿，请核对后发送；尚未自动执行。');
+        } catch { showToast('无法打开执行草稿，请复制指令手动使用。', 'danger'); }
+      };
+
       // ---- recycle bin ---------------------------------------------------
       /** Soft delete: recoverable from the recycle bin. */
       const softDeleteTask = (task) => {
@@ -2857,6 +3343,7 @@ window.__ModuleLoader__.load({
       };
 
       const createProject = (rawName, assignToTaskId) => {
+        if (!hostSyncStatus.canEdit) { showToast('请先连接本机主存，再创建项目。', 'danger'); return null; }
         const name = String(rawName || '').trim();
         if (!name) return null;
         const existing = projects.find((project) => projectKey(project.name) === projectKey(name));
@@ -2913,7 +3400,10 @@ window.__ModuleLoader__.load({
       /** Append one work record. Existing records are never edited or removed. */
       const appendLog = (taskId, text, kind, source) => {
         if (!String(text || '').trim()) return false;
-        commitLogs((prev) => prev.concat([makeLogEntry(taskId, text, kind, source)]));
+        const original = tidySourceRef.current && tidySourceRef.current.taskId === taskId ? tidySourceRef.current.originalText : '';
+        commitLogs((prev) => prev.concat([{ ...makeLogEntry(taskId, text, kind, original ? 'ai' : source),
+          ...(original ? { originalText: original } : {}) }]));
+        tidySourceRef.current = null;
         updateTask(taskId, {});
         return true;
       };
@@ -2931,6 +3421,7 @@ window.__ModuleLoader__.load({
 
       // ---- AI actions: preview -> confirm -> apply -> undo ----------------
       const runActions = (actions) => {
+        if (!hostSyncStatus.canEdit) { showToast('请先恢复主存同步，变更尚未执行。', 'danger'); return { applied: 0, persistenceFailed: true }; }
         const result = applyActions(workspaceRef.current, actions);
         if (result.applied > 0) {
           if (!commitTaskStores(result.next)) return { ...result, applied: 0, persistenceFailed: true };
@@ -2946,7 +3437,9 @@ window.__ModuleLoader__.load({
 
       const confirmPending = () => {
         if (!pendingActions) return;
-        const result = runActions(pendingActions.actions);
+        const actions = pendingActions.actions.map((action) => ['log', 'artifact'].includes(action.op) && pendingActions.originalText
+          ? { ...action, originalText: pendingActions.originalText } : action);
+        const result = runActions(actions);
         if (result.persistenceFailed) return;
         setMessages((prev) => prev.concat([{ role: 'assistant', text: summarizeOutcomes(result) }]));
         setPendingActions(null);
@@ -3041,6 +3534,7 @@ window.__ModuleLoader__.load({
           const proposal = data.proposal && typeof data.proposal.text === 'string' ? data.proposal.text.trim() : '';
           if (!proposal) throw new Error('empty-proposal');
           if (epoch !== epochRef.current || selectedTaskRef.current !== task.id || logTextRef.current.trim() !== raw) return;
+          tidySourceRef.current = { taskId: task.id, originalText: raw };
           setLogText(proposal);
           if (data.proposal && LOG_KINDS[data.proposal.kind]) setLogKind(data.proposal.kind);
           setTidyNote('AI 已整理。确认无误后再保存，保存的才是你确认的事实。');
@@ -3065,12 +3559,14 @@ window.__ModuleLoader__.load({
         if (quickInputRef.current) quickInputRef.current.focus();
       };
 
-      const sendChat = async (textArg) => {
+      const sendChat = async (textArg, captureOptions) => {
+        if (!hostSyncStatus.canEdit) { showToast('请先恢复本机主存连接。', 'danger'); return; }
         // A pending preview must be resolved first: asking again would replace
         // the card and silently drop the changes the user has not reviewed.
         if (pendingActions) return;
         const text = (typeof textArg === 'string' ? textArg : cmdInput).trim();
         if (!text || sendingRef.current) return;
+        if (text.length > 4000) { showToast('单次对话请控制在 4000 字符内，输入未发送。', 'danger'); return; }
         const epoch = epochRef.current;
         if (typeof textArg !== 'string') setCmdInput('');
         setAssistantOpen(true);
@@ -3104,8 +3600,13 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               mode: 'chat',
+              context: {
+                taskId: activeView === 'reports' ? '' : selectedTaskRef.current || '', projectId: activeView === 'reports' ? reportScope : activeProject || '',
+                ...(captureOptions && captureOptions.deadline ? { suggestedDeadline: captureOptions.deadline } : {}),
+                report: activeView === 'reports' ? { kind: reportKind, period: reportPeriod, body: reportBody.slice(0, 4000) } : null,
+              },
               messages: history.slice(-12).map((m) => ({ role: m.role, text: m.text })),
-              tasks: tasks.slice(0, 50).map((t) => ({
+              tasks: liveTasks(tasks).slice().sort((a, b) => Number(b.id === selectedTaskRef.current) - Number(a.id === selectedTaskRef.current)).slice(0, 50).map((t) => ({
                 id: t.id, title: t.title, status: t.status, urgency: t.urgency,
                 deadline: t.deadline, nextStep: t.nextStep, blockedReason: t.blockedReason,
                 projectId: t.projectId || '',
@@ -3121,7 +3622,7 @@ window.__ModuleLoader__.load({
           const actions = Array.isArray(data.actions) ? data.actions : [];
           if (actions.length > 0) {
             // Nothing is written yet: the card above the composer asks first.
-            setPendingActions({ actions, reply });
+            setPendingActions({ actions, reply, originalText: text });
             setMessages((prev) => prev.concat([{
               role: 'assistant',
               text: reply || '我整理了 ' + actions.length + ' 项变更，请在下方确认后执行。',
@@ -3522,8 +4023,10 @@ window.__ModuleLoader__.load({
         epochRef.current += 1;
         setWorkspaceEpoch(epochRef.current);
         setLastApply(null); setPendingActions(null);
-        setAiResult(null); setAiPanelOpen(false); setAiLoading(false);
+        setAiResult(null); setAiPanelOpen(false); setAiLoading(false); setDelegation(null);
         setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
+        adoptingIdsRef.current = new Set();
+        extrasRef.current = workspaceExtras(next);
         reportEditsRef.current = next.reportEdits || {};
         reportsRef.current = next.reports;
         workspaceRef.current = { ...next, reportEdits: reportEditsRef.current };
@@ -3611,6 +4114,16 @@ window.__ModuleLoader__.load({
         showToast('已恢复到 ' + (slot.day || '快照') + ' 的数据');
       };
 
+      const restoreBeforeHostMigration = () => {
+        const slot = readBackupSlot(HOST_MIGRATION_BACKUP_KEY);
+        if (!slot || !slot.backup) { showToast('迁移前副本不可用，请使用外部备份。', 'danger'); return; }
+        const result = applyImport(currentWorkspace(), slot.backup, 'replace');
+        if (result.error) { showToast('迁移前副本未通过校验，原数据未改动。', 'danger'); return; }
+        if (!protectBeforeReplace() || !applyWorkspace(result.next)) return;
+        setRestoreMigrationConfirm(false); setPreImportReady(true);
+        showToast('迁移前数据已恢复到本页，等待主存同步；可撤销本次操作。');
+      };
+
       const clearAllData = () => {
         if (!protectBeforeReplace() || !applyWorkspace({
           tasks: [], projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {},
@@ -3638,29 +4151,37 @@ window.__ModuleLoader__.load({
       };
 
       // ---- execution report-back inbox -----------------------------------
-      const ackInbox = (ids, alreadySaved) => {
+      const ackInbox = async (ids, alreadySaved) => {
+        const epoch = epochRef.current;
         const next = Array.from(new Set(inboxAckRef.current.concat(ids))).slice(-300);
         if (!alreadySaved && !saveInboxAck(next)) {
-          showToast('未能保存处理结果，回传仍保留在收件箱。', 'danger');
-          return false;
+          showToast('未能保存处理结果，回传仍保留在收件箱。', 'danger'); return false;
         }
         inboxAckRef.current = next;
         setInboxAck(next);
         setInbox((prev) => prev.filter((item) => !ids.includes(item.id)));
-        fetch(INBOX_ACK_ENDPOINT, {
-          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }),
-        }).then(async (res) => {
+        // The inbox may outlive this browser cache. Do not remove its durable
+        // receipt until the canonical workspace contains records AND handled ids.
+        const status = hostSyncRef.current ? await hostSyncRef.current.flush() : null;
+        if (epoch !== epochRef.current) return false;
+        if (!status || status.phase !== 'ready') {
+          setInboxIssue('处理结果已留在本页缓存；主存确认前，原回传仍安全保留。'); return false;
+        }
+        try {
+          const res = await fetch(INBOX_ACK_ENDPOINT, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids }),
+          });
           const data = await res.json();
-          if (!res.ok || !data || data.error) setInboxIssue('本机已记录处理结果，服务端确认待重试。');
-        }).catch(() => setInboxIssue('本机已记录处理结果，服务端确认待重试。'));
-        return true;
+          if (!res.ok || !data || data.error) throw new Error('ack-failed');
+          setInboxIssue(''); return true;
+        } catch { setInboxIssue('主存已记录处理结果，收件箱确认待重试。'); return false; }
       };
 
       /**
        * Adopting writes execution records into the task. It never completes a
        * task, and it batches the whole list into one state write.
        */
-      const adoptInboxItems = (list) => {
+      const adoptInboxItems = async (list) => {
         let state = { ...currentWorkspace() };
         const accepted = [];
         for (const item of list) {
@@ -3671,12 +4192,13 @@ window.__ModuleLoader__.load({
           if (!task) continue;
           const actions = [{
             op: 'log', taskId: task.id, kind: item.kind || 'progress',
-            text: item.text, source: 'execution',
+            text: item.text, source: 'execution', sourceSessionId: item.sourceSessionId || '',
           }];
           for (const artifact of item.artifacts || []) {
             actions.push({
               op: 'artifact', taskId: task.id, source: 'execution',
               summary: artifact.summary || '', links: artifact.links || [],
+              files: artifact.files || [], sourceSessionId: item.sourceSessionId || '',
             });
           }
           const result = applyActions({ ...state, projects }, actions);
@@ -3691,30 +4213,30 @@ window.__ModuleLoader__.load({
           accepted.forEach((id) => adoptingIdsRef.current.add(id));
           workspaceRef.current = state;
           setTasks(state.tasks); setLogs(state.logs); setArtifacts(state.artifacts);
-          ackInbox(accepted, true);
+          await ackInbox(accepted, true);
         }
         return accepted.length;
       };
 
-      const adoptInboxItem = (item) => {
-        const count = adoptInboxItems([item]);
+      const adoptInboxItem = async (item) => {
+        const count = await adoptInboxItems([item]);
         if (count === 0) showToast('请先为这条回传选择任务', 'danger');
-        else showToast('已采纳为工作记录');
+        else showToast(hostSyncRef.current && hostSyncRef.current.getStatus().phase === 'ready' ? '已采纳并保存到本机主存' : '已留在本页缓存，等待主存确认');
       };
 
-      const ignoreInboxItem = (item) => {
-        if (ackInbox([item.id])) showToast('已忽略这条回传');
+      const ignoreInboxItem = async (item) => {
+        if (await ackInbox([item.id])) showToast('已忽略这条回传');
       };
 
-      const adoptAllInbox = () => {
-        const count = adoptInboxItems(inbox);
+      const adoptAllInbox = async () => {
+        const count = await adoptInboxItems(inbox);
         showToast(count ? '已采纳 ' + count + ' 条回传' : '没有可采纳的回传，请先选择任务');
       };
 
-      const ignoreAllInbox = () => {
+      const ignoreAllInbox = async () => {
         const ids = inbox.map((item) => item.id);
         if (!ids.length) return;
-        if (ackInbox(ids)) showToast('已忽略 ' + ids.length + ' 条回传');
+        if (await ackInbox(ids)) showToast('已忽略 ' + ids.length + ' 条回传');
       };
 
       const reportMarkdown = () => markdownWithFootnotes(reportBody, reportEvidenceAll, reportDraft);
@@ -3891,28 +4413,43 @@ window.__ModuleLoader__.load({
             h('button', { className: 'wp-btn wp-btn-primary wp-cal-btn', type: 'button', onClick: onClose }, '确定')));
       };
 
-      const quickLabel = formatQuickLabel(quickDeadline.date, quickDeadline.time);
+      const captureQuick = () => {
+        const text = quickText.trim();
+        if (!text || sendingRef.current || pendingActions) return;
+        if (!hostSyncStatus.canEdit) { showToast('请先恢复主存连接，输入内容已保留。', 'danger'); return; }
+        if (text.length > 4000) { showToast('单次记录请控制在 4000 字符内，当前输入已保留，请分段整理。', 'danger'); return; }
+        const deadline = quickDeadlineTouched ? quickDeadline.date + (quickDeadline.time ? 'T' + quickDeadline.time : '') : '';
+        sendChat(text, { deadline });
+        setQuickText(''); setQuickDeadlineTouched(false); setCalOpen(false);
+      };
+      const quickLabel = quickDeadlineTouched ? formatQuickLabel(quickDeadline.date, quickDeadline.time) : '截止时间';
       const quickPast = quickDeadline.date < todayDate();
       const quickAdd = h('div', { className: 'wp-card wp-quick' },
         h('div', { className: 'wp-quick-box', ref: calRef },
           h('input', {
             ref: quickInputRef, className: 'wp-quick-input', type: 'text', value: quickText,
-            placeholder: '+ 添加待办',
+            placeholder: '告诉 AI：记任务、记进展、关联成果…',
+            title: 'Enter：AI 整理；Alt+Enter：直接新建待办',
             onChange: (e) => setQuickText(e.target.value),
-            onKeyDown: (e) => { if (e.key === 'Enter') addQuick(); },
+            onKeyDown: (e) => { if (e.key === 'Enter' && !e.isComposing) {
+              e.preventDefault(); if (e.altKey) addQuick(); else captureQuick();
+            } },
           }),
           h('button', {
             className: 'wp-quick-cal' + (quickPast ? ' wp-past' : '') + (calOpen ? ' wp-active' : ''),
             type: 'button', title: '选择日期 / 时间', 'aria-label': '选择日期 / 时间',
             onClick: () => setCalOpen((v) => !v),
           }, h(CalDayIcon, { day: Number(quickDeadline.date.slice(8, 10)) }), quickLabel ? h('span', { className: 'wp-quick-cal-label' }, quickLabel) : null),
+          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+            disabled: !quickText.trim() || sending || !!pendingActions, onClick: captureQuick,
+            title: '使用当前任务或项目上下文整理记录', 'aria-label': 'AI 记录' }, h(SparkIcon, { size: 14 }), 'AI 记录'),
           calOpen ? calendarPopover({
             month: calMonth,
             setMonth: setCalMonth,
             date: quickDeadline.date,
             time: quickDeadline.time,
-            onPickDate: (dateStr) => setQuickDeadline((v) => ({ ...v, date: dateStr })),
-            onPickTime: (time) => setQuickDeadline((v) => ({ ...v, time })),
+            onPickDate: (dateStr) => { setQuickDeadlineTouched(true); setQuickDeadline((v) => ({ ...v, date: dateStr })); },
+            onPickTime: (time) => { setQuickDeadlineTouched(true); setQuickDeadline((v) => ({ ...v, time })); },
             onClose: () => setCalOpen(false),
             onToday: () => { setQuickDeadline({ date: todayDate(), time: '' }); const d = new Date(); setCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
           }) : null));
@@ -4141,11 +4678,15 @@ window.__ModuleLoader__.load({
 
       // ---------- local data: export / import / restore ----------
       const autoSnapshot = readBackupSlot(AUTO_BACKUP_KEY);
+      const beforeHostSnapshot = readBackupSlot(HOST_MIGRATION_BACKUP_KEY);
       const dataPanel = h('div', { className: 'wp-data' },
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-row' },
             h('span', { className: 'wp-data-label' }, '版本'),
             h('span', { className: 'wp-data-value' }, 'v' + PANEL_VERSION)),
+          h('div', { className: 'wp-data-row' },
+            h('span', { className: 'wp-data-label' }, '数据主存'),
+            h('span', { className: 'wp-data-value' }, '本机 Host · 修订 ' + (hostSyncStatus.revision || '—'))),
           h('div', { className: 'wp-data-row' },
             h('span', { className: 'wp-data-label' }, '本地占用'),
             h('span', { className: 'wp-data-value' }, formatBytes(storageUsage))),
@@ -4203,6 +4744,14 @@ window.__ModuleLoader__.load({
                   onClick: undoImport,
                 }, '撤销上次导入/清空')
               : null)),
+        beforeHostSnapshot && beforeHostSnapshot.backup ? h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '迁移前本地副本'),
+          h('p', { className: 'wp-data-hint' }, '迁移时保留的 ' + (Array.isArray(beforeHostSnapshot.backup.tasks) ? beforeHostSnapshot.backup.tasks.length : '未知数量') + ' 条任务；恢复前先备份当前内容，不会回退主存修订号。'),
+          restoreMigrationConfirm ? h('div', { className: 'wp-data-actions' },
+            h('span', { className: 'wp-inline-confirm' }, '用迁移前副本替换当前内容？'),
+            h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button', onClick: restoreBeforeHostMigration }, '确认恢复迁移副本'),
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setRestoreMigrationConfirm(false) }, '取消'))
+          : h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button', onClick: () => setRestoreMigrationConfirm(true) }, '恢复迁移前副本')) : null,
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-section-title' }, '危险操作'),
           h('p', { className: 'wp-data-hint' }, '清空会删除本机所有工作面板数据（包括报告与项目）。清空前会自动留一份可撤销快照。'),
@@ -4239,7 +4788,7 @@ window.__ModuleLoader__.load({
               return h('div', { className: 'wp-card wp-inbox-item', key: item.id },
                 h('div', { className: 'wp-inbox-head' },
                   h('span', { className: 'wp-inbox-source' }, item.source === 'execution' ? '执行回传' : item.source),
-                  h('span', { className: 'wp-inbox-time' }, formatDateTime(item.receivedAt)),
+                  h('span', { className: 'wp-inbox-time' }, formatDateTime(item.receivedAt)), sourceSessionLink(item.sourceSessionId),
                   target
                     ? h('span', { className: 'wp-inbox-task' }, target.title)
                     : h('select', {
@@ -4252,7 +4801,7 @@ window.__ModuleLoader__.load({
                 (item.artifacts || []).length
                   ? h('div', { className: 'wp-inbox-artifacts' }, item.artifacts.map((artifact, i) =>
                       h('div', { className: 'wp-inbox-artifact', key: i },
-                        artifact.summary ? h('span', { className: 'wp-inbox-artifact-summary' }, artifact.summary) : null,
+                        artifact.summary ? h('span', { className: 'wp-inbox-artifact-summary' }, artifact.summary) : null, renderLocalFiles(artifact.files),
                         (artifact.links || []).map((url, j) => {
                           const href = safeHref(url);
                           return href
@@ -4712,7 +5261,20 @@ window.__ModuleLoader__.load({
                 if (aiPanelOpen) { setAiPanelOpen(false); return; }
                 analyzeTask(selectedTask);
               },
-            }, aiLoading ? '分析中…' : 'AI 建议')),
+            }, aiLoading ? '分析中…' : 'AI 建议'),
+            h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+              onClick: () => prepareDelegation(selectedTask), disabled: delegation && delegation.loading ? 'true' : undefined,
+            }, '交给 AI')),
+          delegation && delegation.taskId === selectedTask.id ? h('div', { className: 'wp-delegation' },
+            h('div', { className: 'wp-data-section-title' }, '执行指令 · 尚未发送'),
+            delegation.loading ? h('p', { className: 'wp-data-hint' }, '正在读取最新任务上下文…') : null,
+            delegation.error ? h('p', { className: 'wp-report-notice wp-report-notice-err' }, delegation.error) : null,
+            delegation.prompt ? h('textarea', { className: 'wp-delegation-prompt', rows: 8, value: delegation.prompt,
+              onChange: (event) => setDelegation((prev) => ({ ...prev, prompt: event.target.value })),
+            }) : null,
+            delegation.prompt ? h('div', { className: 'wp-data-actions' },
+              h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: openDelegationDraft }, '打开执行草稿'),
+              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => copyText(delegation.prompt) }, '复制指令')) : null) : null,
           detailLogComposer,
           detailArtifactComposer,
           detailAiPanel,
@@ -4727,8 +5289,10 @@ window.__ModuleLoader__.load({
                       h('span', { className: 'wp-log-kind wp-log-kind-' + entry.kind }, LOG_KINDS[entry.kind] || '记录'),
                       entry.source === 'ai' ? h('span', { className: 'wp-log-ai-tag' }, 'AI')
                         : entry.source === 'execution' ? h('span', { className: 'wp-log-ai-tag wp-log-exec-tag' }, '回传') : null,
-                      h('span', { className: 'wp-log-time' }, formatDateTime(entry.at))),
-                    h('div', { className: 'wp-log-text' }, entry.text))))
+                      h('span', { className: 'wp-log-time' }, formatDateTime(entry.at)), sourceSessionLink(entry.sourceSessionId)),
+                    h('div', { className: 'wp-log-text' }, entry.text),
+                    entry.originalText && entry.originalText !== entry.text ? h('details', { className: 'wp-record-original' },
+                      h('summary', null, '查看原始记录'), h('p', null, entry.originalText)) : null)))
               : h('p', { className: 'wp-detail-empty' }, '还没有记录。点「记录进展」写下这一次推进。')),
           h('div', { className: 'wp-detail-section' },
             h('div', { className: 'wp-detail-section-head' },
@@ -4738,13 +5302,15 @@ window.__ModuleLoader__.load({
               ? h('div', { className: 'wp-artifact-list' }, selectedArtifacts.slice().reverse().map((item) =>
                   h('div', { className: 'wp-artifact', key: item.id },
                     item.summary ? h('div', { className: 'wp-artifact-summary' }, item.summary) : null,
-                    item.links.length ? h('div', { className: 'wp-artifact-links' }, item.links.map((url, i) => {
+                    item.originalText ? h('details', { className: 'wp-record-original' }, h('summary', null, '查看原始记录'), h('p', null, item.originalText)) : null,
+                    (item.links || []).length ? h('div', { className: 'wp-artifact-links' }, (item.links || []).map((url, i) => {
                       const href = safeHref(url);
                       return href
                         ? h('a', { className: 'wp-artifact-link', key: i, href, target: '_blank', rel: 'noreferrer noopener' }, url)
                         : h('span', { className: 'wp-artifact-url', key: i }, url);
                     })) : null,
-                    h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at)))))
+                    renderLocalFiles(item.files),
+                    h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at), sourceSessionLink(item.sourceSessionId)))))
               : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
           h('div', { className: 'wp-detail-rows wp-detail-times' },
             detailRow('创建时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.createdAt))),
@@ -4813,7 +5379,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-drawer-head' },
           h(SparkIcon, { size: 15 }),
           h('span', { className: 'wp-drawer-title' }, 'AI 助手'),
-          h('span', { className: 'wp-drawer-sub' }, '确认后执行 · 可撤销'),
+          h('span', { className: 'wp-drawer-sub' }, activeView === 'reports' ? '当前报告：' + (reportKind === 'month' ? '月报' : '周报') : selectedTask ? '当前任务：' + selectedTask.title : activeProjectEntity ? '当前项目：' + activeProjectEntity.name : '确认后执行 · 可撤销'),
           h('button', { className: 'wp-drawer-close', type: 'button', 'aria-label': '关闭', onClick: () => setAssistantOpen(false) }, '×')),
         h('div', { className: 'wp-drawer-thread', ref: chatScrollRef },
           messages.map((msg, i) => h('div', { className: 'wp-msg wp-msg-' + msg.role, key: i },
@@ -4823,14 +5389,26 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-drawer-suggestions' },
           ['明天10点前完成季度报告，紧急', '本周五下午6点前提交方案', '我有哪些任务'].map((s, i) =>
             h('button', { className: 'wp-suggestion', key: i, type: 'button', onClick: () => sendChat(s) }, s))),
+        h('details', { className: 'wp-ai-disclosure' },
+          h('summary', null, 'AI 数据范围'),
+          h('p', null, '对话会发送当前上下文、最多 50 条任务摘要、50 个项目和最近 12 条对话至配置的模型。报告使用所选依据；派活只准备草稿，由你发送。')),
         pendingCard,
         undoBar,
         composer) : null;
 
       return h('div', { className: 'wp-root', 'data-theme': theme },
         h('style', null, CSS),
+        hostSyncStatus.phase !== 'ready' ? h('div', { className: 'wp-host-sync', role: 'status' },
+          h('span', null, hostSyncStatus.message),
+          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.retry() }, '重试同步'),
+          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportBackup }, '导出本页备份'),
+          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setActiveView('data') }, '数据恢复'),
+          hostSyncStatus.phase === 'conflict' || hostSyncStatus.phase === 'error'
+            ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.reload(),
+                title: '成功保存本页安全副本后，再加载主存；不会自动合并冲突。' }, '备份后加载主存') : null) : null,
         h('div', { className: 'wp-workbench' },
           sidenav,
+          h('fieldset', { className: 'wp-sync-guard', disabled: !hostSyncStatus.canEdit && !(isDataView && hostSyncStatus.phase !== 'loading') },
           h('section', { className: 'wp-mid' },
             storageIssue ? h('div', { className: 'wp-storage-warning', role: 'alert' },
               h('span', null, storageIssue),
@@ -4842,7 +5420,7 @@ window.__ModuleLoader__.load({
               h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportRawStorage }, '导出原始数据')) : null,
             inboxIssue ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, inboxIssue) : null,
             middleHeader, middleBody),
-          isReportsView ? evidencePanel : (isInboxView || isDataView) ? null : (trashDetailPanel || detailPanel)),
+          isReportsView ? evidencePanel : (isInboxView || isDataView) ? null : (trashDetailPanel || detailPanel))),
         toastNode,
         drawer);
     }
@@ -4850,6 +5428,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        clientContext = ctx;
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist', id: 'work-panel', order: 20, label: '工作面板',
         }, SidebarIcon));
@@ -4871,7 +5450,7 @@ window.__ModuleLoader__.load({
         projectHealth, resolveInboxTask, loadInboxAck, saveInboxAck,
         buildBackup, validateBackup, applyImport, estimateStorageUsage, formatBytes, PANEL_VERSION, BACKUP_SCHEMA,
         writeStoredTransaction, recoverStorageTransaction, retryStorageWrites, storageMessage,
-        reportEditorKey, workspaceEntries, loadReportEdits,
+        reportEditorKey, workspaceEntries, loadReportEdits, WorkspaceSync, readCachedWorkspace,
         weekRangeOf, shiftWeek, periodLabel, periodKey, inPeriod, ymd, isoToYmd,
         monthRangeOf, shiftMonthPeriod, periodFor, shiftPeriod, periodLabelFor,
         collectEvidence, buildEvidenceIndex, resolveRef, parseRefs, refLabel, markdownWithFootnotes,

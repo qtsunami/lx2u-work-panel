@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { InboxStore, INBOX_DESCRIPTOR, inboxFailure } from './inbox-store.js';
 
 const copy = (value) => structuredClone(value);
@@ -263,6 +264,28 @@ test('failed unit close blocks already queued and later operations instead of op
   assert.equal(mock.state.writes, 1);
   await store.close();
   assert.equal(mock.state.closes, 1);
+});
+
+test('plain-text file metadata persists; old missing-files hashes stay compatible and session origin is not payload identity', async () => {
+  const mock = mockStorage();
+  let store = storeFor(mock);
+  const original = { ...item('one', 'r1'), sourceSessionId: 'real-session', artifacts: [{ summary: '旧成果', links: ['https://example.com'] }] };
+  await store.enqueue(original);
+  await store.ack(['one']);
+  const legacyHash = createHash('sha256').update(JSON.stringify([
+    original.taskId, original.taskTitle, original.source, original.kind, original.text,
+    original.artifacts.map((artifact) => [artifact.summary, artifact.links]),
+  ])).digest('hex');
+  assert.equal(mock.state.disk.receipts[0].fingerprint, legacyHash);
+  await store.close(); store = storeFor(mock);
+  assert.equal((await store.enqueue({ ...original, id: 'new', sourceSessionId: 'retry-session', artifacts: [{ ...original.artifacts[0], files: [] }] })).duplicate, true);
+  await assert.rejects(store.enqueue({ ...original, artifacts: [{ ...original.artifacts[0], files: ['/tmp/new.txt'] }] }), { code: 'request-id-conflict' });
+  const fileReport = { ...item('files', 'files'), sourceSessionId: 'origin', artifacts: [{ summary: '', links: [], files: ['/tmp/结果.txt'] }] };
+  await store.enqueue(fileReport); await store.close(); store = storeFor(mock);
+  assert.deepEqual((await store.list()).items[0].artifacts[0].files, ['/tmp/结果.txt']);
+  assert.equal((await store.list()).items[0].sourceSessionId, 'origin');
+  assert.equal((await store.enqueue({ ...fileReport, sourceSessionId: 'another-session' })).duplicate, true);
+  await store.close();
 });
 
 test('close drains admitted write, rejects new work, and releases unit exactly once', async () => {

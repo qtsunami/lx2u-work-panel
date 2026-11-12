@@ -11,6 +11,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { InboxError, InboxStore, inboxFailure } from './inbox-store.js';
+import { WorkspaceError, WorkspaceStore, workspaceContext, workspaceFailure } from './workspace-store.js';
 
 export const inject = ['connection'];
 
@@ -157,14 +158,16 @@ function sanitizeActions(raw, knownIds, knownProjectIds) {
         taskId,
         kind: LOG_KINDS.includes(item.kind) ? item.kind : 'progress',
         text: body,
+        ...(Array.isArray(item.files) ? { files: item.files.filter((file) => typeof file === 'string' && file.trim()).slice(0, 5).map((file) => file.trim().slice(0, 2000)) } : {}),
       });
     } else if (op === 'artifact') {
       const summary = str(item.summary, 1000);
       const links = Array.isArray(item.links)
         ? item.links.filter((l) => typeof l === 'string' && /^https?:\/\//i.test(l.trim())).map((l) => l.trim()).slice(0, 5)
         : [];
-      if (!summary && links.length === 0) continue;
-      out.push({ op: 'artifact', taskId, summary, links });
+      const files = Array.isArray(item.files) ? item.files.filter((file) => typeof file === 'string' && file.trim()).slice(0, 5).map((file) => file.trim().slice(0, 2000)) : [];
+      if (!summary && links.length === 0 && files.length === 0) continue;
+      out.push({ op: 'artifact', taskId, summary, links, ...(files.length ? { files } : {}) });
     }
   }
   return out;
@@ -209,7 +212,7 @@ function buildChatSystemPrompt(today) {
     '{"op":"complete","taskId":"..."}',
     '{"op":"reopen","taskId":"..."}',
     '{"op":"log","taskId":"...","kind":"progress|issue|decision|ai","text":"这次推进的内容"}',
-    '{"op":"artifact","taskId":"...","summary":"结果摘要","links":["https://..."]}',
+    '{"op":"artifact","taskId":"...","summary":"结果摘要","links":["https://..."],"files":["本地文件纯文本路径"]}',
     '规则：',
     '1. 用户只是询问、闲聊或查看清单时 actions 为空数组。系统会先把变更交给用户确认再执行，所以你只需给出准确的变更，不要额外解释协议。',
     '2. taskId 只能取自任务清单里的 id 字段，绝不编造；找不到对应任务时 actions 留空，并在 reply 里说明。',
@@ -219,6 +222,8 @@ function buildChatSystemPrompt(today) {
     '6. 需要归属项目时，projectId 只能取自项目清单里的 id；把任务移出项目就填空字符串；不确定时留空，绝不编造。',
     '7. 用户问项目相关问题时，按项目清单回答，不要自行创造项目名。',
     '8. reply 简短友好，说明准备做什么改动。',
+    '9. 若有currentContext，用户说「这条/当前任务」指向其中taskId；该id必须仍在任务清单。不提供taskId或指向不清时先询问，不猜测。报告上下文只是当前草稿，不是已发生记录。',
+    '10. 明确区分建议与已发生事实：建议、计划、假设不得写成log或artifact已完成记录；用户确认实际发生的推进才可提出记录。项目变更、完成、延期也只返回待确认actions。本地files仅为纯文本元数据，不将本地路径塞入links，不读取或执行文件。',
   ].join('\n');
 }
 
@@ -404,7 +409,7 @@ function sanitizeReport(raw, knownRefs) {
 // An executing agent (or a local script) pushes "what I just did" here. Nothing
 // is written into the panel directly: the browser shows the item and the user
 // confirms it into the task's work record.
-function makeReportItem(body) {
+function makeReportItem(body, sourceSessionId) {
   if (!body || typeof body !== 'object') return null;
   if (body.requestId !== undefined && (typeof body.requestId !== 'string'
     || !body.requestId.trim() || body.requestId.length > 200)) {
@@ -418,7 +423,8 @@ function makeReportItem(body) {
         links: Array.isArray(raw && raw.links)
           ? raw.links.filter((link) => typeof link === 'string' && /^https?:\/\//i.test(link)).slice(0, 5)
           : [],
-      })).filter((item) => item.summary || item.links.length)
+        ...(Array.isArray(raw && raw.files) ? { files: raw.files.filter((file) => typeof file === 'string' && file.trim()).slice(0, 5).map((file) => file.trim().slice(0, 2000)) } : {}),
+      })).filter((item) => item.summary || item.links.length || item.files?.length)
     : [];
   return {
     id: 'rb-' + randomUUID(),
@@ -426,6 +432,7 @@ function makeReportItem(body) {
     taskId: typeof body.taskId === 'string' ? body.taskId.trim().slice(0, 120) : '',
     taskTitle: str(body.taskTitle, 200),
     source: str(body.source, 40) || 'execution',
+    ...(typeof sourceSessionId === 'string' && sourceSessionId ? { sourceSessionId } : {}),
     kind: LOG_KINDS.includes(body.kind) ? body.kind : 'progress',
     text,
     artifacts,
@@ -443,7 +450,18 @@ function buildChatUserText(body, tasks, projects) {
     .filter((m) => m && typeof m.text === 'string' && m.text.length > 0)
     .map((m) => (m.role === 'assistant' ? '助手：' : '用户：') + m.text)
     .join('\n');
-  const list = tasks.map((t) => ({
+  const supplied = body && body.context && typeof body.context === 'object' ? body.context : {};
+  const selectedTask = tasks.find((task) => task && task.id === supplied.taskId);
+  const currentContext = {};
+  if (selectedTask) currentContext.taskId = selectedTask.id;
+  if (typeof supplied.projectId === 'string' && projects.some((project) => project && project.id === supplied.projectId)) currentContext.projectId = supplied.projectId;
+  if (supplied.report && typeof supplied.report === 'object') {
+    currentContext.report = { kind: supplied.report.kind === 'month' ? 'month' : 'week',
+      period: { start: str(supplied.report.period && supplied.report.period.start, 10), end: str(supplied.report.period && supplied.report.period.end, 10) },
+      body: str(supplied.report.body, 4000) };
+  }
+  const ordered = selectedTask ? [selectedTask, ...tasks.filter((task) => task && task.id !== selectedTask.id)] : tasks;
+  const list = ordered.map((t) => ({
     id: t.id, title: t.title, status: t.status, urgency: t.urgency,
     deadline: t.deadline, nextStep: t.nextStep || '', blockedReason: t.blockedReason || '',
   }));
@@ -453,6 +471,9 @@ function buildChatUserText(body, tasks, projects) {
     '',
     '项目清单（JSON，projectId 只能取自这里）：',
     JSON.stringify(projects),
+    '',
+    '当前选中上下文（currentContext，空对象表示未明确指向；报告为未确认草稿）：',
+    JSON.stringify(currentContext),
     '',
     '对话记录：',
     history,
@@ -612,11 +633,41 @@ export function apply(ctx, config) {
       }
     },
   };
+  const workspace = new WorkspaceStore(() => ctx.get('storage'), { backend: config && (config.workspaceBackend || config.inboxBackend) });
+  ctx.effect(() => () => workspace.close(), 'work-panel: durable workspace');
+  const context = async (args) => {
+    try { return await workspaceContext(workspace, args); }
+    catch (error) { return workspaceFailure(error); }
+  };
+  const workspaceRoute = {
+    path: '/api/work-panel/workspace', methods: ['GET', 'POST'], requestBody: 'buffered',
+    fetch: async (request) => {
+      try {
+        if (request.method === 'GET') return json(await workspace.get());
+        let body;
+        try { body = await request.json(); }
+        catch { return json(workspaceFailure(new WorkspaceError('bad-json', '请求正文不是有效 JSON。'))); }
+        return json(await workspace.write(body));
+      } catch (error) { return json(workspaceFailure(error)); }
+    },
+  };
+  const contextRoute = {
+    path: '/api/work-panel/context', methods: ['POST'], requestBody: 'buffered',
+    fetch: async (request) => {
+      let args;
+      try { args = await request.json(); }
+      catch { return json(workspaceFailure(new WorkspaceError('bad-json', '请求正文不是有效 JSON。'))); }
+      return json(await context(args));
+    },
+  };
+  ctx.effect(() => ctx.connection.fetch.register(workspaceRoute), 'work-panel: workspace route');
+  ctx.effect(() => ctx.connection.fetch.register(contextRoute), 'work-panel: context route');
+
   const inbox = new InboxStore(() => ctx.get('storage'), { backend: config && config.inboxBackend });
   ctx.effect(() => () => inbox.close(), 'work-panel: durable inbox');
-  const report = async (body) => {
+  const report = async (body, exec) => {
     try {
-      const item = makeReportItem(body);
+      const item = makeReportItem(body, exec?.agent?.id);
       if (!item) throw new InboxError('empty-report', '回传 text 不能为空。');
       return await inbox.enqueue(item);
     } catch (error) {
@@ -702,6 +753,7 @@ export function apply(ctx, config) {
                   properties: {
                     summary: { type: 'string' },
                     links: { type: 'array', items: { type: 'string' } },
+                    files: { type: 'array', items: { type: 'string' }, description: '本地文件纯文本路径（最多5个）；不会读取、打开或执行' },
                   },
                 },
               },
@@ -734,6 +786,28 @@ export function apply(ctx, config) {
         return () => {};
       }
     }, 'work-panel: report tool');
+    ctx.effect(() => tools.register({
+      name: 'work_panel_context',
+      description: '只读查询工作面板任务：列出摘要、读取任务近期记录，或准备执行指令；不会执行或修改任务。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'read', 'prepare'], description: 'list列出任务摘要；read读取单任务与最近5条记录/成果；prepare生成执行指令' },
+          taskId: { type: 'string', description: 'read/prepare必填，来自list返回的任务id' },
+          query: { type: 'string', description: 'list按标题包含此文字筛选' },
+          projectId: { type: 'string', description: 'list按项目id筛选，空字符串为未归属项目' },
+          status: { type: 'string', enum: ['todo', 'done'], description: 'list按任务状态筛选' },
+          limit: { type: 'integer', description: 'list每页数量，1–50，默认20' },
+          offset: { type: 'integer', description: 'list跳过条数，默认0；hasMore为true时递增以翻页' },
+        },
+        required: ['action'], additionalProperties: false,
+      },
+      output: {
+        schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true },
+        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+      },
+      execute: context,
+    }), 'work-panel: context tool');
   }
 
   ctx.effect(() => ctx.connection.fetch.register(route), 'work-panel: chat route');

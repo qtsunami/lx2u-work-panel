@@ -7,6 +7,33 @@ A personal workbench panel for DeepSeek Harness (DSH): a three-column layout wit
 A personal AI outcomes workbench: fast capture → execution → reliable receipts → review → reusable evidence and reports.
 The next milestones are tracked in [ROADMAP.md](./ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
 
+## Personal AI capture and Host data (v1.4.0)
+
+- **AI-first quick entry**: Enter or `AI 记录` sends a task/progress/outcome statement for interpretation and review. Alt+Enter retains direct manual task creation. Chinese IME composition does not submit. An untouched date picker does not invent a deadline; a chosen date is an explicit suggestion. Overlong input is kept, not silently sent or discarded.
+- **Current context**: the assistant knows the selected task/project/report. The selected task is included even beyond the first 50 tasks; a report does not inherit a hidden previous task. The disclosure explains the bounded data sent to the configured model. Accepted AI-organized records retain original user text alongside the summary.
+- **Local canonical data**: the Host KV unit `work-panel-workspace` stores the full personal workspace. Browser localStorage is a cache and durable outbox, not the only copy. Initialization first backs up the old browser data; the Host also stores the initial migration snapshot in the same durable write. Data remains local, without an account or cloud sync.
+- **Revision safety**: each workspace has a stable `storeId` and monotonically increasing revision. Full-snapshot commits require both plus a persisted request id. An immutable in-flight request is replayed after refresh; newer edits queue behind it. A conflict never silently overwrites another revision. There is one Host writer per KV unit, not a distributed multi-process lock.
+- **Visible states**: syncing, offline, conflict and failure stay visible. Previously initialized caches can be edited offline; a first unverified connection cannot. Export/recovery remains accessible. Focus refresh of an unchanged revision does not reset undo or editor sessions. `备份后加载主存` explicitly retains the page before loading canonical data.
+- **Rollback**: `管理 → 数据 → 恢复迁移前副本` asks first, backs up the current workspace, and restores the saved pre-migration contents as a new revision. It is undoable; it never rewinds the canonical revision counter. Same-browser backups still do not replace an external exported file.
+- **Bounded agent context**: the read-only `work_panel_context` tool and `POST /api/work-panel/context` share list/read/prepare behavior. List is paged (default 20, max 50); read includes recent records/artifacts; prepare returns an instruction, not an execution.
+- **Explicit handoff**: task detail → `交给 AI` first flushes pending edits, then prepares a task-id-bearing instruction with goals, evidence and acceptance criteria. `打开执行草稿` uses the existing DSH UI to open an unsent draft and append rather than replace an existing draft. The user still sends it. If unavailable, copy the instruction instead.
+- **Provenance**: tool receipts receive the actual calling session id. Adopted records/artifacts retain it and offer `来源会话`. Local files are inert text references (`files`), with copy-path and source-session navigation; no arbitrary `file:` link, automatic read or execution. Arbitrary historical chat selection/import is not implemented in this version.
+- **Association**: only an explicit live task id or one unambiguous exact normalized title is linked automatically. Fuzzy/duplicate titles require user selection.
+- **Durable adoption**: a receipt is removed from the Host inbox only after canonical records and handled ids have been saved. If the workspace commit conflicts or is offline, the original inbox receipt remains recoverable even if the browser cache is lost.
+
+Workspace HTTP contract: `GET /api/work-panel/workspace`; `POST` accepts `{action: "initialize" | "commit", baseRevision, requestId, storeId, workspace}`. The Host returns applied `revision` separately from `currentRevision`; do not jump to an unrelated current revision when retrying. Idempotency receipts retain the latest 100 workspace requests; the inbox retains its own separate bounds.
+
+The synchronization class has canonical, independently tested source and is embedded into the single shipped client script. After changing that source, build it before testing:
+
+```bash
+node build-client.mjs  # workspace-sync.js → generated region in client.js
+npm test              # checks build parity before running all suites
+```
+
+The source and test tooling are repository development files, not additional runtime dependencies.
+
+Host restart and real DSH navigation/visual acceptance are still required before treating this build as live-verified. The VM service adapters verify the contract and interaction logic, not a real window launch.
+
 ## Stabilization (v1.3.2)
 
 - Report identity includes kind, period **and project**. Unrelated batch inserts never reset the editor. Unsaved edits are buffered per identity and included in exports. New edits, workspace restores and stale AI responses cannot silently overwrite one another.
@@ -16,7 +43,7 @@ The next milestones are tracked in [ROADMAP.md](./ROADMAP.md): 1.3.x stabilizati
 - Import, restore, clear, project moves, AI confirmations and inbox adoption use a local rollback journal for multi-store writes. Interrupted operations recover before mounting; a rollback failure blocks further writes. This is not a multi-window transaction protocol: an observed external storage change suspends stale writes until reload.
 - A safety snapshot must succeed before import/clear/restore proceeds. Old undo cards, previews and in-flight AI work are invalidated after replacing a workspace.
 - Offline task parsing also requires confirmation before creating tasks.
-- The inbox now uses durable Host storage; see below. Tasks remain browser-owned until the 1.4.0 data migration.
+- The inbox now uses durable Host storage; see below. At 1.3.2 tasks remained browser-owned; the 1.4.0 section above supersedes that storage arrangement.
 
 Validation includes stateful VM interactions and injected storage failures, not only tree-render smoke tests. Real desktop restart/visual acceptance has not yet been performed for this build.
 
@@ -69,7 +96,7 @@ The Host queues what it receives (`GET /api/work-panel/inbox`); the panel polls 
 `管理 → 执行回传`, and only writes them into a task when the user clicks `采纳为记录`:
 
 - a report becomes an append-only **work record** marked `回传` in the timeline, plus the attached **artifacts**
-- items are matched to a task by `taskId`, then by exact/fuzzy `taskTitle`; an unmatched item shows a task picker and cannot be adopted until one is chosen
+- items are matched to a task by explicit `taskId` or one unambiguous exact normalized `taskTitle`; fuzzy or duplicate titles require selection; an unmatched item shows a task picker and cannot be adopted until one is chosen
 - **nothing is auto-completed**: adoption adds records only, exactly like the manual `记录进展` action
 - `忽略` acknowledges an item without adding records. Record/artifact adoption and the local handled-id list commit together; failed Host acknowledgements are retried during polling.
 - the Host queue uses the DSH KV backend (`inboxBackend: json` in the shipped patch) and the `work-panel-inbox` unit. Storage success precedes an `ok: true` receipt. Missing/ambiguous storage or a full queue (200 pending items) returns an explicit failure; it never evicts older pending work.
@@ -156,13 +183,14 @@ Change these to a provider/model that exists in your profile. Without a working 
 | --- | --- |
 | `index.js` | Host half: authenticated assistant/report/inbox routes and report-back tool, model prompts and response validation. |
 | `inbox-store.js` | Durable, serialized inbox over the Host KV storage contract with bounded idempotency. |
+| `workspace-store.js` | Canonical personal workspace, migration snapshot, identity/revision CAS and bounded agent context. |
 | `client.js` | Client half: registers the sidebar entry and the main panel. |
 | `cordis.patch.yml` | Bundle patch that inserts the plugin row. |
 | `locale/*.json` | Display metadata (title/description). |
 | `icon.svg` | Panel icon. |
 | `test-*.cjs` / `test-host.mjs` | Unit and render-smoke tests (not part of the published files). |
 
-Run all 12 suites with `npm test` (or `node test-all.mjs`); individual checks:
+Run all 15 suites with `npm test` (build parity plus all suites); `node test-all.mjs` runs the suites directly. Individual checks:
 
 ```bash
 node --check index.js && node --check client.js
@@ -170,6 +198,9 @@ node test-parse.cjs        # parsing, data model, action protocol
 node test-host.mjs         # routing, sanitization, durable tool/route parity
 node test-inbox-store.mjs  # restart, idempotency, I/O failure and capacity
 node test-stability.cjs    # real state/effect interactions and browser-storage faults
+node test-workspace-store.mjs # canonical migration, revisions, identities and I/O faults
+node test-workspace-sync.mjs  # deterministic client transport/outbox failure matrix
+node test-product-140.cjs     # AI capture/context/handoff/provenance and durable adoption
 node test-render.cjs       # empty panel smoke
 node test-detail-render.cjs
 node test-actions-render.cjs
@@ -182,7 +213,7 @@ node test-data-render.cjs
 
 ## Data model (v1.x)
 
-Task/workspace data lives in `localStorage`, keyed by the plugin scope; only the pending execution inbox and its dedupe receipts use Host KV storage in 1.3.2:
+From 1.4.0, personal canonical data and the pending execution inbox are separate Host KV units (`work-panel-workspace` and `work-panel-inbox`). Browser localStorage contains the following caches, outbox and recovery slots:
 
 | Key | Content |
 | --- | --- |
@@ -198,7 +229,11 @@ Task/workspace data lives in `localStorage`, keyed by the plugin scope; only the
 | `@local/work-panel:chat:v1` | AI assistant conversation. |
 | `@local/work-panel:theme` | Light/dark preference. |
 | `@local/work-panel:report-edits:v1` | Unsaved report buffers keyed by kind/period/project; included in workspace exports. |
-| `@local/work-panel:transaction:v1` | Temporary rollback journal; recovered before workspace reads on mount. |
+| `@local/work-panel:transaction:v1` | Temporary local rollback journal; recovered before workspace reads on mount. |
+| `@local/work-panel:host-meta:v1` | Canonical store identity/revision, dirty flag and non-cryptographic baseline digest. |
+| `@local/work-panel:host-pending:v1` | Immutable request-id-bearing canonical outbox transaction, replayed on reconnect. |
+| `@local/work-panel:workspace-extras:v1` | Legal JSON workspace extensions preserved through hydration, edits and export. |
+| `@local/work-panel:backup:before-host:v1` | Browser workspace retained before first Host migration/hydration. |
 | `@local/work-panel:backup:raw-before-restore:v1` | Exact raw workspace values retained before intentionally replacing malformed local data. |
 
 Task status stays binary (todo / done). A "blocked" situation is recorded as `blockedReason` on the task instead of a third status, so the state machine stays simple.
@@ -212,6 +247,7 @@ Task status stays binary (todo / done). A "blocked" situation is recorded as `bl
 - **1.2.2 (unreleased)** — delete entry and recycle bin (soft delete, restore, purge with confirmation, refs fall back to snapshots) plus paragraph-level polishing of report drafts.
 - **1.2.3** — project views: project field on tasks, sidebar project grouping, project-scoped lists and reports.
 - **1.2.4** — project entities: projects become real records with ids, so renaming cascades, empty projects exist, and tasks are matched by id; includes a one-time migration from the old free-text field with a backup, plus create / rename / merge / archive / delete.
+- **1.4.0 (unreleased)** — Host-readable personal canonical data with migration/rollback, CAS identities and outbox recovery; AI-first capture and current context; source-preserving records; read-only context discovery; explicit unsent DSH handoff; durable adoption before receipt acknowledgement.
 - **1.3.2 (unreleased)** — strict safe imports/empty-workspace undo, visible write failures and rollback recovery, scoped durable editor buffers and stale-response guards, durable Host inbox with request-id retry, and stateful fault tests.
 - **1.3.1 (unreleased)** — data safety: JSON export/import with merge and replace modes, daily snapshot, one-step undo, storage usage, visible version, plus `useMemo` around the report evidence/batch/health scans that used to rerun on every keystroke.
 - **1.3.0** — execution report-back: `work_panel_report` tool and a report-back route, a Host inbox (made durable in 1.3.2), a panel inbox with adopt/ignore, execution records marked in the timeline, and task matching by id or title.
