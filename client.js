@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.6';
+    const PANEL_VERSION = '1.5.7';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -3780,6 +3780,11 @@ window.__ModuleLoader__.load({
       .wp-row-menu-parent.wp-open { background: var(--wp-fill-secondary); }
       .wp-row-menu-chevron { color: var(--wp-text-tertiary); font-size: 14px; line-height: 1; }
       .wp-row-submenu { margin: 2px 0 4px; padding: 4px; border-radius: 6px; background: var(--wp-fill-secondary); }
+      .wp-row-submenu-side { position: fixed; z-index: 61; width: 216px; margin: 0; padding: 6px;
+        border: 1px solid var(--wp-border); border-radius: 8px; background: var(--wp-bg-container);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, .20); }
+      .wp-row-submenu-list { display: flex; flex-direction: column; max-height: 240px; overflow: auto; }
+      .wp-row-submenu-item { max-height: none; }
       .wp-row-submenu-search { width: 100%; height: 26px; padding: 0 8px; margin-bottom: 4px;
         border: 1px solid var(--wp-border); border-radius: 5px; background: var(--wp-bg-container);
         color: var(--wp-text); font: inherit; font-size: 12px; outline: none; }
@@ -5424,46 +5429,6 @@ window.__ModuleLoader__.load({
         },
           h('span', null, '移动到'),
           h('span', { className: 'wp-row-menu-chevron' }, '›')),
-        rowSubmenu === 'move' ? h('div', { className: 'wp-row-submenu', role: 'menu' },
-          // Filter first: with many projects a long flat list is unusable.
-          sortedProjects.length > 6 ? h('input', {
-            className: 'wp-row-submenu-search', type: 'search', value: moveQuery,
-            placeholder: '搜索项目…', autoFocus: true,
-            onClick: (e) => e.stopPropagation(),
-            onChange: (e) => setMoveQuery(e.target.value),
-            onKeyDown: (e) => { if (e.key === 'Escape') { e.stopPropagation(); setRowSubmenu(''); } },
-          }) : null,
-          (() => {
-            const q = moveQuery.trim().toLowerCase();
-            const matches = sortedProjects.filter((p) => !q || String(p.name).toLowerCase().includes(q));
-            // The current project is pinned first and checked, so the menu always
-            // answers "where is this task now".
-            const current = matches.find((p) => p.id === rowMenuTask.projectId) || null;
-            const rest = matches.filter((p) => !current || p.id !== current.id);
-            const entry = (project) => h('button', {
-              className: 'wp-row-submenu-item' + (project.id === rowMenuTask.projectId ? ' wp-active' : ''),
-              type: 'button', role: 'menuitemradio', key: project.id,
-              'aria-checked': project.id === rowMenuTask.projectId ? 'true' : 'false',
-              onClick: () => { updateTask(rowMenuTask.id, { projectId: project.id }); closeRowMenu(); },
-            },
-              h('span', { className: 'wp-row-submenu-name' }, project.name + (project.status === 'archived' ? '（已归档）' : '')),
-              project.id === rowMenuTask.projectId ? h('span', { className: 'wp-row-submenu-check' }, '✓') : null);
-            const groups = [];
-            if (!q || '未分组'.includes(moveQuery.trim())) {
-              groups.push(h('button', {
-                className: 'wp-row-submenu-item' + (!rowMenuTask.projectId ? ' wp-active' : ''),
-                type: 'button', role: 'menuitemradio', key: '__none__',
-                'aria-checked': !rowMenuTask.projectId ? 'true' : 'false',
-                onClick: () => { updateTask(rowMenuTask.id, { projectId: '' }); closeRowMenu(); },
-              },
-                h('span', { className: 'wp-row-submenu-name' }, '未分组'),
-                !rowMenuTask.projectId ? h('span', { className: 'wp-row-submenu-check' }, '✓') : null));
-            }
-            if (current) groups.push(entry(current));
-            groups.push(...rest.map(entry));
-            if (!current && !groups.length) return h('div', { className: 'wp-row-menu-empty' }, '没有匹配的项目');
-            return groups;
-          })()) : null,
         h('div', { className: 'wp-row-menu-sep' }),
         h('button', {
           className: 'wp-row-menu-item', type: 'button', role: 'menuitem',
@@ -5477,6 +5442,61 @@ window.__ModuleLoader__.load({
           className: 'wp-row-menu-item wp-row-menu-danger', type: 'button', role: 'menuitem',
           onClick: () => { softDeleteTask(rowMenuTask); closeRowMenu(); },
         }, '移到回收站')) : null;
+
+      // The move submenu is a SIDE panel anchored to the "移动到" row, not an
+      // inline dropdown: opening it must not push the rest of the menu down.
+      const SUB_W = 216;
+      const rowMenuHeightEstimate = 44 + 30 + 34 + 34 + 34 + 34 + 34;
+      const moveRowTop = menuTop + rowMenuHeightEstimate;
+      const subLeft = menuLeft + MENU_W + 2 + SUB_W + 8 <= viewportW
+        ? menuLeft + MENU_W + 2
+        : Math.max(8, menuLeft - SUB_W - 2);
+      const subTop = Math.max(8, Math.min(moveRowTop, viewportH - 300));
+      const moveSubmenuNode = rowMenuTask && rowSubmenu === 'move' ? h('div', {
+        className: 'wp-row-submenu wp-row-submenu-side', role: 'menu',
+        style: { left: subLeft + 'px', top: subTop + 'px' },
+        onClick: (e) => e.stopPropagation(),
+        onContextMenu: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+      },
+        h('div', { className: 'wp-row-menu-title' }, '移动到项目'),
+        sortedProjects.length > 6 ? h('input', {
+          className: 'wp-row-submenu-search', type: 'search', value: moveQuery,
+          placeholder: '搜索项目…', autoFocus: true,
+          onClick: (e) => e.stopPropagation(),
+          onChange: (e) => setMoveQuery(e.target.value),
+          onKeyDown: (e) => { if (e.key === 'Escape') { e.stopPropagation(); setRowSubmenu(''); } },
+        }) : null,
+        h('div', { className: 'wp-row-submenu-list' }, (() => {
+          const q = moveQuery.trim().toLowerCase();
+          const matches = sortedProjects.filter((p) => !q || String(p.name).toLowerCase().includes(q));
+          // The current project is pinned next to 未分组 and checked, so the panel
+          // always answers "where is this task now".
+          const current = matches.find((p) => p.id === rowMenuTask.projectId) || null;
+          const rest = matches.filter((p) => !current || p.id !== current.id);
+          const entry = (project) => h('button', {
+            className: 'wp-row-submenu-item' + (project.id === rowMenuTask.projectId ? ' wp-active' : ''),
+            type: 'button', role: 'menuitemradio', key: project.id,
+            'aria-checked': project.id === rowMenuTask.projectId ? 'true' : 'false',
+            onClick: () => { updateTask(rowMenuTask.id, { projectId: project.id }); closeRowMenu(); },
+          },
+            h('span', { className: 'wp-row-submenu-name' }, project.name + (project.status === 'archived' ? '（已归档）' : '')),
+            project.id === rowMenuTask.projectId ? h('span', { className: 'wp-row-submenu-check' }, '✓') : null);
+          const groups = [];
+          if (!q || '未分组'.includes(moveQuery.trim())) {
+            groups.push(h('button', {
+              className: 'wp-row-submenu-item' + (!rowMenuTask.projectId ? ' wp-active' : ''),
+              type: 'button', role: 'menuitemradio', key: '__none__',
+              'aria-checked': !rowMenuTask.projectId ? 'true' : 'false',
+              onClick: () => { updateTask(rowMenuTask.id, { projectId: '' }); closeRowMenu(); },
+            },
+              h('span', { className: 'wp-row-submenu-name' }, '未分组'),
+              !rowMenuTask.projectId ? h('span', { className: 'wp-row-submenu-check' }, '✓') : null));
+          }
+          if (current) groups.push(entry(current));
+          groups.push(...rest.map(entry));
+          if (!groups.length) return [h('div', { className: 'wp-row-menu-empty' }, '没有匹配的项目')];
+          return groups;
+        })())) : null;
 
       // ---- weekly report --------------------------------------------------
       const saveReport = (body, options) => {
@@ -7456,6 +7476,7 @@ window.__ModuleLoader__.load({
           isReportsView ? evidencePanel : (isInboxView || isDataView || isRadarView) ? null : (trashDetailPanel || detailPanel))),
         toastNode,
         rowMenuNode,
+        moveSubmenuNode,
         drawer);
     }
 

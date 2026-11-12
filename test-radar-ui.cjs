@@ -258,6 +258,37 @@ test('moving opens a submenu that pins and checks the current project', async ()
   } finally { ui.close(); }
 });
 
+test('the move submenu opens as a side panel to the right, not a dropdown inside', async () => {
+  const ui = harness(state([task('a')], { projects: [
+    { id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO },
+    { id: 'p2', name: '项目二', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO },
+  ] })); await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    ui.fire(row, 'onContextMenu', { clientX: 100, clientY: 100, preventDefault() {} });
+    const menuBefore = ui.nodes().find(n => has(n, 'wp-row-menu'));
+    const beforeChildren = (menuBefore.children || []).length;
+    openMoveSubmenu(ui); await ui.settle();
+    const menuAfter = ui.nodes().find(n => has(n, 'wp-row-menu'));
+    const sub = ui.nodes().find(n => has(n, 'wp-row-submenu-side'));
+    assert.ok(sub, 'the submenu is a side panel');
+    // It must NOT be nested inside the main menu, or it would push the rest down.
+    let inside = false;
+    const walk = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (node === sub) { inside = true; return; }
+      (node.children || []).forEach(walk);
+    };
+    walk(menuAfter);
+    assert.equal(inside, false, 'the side panel is not a child of the menu (no dropdown growth)');
+    assert.equal((menuAfter.children || []).length, beforeChildren, 'the menu does not grow');
+    const menuLeft = Number(String(menuAfter.props.style.left).replace('px', ''));
+    const subLeft = Number(String(sub.props.style.left).replace('px', ''));
+    assert.ok(subLeft > menuLeft, 'panel sits to the right of the menu, got ' + subLeft + ' vs ' + menuLeft);
+    assert.equal(sub.props.className.includes('wp-row-submenu'), true);
+  } finally { ui.close(); }
+});
+
 test('the project submenu is searchable when there are many projects', async () => {
   const many = Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, name: '项目' + i, status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }));
   const ui = harness(state([task('a')], { projects: many })); await ui.settle();
