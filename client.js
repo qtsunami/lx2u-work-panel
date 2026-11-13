@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.8';
+    const PANEL_VERSION = '1.5.9';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -3757,15 +3757,15 @@ window.__ModuleLoader__.load({
       }
       .wp-detail-select:focus { outline: none; border-color: var(--wp-primary); }
       .wp-detail-project-select { max-width: 100%; }
-      .wp-row-menu { position: fixed; z-index: 60; width: 224px; padding: 6px;
+      .wp-row-menu { position: fixed; z-index: 60; width: 150px; padding: 5px;
         border: 1px solid var(--wp-border); border-radius: 8px; background: var(--wp-bg-container);
         box-shadow: 0 10px 30px rgba(0, 0, 0, .20); font-size: 12.5px; }
       .wp-row-menu-title { padding: 2px 6px 8px; color: var(--wp-text-tertiary); font-size: 11px;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .wp-row-menu-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 0 2px 4px; }
-      .wp-row-menu-flag { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 5px 2px;
+      .wp-row-menu-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; padding: 0 1px 4px; }
+      .wp-row-menu-flag { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 5px 0;
         border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--wp-text-secondary);
-        font: inherit; font-size: 10.5px; cursor: pointer; }
+        font: inherit; font-size: 10px; white-space: nowrap; cursor: pointer; }
       .wp-row-menu-flag svg { width: 16px; height: 16px; }
       .wp-row-menu-flag.wp-flag-high { color: var(--wp-error); }
       .wp-row-menu-flag.wp-flag-medium { color: var(--wp-warning); }
@@ -3773,14 +3773,14 @@ window.__ModuleLoader__.load({
       .wp-row-menu-flag.wp-flag-none { color: var(--wp-text-tertiary); }
       .wp-row-menu-flag:hover { background: var(--wp-fill-secondary); }
       .wp-row-menu-flag.wp-active { border-color: currentColor; background: var(--wp-fill-secondary); font-weight: 600; }
-      .wp-row-menu-item { display: flex; align-items: center; justify-content: space-between; gap: 6px;
-        width: 100%; padding: 7px 8px; border: 0; border-radius: 5px;
+      .wp-row-menu-item { display: flex; align-items: center; justify-content: space-between; gap: 4px;
+        width: 100%; padding: 7px 6px; border: 0; border-radius: 5px;
         background: transparent; color: var(--wp-text); font: inherit; text-align: left; cursor: pointer; }
       .wp-row-menu-item:hover { background: var(--wp-fill-secondary); }
       .wp-row-menu-parent.wp-open { background: var(--wp-fill-secondary); }
       .wp-row-menu-chevron { color: var(--wp-text-tertiary); font-size: 14px; line-height: 1; }
       .wp-row-submenu { margin: 2px 0 4px; padding: 4px; border-radius: 6px; background: var(--wp-fill-secondary); }
-      .wp-row-submenu-side { position: fixed; z-index: 61; width: 216px; margin: 0; padding: 6px;
+      .wp-row-submenu-side { position: fixed; z-index: 61; width: 168px; margin: 0; padding: 5px;
         border: 1px solid var(--wp-border); border-radius: 8px; background: var(--wp-bg-container);
         box-shadow: 0 10px 30px rgba(0, 0, 0, .20); }
       .wp-row-submenu-list { display: flex; flex-direction: column; max-height: 240px; overflow: auto; }
@@ -5423,7 +5423,7 @@ window.__ModuleLoader__.load({
       // RIGHT of it by default and flipped only when the viewport would clip it.
       const rowMenuTask = rowMenu ? tasks.find((t) => t.id === rowMenu.taskId) : null;
       const closeRowMenu = () => { setRowMenu(null); setRowSubmenu(''); setMoveQuery(''); };
-      const MENU_W = 224;
+      const MENU_W = 150;
       // Title + priority flag row + separator + the 移动到 row: the offset used only
       // when the DOM cannot be measured at all.
       const MOVE_ROW_OFFSET = 44 + 26 + 10;
@@ -5477,7 +5477,7 @@ window.__ModuleLoader__.load({
 
       // The move submenu is a SIDE panel anchored to the "移动到" row, not an
       // inline dropdown: opening it must not push the rest of the menu down.
-      const SUB_W = 216;
+      const SUB_W = 168;
       // Align the panel's TOP with the "移动到" row itself, measured from the DOM.
       // A guessed offset drifted whenever a menu row's height changed.
       // Anchor: the menu's own top plus the offset of the row inside it. The row
@@ -5500,9 +5500,11 @@ window.__ModuleLoader__.load({
       const measuredTop = parentRectTop !== null ? parentRectTop
         : (moveRowRect ? moveRowRect.top : null);
       const moveRowTop = measuredTop !== null ? measuredTop : (menuRectTop !== null ? menuRectTop : menuTop) + MOVE_ROW_OFFSET;
-      const subLeft = menuLeft + MENU_W + 2 + SUB_W + 8 <= viewportW
-        ? menuLeft + MENU_W + 2
-        : Math.max(8, menuLeft - SUB_W - 2);
+      // Sit flush against the menu's right edge: no gap (they read as one surface)
+      // and no overlap (the menu stays fully readable).
+      const subLeft = menuLeft + MENU_W + SUB_W + 8 <= viewportW
+        ? menuLeft + MENU_W
+        : Math.max(8, menuLeft - SUB_W);
       const subTop = Math.max(8, Math.min(moveRowTop, Math.max(8, viewportH - 300)));
       const moveSubmenuNode = rowMenuTask && rowSubmenu === 'move' ? h('div', {
         className: 'wp-row-submenu wp-row-submenu-side', role: 'menu',

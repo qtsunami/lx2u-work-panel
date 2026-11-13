@@ -305,6 +305,25 @@ test('the side panel top aligns with the 移动到 row it belongs to', async () 
   } finally { ui.close(); }
 });
 
+test('the side panel sits flush against the menu with no gap or overlap', async () => {
+  const ui = harness(state([task('a')], { projects: [{ id: 'p1', name: '项目一', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] }));
+  await ui.settle();
+  try {
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    // Far from the right edge so no flipping happens.
+    ui.fire(row, 'onContextMenu', { clientX: 100, clientY: 60, preventDefault() {} });
+    const menu = ui.nodes().find(n => has(n, 'wp-row-menu'));
+    openMoveSubmenu(ui); await ui.settle();
+    const sub = ui.nodes().find(n => has(n, 'wp-row-submenu-side'));
+    assert.ok(sub, 'side panel open');
+    const menuLeft = Number(String(menu.props.style.left).replace('px', ''));
+    const subLeft = Number(String(sub.props.style.left).replace('px', ''));
+    // Widths are declared in CSS; assert the relationship the layout relies on.
+    const MENU_W = 150;
+    assert.equal(subLeft, menuLeft + MENU_W, 'panel starts exactly at the menu edge, got ' + subLeft + ' vs ' + (menuLeft + MENU_W));
+  } finally { ui.close(); }
+});
+
 test('the project submenu is searchable when there are many projects', async () => {
   const many = Array.from({ length: 9 }, (_, i) => ({ id: 'p' + i, name: '项目' + i, status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }));
   const ui = harness(state([task('a')], { projects: many })); await ui.settle();
