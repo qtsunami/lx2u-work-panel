@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.9';
+    const PANEL_VERSION = '1.5.10';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -1834,7 +1834,7 @@ window.__ModuleLoader__.load({
       } catch { readProblem(REPORT_EDITS_KEY); return {}; }
     }
 
-    const STATUS = { todo: '待办', done: '已完成' };
+    const STATUS = { todo: '待办', done: '已完成', dropped: '已废弃' };
     const URGENCY = { high: '高', medium: '中', low: '低', none: '无' };
     const URGENCY_FULL = { high: '高优先级', medium: '中优先级', low: '低优先级', none: '无优先级' };
     const URGENCY_ORDER = ['high', 'medium', 'low', 'none'];
@@ -1901,18 +1901,20 @@ window.__ModuleLoader__.load({
      * insert so the detail panel never renders an uncontrolled input.
      */
     function withV2Fields(task) {
-      const done = task.status === 'done';
+      const status = task.status === 'done' ? 'done' : task.status === 'dropped' ? 'dropped' : 'todo';
+      const closed = status !== 'todo';
       const stamp = str(task.updatedAt) || str(task.createdAt) || new Date().toISOString();
       return {
         ...task,
-        status: done ? 'done' : 'todo',
-        progress: done ? 100 : 0,
+        status,
+        progress: closed ? 100 : 0,
         description: str(task.description),
         projectId: str(task.projectId),
         expected: str(task.expected),
         nextStep: str(task.nextStep),
         blockedReason: str(task.blockedReason),
-        completedAt: done ? str(task.completedAt) || stamp : null,
+        completedAt: status === 'done' ? str(task.completedAt) || stamp : null,
+        droppedAt: status === 'dropped' ? str(task.droppedAt) || stamp : null,
         deletedAt: task.deletedAt || null,
         createdAt: str(task.createdAt) || stamp,
         updatedAt: str(task.updatedAt) || stamp,
@@ -3043,8 +3045,8 @@ window.__ModuleLoader__.load({
       return { progress, status };
     }
     function statusTransition(task, newStatus) {
-      const next = newStatus === 'done' ? 'done' : 'todo';
-      return { status: next, progress: next === 'done' ? 100 : 0 };
+      const next = newStatus === 'done' ? 'done' : newStatus === 'dropped' ? 'dropped' : 'todo';
+      return { status: next, progress: next === 'todo' ? 0 : 100 };
     }
     function reopenedState() { return { status: 'todo', progress: 0 }; }
 
@@ -3620,6 +3622,8 @@ window.__ModuleLoader__.load({
       .wp-row-check.wp-check-low { --wp-check-color: var(--wp-primary); }
       .wp-row-check.wp-check-none { --wp-check-color: var(--wp-text-tertiary); }
       .wp-row-check.wp-checked { background: var(--wp-check-color); border-color: var(--wp-check-color); }
+      .wp-row-check.wp-check-dropped { background: transparent; border-color: var(--wp-text-tertiary); color: var(--wp-text-tertiary); }
+      .wp-row-check.wp-check-dropped:hover { border-color: var(--wp-text-secondary); color: var(--wp-text-secondary); }
       .wp-row-main { flex: 1; min-width: 0; }
       .wp-row-title { font-size: 15px; color: var(--wp-text); line-height: 1.5; overflow-wrap: anywhere; }
       .wp-row-title.wp-done { color: var(--wp-text-tertiary); text-decoration: line-through; }
@@ -3650,6 +3654,7 @@ window.__ModuleLoader__.load({
       .wp-detail-check.wp-check-low { --wp-check-color: var(--wp-primary); }
       .wp-detail-check.wp-check-none { --wp-check-color: var(--wp-text-tertiary); }
       .wp-detail-check.wp-checked { background: var(--wp-check-color); border-color: var(--wp-check-color); }
+      .wp-detail-check.wp-check-dropped { background: transparent; border-color: var(--wp-text-tertiary); color: var(--wp-text-tertiary); }
       .wp-detail-sep { color: var(--wp-text-quaternary); }
       .wp-detail-date {
         display: inline-flex; align-items: center;
@@ -3757,6 +3762,14 @@ window.__ModuleLoader__.load({
       }
       .wp-detail-select:focus { outline: none; border-color: var(--wp-primary); }
       .wp-detail-project-select { max-width: 100%; }
+      .wp-confirm-backdrop { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center;
+        background: rgba(0, 0, 0, .35); }
+      .wp-confirm { width: min(340px, calc(100vw - 48px)); padding: 16px; border-radius: 10px;
+        border: 1px solid var(--wp-border); background: var(--wp-bg-container); box-shadow: 0 16px 48px rgba(0, 0, 0, .28); }
+      .wp-confirm-title { font-size: 14px; font-weight: 600; color: var(--wp-text); margin-bottom: 8px; }
+      .wp-confirm-text { margin: 0 0 14px; font-size: 12.5px; line-height: 1.7; color: var(--wp-text-secondary); overflow-wrap: anywhere; }
+      .wp-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .wp-confirm-danger { background: var(--wp-error); border-color: var(--wp-error); color: #fff; }
       .wp-row-menu { position: fixed; z-index: 60; width: 150px; padding: 5px;
         border: 1px solid var(--wp-border); border-radius: 8px; background: var(--wp-bg-container);
         box-shadow: 0 10px 30px rgba(0, 0, 0, .20); font-size: 12.5px; }
@@ -4239,6 +4252,13 @@ window.__ModuleLoader__.load({
       return h('svg', { width: 11, height: 11, viewBox: '0 0 24 24', 'aria-hidden': true },
         h('path', { fill: 'none', stroke: 'currentColor', strokeWidth: 3.2, strokeLinecap: 'round', strokeLinejoin: 'round', d: 'M4 12l5 5L20 6' }));
     }
+    // A dropped (abandoned) task keeps the same affordance as completed but reads
+    // as a cross, so "closed because finished" and "closed because dropped" stay
+    // visually distinct at a glance.
+    function CrossIcon() {
+      return h('svg', { width: 10, height: 10, viewBox: '0 0 24 24', 'aria-hidden': true },
+        h('path', { fill: 'none', stroke: 'currentColor', strokeWidth: 3.2, strokeLinecap: 'round', d: 'M6 6l12 12M18 6L6 18' }));
+    }
     function AlarmIcon() {
       return h('svg', { width: 12, height: 12, viewBox: '0 0 24 24', 'aria-hidden': true, style: { flexShrink: 0 } },
         h('path', { fill: 'currentColor', d: 'M12 2a6 6 0 0 0-6 6v4.5L4.5 15v1.5h15V15L18 12.5V8a6 6 0 0 0-6-6Zm-2 16a2 2 0 0 0 4 0h-4Z' }));
@@ -4696,6 +4716,16 @@ window.__ModuleLoader__.load({
           : { ...next, completedAt: null };
         commit(tasks.map((t) => (t.id === task.id ? { ...t, ...patch, updatedAt: iso } : t)));
       };
+      // Dropping keeps the record and moves the task into the closed list without
+      // claiming it was completed.
+      const dropTask = (task) => {
+        if (!task) return;
+        setLastApply(null);
+        const iso = new Date().toISOString();
+        commit(tasks.map((t) => (t.id === task.id
+          ? { ...t, ...statusTransition(t, 'dropped'), completedAt: null, droppedAt: iso, updatedAt: iso } : t)));
+        showToast('已标记为废弃，可在「已完成」里找回并恢复');
+      };
       const reopenTask = (task) => {
         setLastApply(null);
         const iso = new Date().toISOString();
@@ -4714,6 +4744,7 @@ window.__ModuleLoader__.load({
       // Right-click task menu: {taskId, x, y} or null. Position is viewport-based.
       const [rowMenu, setRowMenu] = useState(null);
       const [rowSubmenu, setRowSubmenu] = useState('');
+      const [deleteConfirmId, setDeleteConfirmId] = useState(null);
       const moveRowRef = useRef(null);
       const rowMenuElRef = useRef(null);
       const [moveRowRect, setMoveRowRect] = useState(null);
@@ -4880,6 +4911,17 @@ window.__ModuleLoader__.load({
 
       // ---- recycle bin ---------------------------------------------------
       /** Soft delete: recoverable from the recycle bin. */
+      // Deleting is destructive even though it is recoverable, so every entry point
+      // asks first. The pending id keeps the confirmation tied to one task.
+      const requestDelete = (task) => {
+        if (task) { setDeleteConfirmId(task.id); setSelectedId(null); }
+      };
+      const confirmDelete = (task) => {
+        if (!task) return;
+        softDeleteTask(task);
+        setDeleteConfirmId(null);
+      };
+      const cancelDelete = () => setDeleteConfirmId(null);
       const softDeleteTask = (task) => {
         setLastApply(null);
         commit(markDeleted(tasks, task.id));
@@ -5303,7 +5345,7 @@ window.__ModuleLoader__.load({
         if (activeView === 'trash') return tasks.filter((t) => t.deletedAt);
         const alive = liveTasks(tasks);
         if (activeProject) return alive.filter((t) => t.projectId === activeProject);
-        if (activeView === 'done') return alive.filter((t) => t.status === 'done');
+        if (activeView === 'done') return alive.filter((t) => t.status === 'done' || t.status === 'dropped');
         if (activeView === 'today') return alive.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
         if (activeView === 'overdue') {
           const nowMs = Date.now();
@@ -5339,7 +5381,12 @@ window.__ModuleLoader__.load({
       ];
       const grouped = useMemo(() => {
         const map = { todo: [], done: [] };
-        for (const t of filteredTasks) { if (map[t.status]) map[t.status].push(t); }
+        // Dropped tasks are closed, so they belong in the completed group; the
+        // grouping must not silently discard a status it does not list.
+        for (const t of filteredTasks) {
+          const bucket = t.status === 'todo' ? 'todo' : 'done';
+          map[bucket].push(t);
+        }
         return GROUPS.map((g) => ({ ...g, tasks: map[g.status] })).filter((g) => g.tasks.length > 0);
       }, [filteredTasks]);
 
@@ -5368,7 +5415,7 @@ window.__ModuleLoader__.load({
 
       const rowDeadline = (task) => {
         if (!task.deadline) return null;
-        if (task.status === 'done') return { text: formatTaskDate(task.deadline), cls: '' };
+        if (task.status === 'done' || task.status === 'dropped') return { text: formatTaskDate(task.deadline), cls: '' };
         const info = formatRelativeTime(task.deadline);
         if (!info) return null;
         if (info.overdue) return { text: info.text, cls: 'wp-overdue' };
@@ -5389,7 +5436,8 @@ window.__ModuleLoader__.load({
       }, [logs]);
 
       const renderRow = (task) => {
-        const done = task.status === 'done';
+        const dropped = task.status === 'dropped';
+        const done = task.status === 'done' || dropped;
         const dl = rowDeadline(task);
         const recent = lastLogByTask[task.id] || null;
         return h('div', {
@@ -5405,11 +5453,11 @@ window.__ModuleLoader__.load({
           },
         },
           h('button', {
-            className: 'wp-row-check wp-check-' + task.urgency + (done ? ' wp-checked' : ''),
-            type: 'button', role: 'checkbox', 'aria-checked': done ? 'true' : 'false',
-            title: done ? '标记为未完成' : '标记为已完成',
-            onClick: (e) => { e.stopPropagation(); toggleDone(task); },
-          }, done ? h(CheckIcon) : null),
+            className: 'wp-row-check wp-check-' + task.urgency + (done ? ' wp-checked' : '') + (dropped ? ' wp-check-dropped' : ''),
+            type: 'button', role: 'checkbox', 'aria-checked': dropped ? 'mixed' : (done ? 'true' : 'false'),
+            title: dropped ? '已废弃 · 点击恢复为待办' : (done ? '标记为未完成' : '标记为已完成'),
+            onClick: (e) => { e.stopPropagation(); if (dropped) reopenTask(task); else toggleDone(task); },
+          }, dropped ? h(CrossIcon) : (done ? h(CheckIcon) : null)),
           h('div', { className: 'wp-row-main' },
             h('div', { className: 'wp-row-title' + (done ? ' wp-done' : '') }, task.title),
             task.description ? h('div', { className: 'wp-row-desc' }, task.description) : null,
@@ -5423,6 +5471,21 @@ window.__ModuleLoader__.load({
       // RIGHT of it by default and flipped only when the viewport would clip it.
       const rowMenuTask = rowMenu ? tasks.find((t) => t.id === rowMenu.taskId) : null;
       const closeRowMenu = () => { setRowMenu(null); setRowSubmenu(''); setMoveQuery(''); };
+      const deleteConfirmTask = deleteConfirmId ? tasks.find((t) => t.id === deleteConfirmId) : null;
+      const deleteConfirmNode = deleteConfirmTask ? h('div', {
+        className: 'wp-confirm-backdrop', role: 'dialog', 'aria-modal': 'true',
+        'aria-label': '确认删除任务',
+        onClick: (e) => { e.stopPropagation(); cancelDelete(); },
+      },
+        h('div', { className: 'wp-confirm', onClick: (e) => e.stopPropagation() },
+          h('div', { className: 'wp-confirm-title' }, '删除这个任务？'),
+          h('p', { className: 'wp-confirm-text' }, '「' + deleteConfirmTask.title + '」会移到回收站，可随时恢复；它的工作记录会一并移走。'),
+          h('div', { className: 'wp-confirm-actions' },
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: cancelDelete }, '取消'),
+            h('button', {
+              className: 'wp-btn wp-btn-primary wp-act-btn wp-confirm-danger', type: 'button',
+              onClick: () => confirmDelete(deleteConfirmTask),
+            }, '删除')))) : null;
       const MENU_W = 150;
       // Title + priority flag row + separator + the 移动到 row: the offset used only
       // when the DOM cannot be measured at all.
@@ -5468,11 +5531,18 @@ window.__ModuleLoader__.load({
         }, rowMenuTask.status === 'done' ? '标记为未完成' : '标记为已完成'),
         h('button', {
           className: 'wp-row-menu-item', type: 'button', role: 'menuitem',
+          onClick: () => {
+            if (rowMenuTask.status === 'dropped') reopenTask(rowMenuTask); else dropTask(rowMenuTask);
+            closeRowMenu();
+          },
+        }, rowMenuTask.status === 'dropped' ? '恢复为待办' : '标记为废弃'),
+        h('button', {
+          className: 'wp-row-menu-item', type: 'button', role: 'menuitem',
           onClick: () => { setSelectedId(rowMenuTask.id); closeRowMenu(); },
         }, '打开详情'),
         h('button', {
           className: 'wp-row-menu-item wp-row-menu-danger', type: 'button', role: 'menuitem',
-          onClick: () => { softDeleteTask(rowMenuTask); closeRowMenu(); },
+          onClick: () => { requestDelete(rowMenuTask); closeRowMenu(); },
         }, '移到回收站')) : null;
 
       // The move submenu is a SIDE panel anchored to the "移动到" row, not an
@@ -7265,9 +7335,13 @@ window.__ModuleLoader__.load({
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-meta' },
             h('button', {
-              className: 'wp-detail-check wp-check-' + selectedTask.urgency + (selectedTask.status === 'done' ? ' wp-checked' : ''),
-              type: 'button', role: 'checkbox', 'aria-checked': selectedTask.status === 'done' ? 'true' : 'false',
-              title: selectedTask.status === 'done' ? '标记为未完成' : '标记为已完成',
+              className: 'wp-detail-check wp-check-' + selectedTask.urgency
+                + ((selectedTask.status === 'done' || selectedTask.status === 'dropped') ? ' wp-checked' : '')
+                + (selectedTask.status === 'dropped' ? ' wp-check-dropped' : ''),
+              type: 'button', role: 'checkbox',
+              'aria-checked': selectedTask.status === 'dropped' ? 'mixed' : (selectedTask.status === 'done' ? 'true' : 'false'),
+              title: selectedTask.status === 'dropped' ? '已废弃 · 点击恢复为待办'
+                : (selectedTask.status === 'done' ? '标记为未完成' : '标记为已完成'),
               onClick: () => toggleDone(selectedTask),
             }, selectedTask.status === 'done' ? h(CheckIcon) : null),
             h('span', { className: 'wp-detail-sep' }, '|'),
@@ -7305,7 +7379,7 @@ window.__ModuleLoader__.load({
             h('button', {
               className: 'wp-detail-del', type: 'button',
               title: '移入回收站', 'aria-label': '移入回收站',
-              onClick: () => softDeleteTask(selectedTask),
+              onClick: () => requestDelete(selectedTask),
             }, h(TrashIcon))),
           h('textarea', {
             className: 'wp-detail-input wp-detail-title-input', rows: 2,
@@ -7530,6 +7604,7 @@ window.__ModuleLoader__.load({
           isReportsView ? evidencePanel : (isInboxView || isDataView || isRadarView) ? null : (trashDetailPanel || detailPanel))),
         toastNode,
         rowMenuNode,
+        deleteConfirmNode,
         moveSubmenuNode,
         drawer);
     }

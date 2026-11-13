@@ -14,6 +14,18 @@ function task(id, patch = {}) {
 function state(tasks = [], patch = {}) {
   return { tasks, projects: [], logs: [], artifacts: [], reports: [], inboxAck: [], reportEdits: {}, ...patch };
 }
+const gotoDone = (ui) => {
+  const nav = ui.nodes().find(n => n.type === 'button' && has(n, 'wp-nav-item')
+    && (n.children || []).some(c => c && has(c, 'wp-nav-label') && text(c) === '已完成'));
+  assert.ok(nav, 'the 已完成 nav entry exists');
+  ui.fire(nav, 'onClick');
+};
+
+const expandGroup = (ui, label) => {
+  const group = ui.nodes().find(n => has(n, 'wp-group') && text(n).includes(label));
+  if (group) { const toggle = (group.children || []).find(c => c && c.type === 'button'); if (toggle) ui.fire(toggle, 'onClick'); }
+};
+
 const openMoveSubmenu = (ui) => {
   const parent = ui.nodes().find(n => n.type === 'button' && has(n, 'wp-row-menu-parent'));
   assert.ok(parent, 'the move parent entry exists');
@@ -376,7 +388,10 @@ test('the row menu still moves a task and soft-deletes it', async () => {
     assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].projectId, 'p1');
     ui.fire(row(), 'onContextMenu', { clientX: 10, clientY: 10, preventDefault() {} });
     ui.click('移到回收站'); await ui.settle();
-    assert.ok(ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, 'soft-deleted');
+    assert.ok(!ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, 'not deleted before confirmation');
+    assert.ok(ui.text().includes('删除这个任务？'), 'confirmation appears');
+    ui.click('删除'); await ui.settle();
+    assert.ok(ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, 'soft-deleted after confirming');
   } finally { ui.close(); }
 });
 
@@ -394,6 +409,75 @@ test('Escape and outside clicks dismiss the row menu without changing data', asy
     await ui.settle();
     assert.equal(ui.nodes().filter(n => has(n, 'wp-row-menu')).length, 0, 'outside click closes it');
     assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].urgency, 'medium', 'no accidental edit');
+  } finally { ui.close(); }
+});
+
+test('deleting from the task detail asks first, and cancel keeps the task', async () => {
+  const ui = harness(state([task('a')])); await ui.settle();
+  try {
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onClick');
+    ui.click('移入回收站'); await ui.settle();
+    assert.ok(ui.text().includes('删除这个任务？'), 'confirmation dialog shown');
+    assert.ok(!ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, 'nothing deleted yet');
+    ui.click('取消'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, null, 'cancel keeps the task');
+    assert.ok(!ui.text().includes('删除这个任务？'), 'dialog closed');
+    // The cancel cleared the selection, so re-open the task before confirming.
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onClick');
+    ui.click('移入回收站'); await ui.settle();
+    ui.click('删除'); await ui.settle();
+    assert.ok(ui.storage.json('@local/work-panel:tasks:v1')[0].deletedAt, 'confirmed delete applies');
+  } finally { ui.close(); }
+});
+
+test('the confirmation names the task so a mis-click is obvious', async () => {
+  const ui = harness(state([task('a')])); await ui.settle();
+  try {
+    ui.fire(ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a')), 'onClick');
+    ui.click('移入回收站'); await ui.settle();
+    assert.ok(ui.text().includes('「任务 a」'), 'the exact task title is shown');
+    assert.ok(ui.text().includes('可随时恢复'), 'explains that it is recoverable');
+  } finally { ui.close(); }
+});
+
+test('a task can be dropped, shown closed with a cross, and restored', async () => {
+  const ui = harness(state([task('a'), task('b')])); await ui.settle();
+  try {
+    const rowOf = (label) => ui.nodes().find(n => has(n, 'wp-row') && text(n).includes(label));
+    ui.fire(rowOf('任务 a'), 'onContextMenu', { clientX: 10, clientY: 10, preventDefault() {} });
+    ui.click('标记为废弃'); await ui.settle();
+    const dropped = ui.storage.json('@local/work-panel:tasks:v1').find(t => t.id === 'a');
+    assert.equal(dropped.status, 'dropped', 'stored as dropped');
+    assert.equal(dropped.completedAt, null, 'a drop is not a completion');
+    // It lives with completed tasks, not in the open list.
+    assert.ok(!ui.text().includes('任务 a'), 'gone from the open list');
+    gotoDone(ui); await ui.settle();
+    expandGroup(ui, '已完成');
+    assert.ok(ui.text().includes('任务 a'), 'listed under 已完成');
+    const crossRow = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 a'));
+    assert.ok(ui.nodes().some(n => has(n, 'wp-check-dropped')), 'shows the dropped (cross) affordance');
+    assert.ok(!ui.nodes().some(n => has(n, 'wp-row-check') && n.props['aria-checked'] === 'true'
+      && text(ui.nodes().find(p => has(p, 'wp-row') && text(p).includes('任务 a')) || {}).includes('任务 a')), 'not presented as checked');
+    // Restore from the cross itself.
+    const cross = ui.nodes().find(n => has(n, 'wp-check-dropped') && has(n, 'wp-row-check'));
+    ui.fire(cross, 'onClick'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1').find(t => t.id === 'a').status, 'todo', 'restored to todo');
+  } finally { ui.close(); }
+});
+
+test('completed and dropped tasks are visually distinguishable in the closed list', async () => {
+  const done = task('d', { status: 'done', completedAt: NOW_ISO });
+  const dropped = task('x', { status: 'dropped', droppedAt: NOW_ISO });
+  const ui = harness(state([done, dropped])); await ui.settle();
+  try {
+    gotoDone(ui); await ui.settle();
+    expandGroup(ui, '已完成');
+    const checks = ui.nodes().filter(n => has(n, 'wp-row-check'));
+    const doneCheck = checks.find(n => has(n, 'wp-checked') && !has(n, 'wp-check-dropped'));
+    const dropCheck = checks.find(n => has(n, 'wp-check-dropped'));
+    assert.ok(doneCheck, 'completed task keeps the filled check');
+    assert.ok(dropCheck, 'dropped task gets the cross treatment');
+    assert.notEqual(dropCheck.props.className, doneCheck.props.className, 'the two affordances differ');
   } finally { ui.close(); }
 });
 

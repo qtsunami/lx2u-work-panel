@@ -141,7 +141,7 @@ function createRuntime() {
   };
 }
 function task(id, projectId = '', title = id) {
-  return { id, title, projectId, status: 'done', urgency: 'medium', progress: 100, description: '', deadline: '', expected: '', nextStep: '', blockedReason: '', deletedAt: null, completedAt: NOW, createdAt: NOW, updatedAt: NOW };
+  return { id, title, projectId, status: 'done', urgency: 'medium', progress: 100, description: '', deadline: '', expected: '', nextStep: '', blockedReason: '', deletedAt: null, droppedAt: null, completedAt: NOW, createdAt: NOW, updatedAt: NOW };
 }
 function report(scope = '', body = 'saved-' + (scope || 'all'), period = PERIOD, kind = 'week') {
   return { id: 'r-' + kind + '-' + period.start + '-' + scope, kind, period, projectId: scope, body, refs: [], excluded: [], status: 'draft', createdAt: NOW, updatedAt: NOW };
@@ -496,7 +496,7 @@ test('report snapshots remain resolvable after source task hard deletion and rep
     assert.equal(saved.refs.length, 3, 'setup stores three evidence snapshots');
     ui.click('全部任务');
     const row = ui.one(n => hasClass(n, 'wp-row') && text(n).includes('ta'), 'task A row');
-    ui.fire(row, 'onClick'); ui.click('移入回收站'); ui.click('回收站'); ui.click('彻底删除'); ui.click('确认删除');
+    ui.fire(row, 'onClick'); ui.click('移入回收站'); ui.click('删除'); ui.click('回收站'); ui.click('彻底删除'); ui.click('确认删除');
     assert.ok(!ui.storage.json(KEY.tasks).some(t => t.id === 'ta'));
     assert.deepEqual(ui.storage.json(KEY.logs), []); assert.deepEqual(ui.storage.json(KEY.artifacts), []);
     ui.reports(); ui.scope('pa'); ui.edit(ui.body() + '\nEdited after source removal'); ui.click('保存草稿');
