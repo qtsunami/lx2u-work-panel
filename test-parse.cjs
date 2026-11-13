@@ -276,6 +276,14 @@ check('complete sets status+completedAt', [completed.next.tasks[0].status, compl
 check('complete already done skipped', dbg.applyActions(emptyState, [{ op: 'complete', taskId: 't-2' }], 'now').outcomes[0].reason, 'no-change');
 const reopened = dbg.applyActions({ tasks: [{ ...baseTasks[0], status: 'done', completedAt: 'x', progress: 100 }], logs: [], artifacts: [] }, [{ op: 'reopen', taskId: 't-1' }], 'now');
 check('reopen clears completedAt', [reopened.next.tasks[0].status, reopened.next.tasks[0].completedAt], ['todo', null]);
+const droppedTask = { ...baseTasks[0], status: 'dropped', completedAt: null, droppedAt: '2026-11-10T01:00:00.000Z', progress: 100 };
+const restoredDrop = dbg.applyActions({ tasks: [droppedTask], logs: [], artifacts: [] }, [{ op: 'reopen', taskId: 't-1' }], 'now');
+check('reopen dropped applies instead of skipping',
+  [restoredDrop.outcomes[0].status, restoredDrop.next.tasks[0].status, restoredDrop.next.tasks[0].droppedAt],
+  ['applied', 'todo', null]);
+const completedDrop = dbg.applyActions({ tasks: [droppedTask], logs: [], artifacts: [] }, [{ op: 'complete', taskId: 't-1' }], 'now');
+check('complete dropped clears abandoned timestamp',
+  [completedDrop.next.tasks[0].status, completedDrop.next.tasks[0].droppedAt], ['done', null]);
 const logged = dbg.applyActions(emptyState, [{ op: 'log', taskId: 't-1', kind: 'progress', text: '  推进了一步  ' }], '2026-11-11T02:00:00.000Z');
 check('log appended', [logged.next.logs.length, logged.next.logs[0].source, logged.next.logs[0].text], [1, 'ai', '推进了一步']);
 check('AI log marked and task not completed', [logged.next.logs[0].source, logged.next.tasks[0].status], ['ai', 'todo']);
@@ -546,6 +554,12 @@ check('health counts overdue', health.overdue, 1);
 check('health counts this week records', health.records, 1);
 check('health computes completion rate', health.rate, 50);
 check('health tracks last activity', health.lastAt.length > 0, true);
+const withDrop = dbg.projectHealth(healthTasks.concat([
+  { id: 'h5', projectId: 'p-1', status: 'dropped', deadline: '2020-01-01', deletedAt: null },
+]), healthLogs, [], 'p-1', healthWeek);
+check('dropped task is neither open nor completed nor overdue',
+  [withDrop.todo, withDrop.done, withDrop.dropped, withDrop.overdue], [1, 1, 1, 1]);
+check('completion rate excludes dropped from denominator', withDrop.rate, 50);
 const emptyHealth = dbg.projectHealth([], [], [], 'p-9', healthWeek);
 check('empty project health', [emptyHealth.total, emptyHealth.rate, emptyHealth.lastAt], [0, 0, '']);
 

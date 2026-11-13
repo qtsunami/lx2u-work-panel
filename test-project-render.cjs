@@ -184,7 +184,7 @@ assert(confirming.text.indexOf('任务会变为未分组') !== -1, 'confirmation
 const healthView = render({ 4: 'proj:p-1' });
 assert(healthView.has('wp-project-health'), 'project view should show the health card');
 assert(healthView.text.indexOf('本周记录') !== -1, 'health card should label this week records');
-assert(healthView.text.indexOf('已完成 · 50%') !== -1, 'health card should show the completion rate, got ' + healthView.text);
+assert(healthView.text.indexOf('已完成 · 完成率 50%（不含废弃）') !== -1, 'health card should explain the completion-rate denominator');
 
 // ---- 9. per-project report batch ----
 const batchView = render({ 4: 'reports', 38: '## 一、本期主要成果\n- 完成 [[task:t-2]]' });

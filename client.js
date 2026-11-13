@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.10';
+    const PANEL_VERSION = '1.5.11';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -615,12 +615,14 @@ window.__ModuleLoader__.load({
     // or unknown, so a reopened task is never reclassified as done.
     function radarIsDone(task) {
       if (task.status === 'done') return true;
+      if (task.status === 'dropped') return false;
       if (task.status === 'todo') return false;
       return radarText(task.completedAt) !== '';
     }
 
     function radarActionableTask(task) {
-      return radarIsObject(task) && radarText(task.id) !== '' && !radarIsDeleted(task) && !radarIsDone(task);
+      return radarIsObject(task) && radarText(task.id) !== '' && !radarIsDeleted(task)
+        && task.status !== 'dropped' && !radarIsDone(task);
     }
 
     function radarTaskTitle(task) {
@@ -1623,6 +1625,10 @@ window.__ModuleLoader__.load({
       if (runtime.paused) return { due: false, period: null, reason: 'paused' };
       if (runtime.pausedUntil !== null && nowMs < runtime.pausedUntil) return { due: false, period: null, reason: 'paused' };
       if (runtime.retryAfter !== null && nowMs < runtime.retryAfter) return { due: false, period: null, reason: 'backoff' };
+      // The fifth failure exhausts the four scheduled retries; a missing retryAfter
+      // must not silently enable another run on the next five-minute tick.
+      if (runtime.lastRunOk === false && runtime.attempts > BACKOFF_MS.length)
+        return { due: false, period: null, reason: 'retry-exhausted' };
       const local = localDateTimeFor(zone, nowMs);
       if (!local) return { due: false, period: null, reason: 'invalid-time' };
       const current = periodForDate(normalized.kind, ymdStringOf(local));
@@ -2206,7 +2212,7 @@ window.__ModuleLoader__.load({
         }
         if (op === 'complete' || op === 'reopen') {
           const done = op === 'complete';
-          if ((task.status === 'done') === done) {
+          if (task.status === (done ? 'done' : 'todo')) {
             outcomes.push({ op, status: 'skipped', reason: 'no-change', taskId: task.id });
             continue;
           }
@@ -2215,6 +2221,7 @@ window.__ModuleLoader__.load({
             status: done ? 'done' : 'todo',
             progress: done ? 100 : 0,
             completedAt: done ? stamp : null,
+            droppedAt: null,
             updatedAt: stamp,
           };
           outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
@@ -2389,13 +2396,15 @@ window.__ModuleLoader__.load({
       const list = liveTasks(tasks).filter((task) => task.projectId === projectId);
       const nowMs = Date.now();
       let done = 0;
+      let dropped = 0;
       let overdue = 0;
       let records = 0;
       let artifactsCount = 0;
       let lastAt = '';
       for (const task of list) {
         if (task.status === 'done') done += 1;
-        else if (deadlineMs(task.deadline) !== null && deadlineMs(task.deadline) < nowMs) overdue += 1;
+        else if (task.status === 'dropped') dropped += 1;
+        else if (task.status === 'todo' && deadlineMs(task.deadline) !== null && deadlineMs(task.deadline) < nowMs) overdue += 1;
         const taskLogs = logsOf(logs, task.id);
         records += taskLogs.filter((entry) => inPeriod(entry.at, period)).length;
         artifactsCount += artifactsOf(artifacts, task.id).filter((item) => inPeriod(item.at, period)).length;
@@ -2405,12 +2414,14 @@ window.__ModuleLoader__.load({
       return {
         total: list.length,
         done,
-        todo: list.length - done,
+        dropped,
+        todo: list.length - done - dropped,
         overdue,
         records,
         artifacts: artifactsCount,
         lastAt,
-        rate: list.length ? Math.round((done / list.length) * 100) : 0,
+        // Abandoned work is not a completion, nor is it still planned work.
+        rate: list.length > dropped ? Math.round((done / (list.length - dropped)) * 100) : 0,
       };
     }
 
@@ -2858,7 +2869,7 @@ window.__ModuleLoader__.load({
     }
 
     function refLabel(ref) {
-      if (ref.type === 'task') return '任务「' + ref.item.title + '」（' + (ref.item.status === 'done' ? '已完成' : '待办') + '）';
+      if (ref.type === 'task') return '任务「' + ref.item.title + '」（' + (STATUS[ref.item.status] || '待办') + '）';
       if (ref.type === 'log') {
         const text = String((ref.entry && ref.entry.text) || '');
         const short = text.slice(0, 40) + (text.length > 40 ? '…' : '');
@@ -2910,7 +2921,7 @@ window.__ModuleLoader__.load({
       return Number.isNaN(t) ? null : t;
     }
     function isOverdue(task) {
-      if (!task.deadline || task.status === 'done') return false;
+      if (!task.deadline || task.status !== 'todo') return false;
       const t = deadlineMs(task.deadline);
       return t !== null && t < Date.now();
     }
@@ -3039,7 +3050,7 @@ window.__ModuleLoader__.load({
 
     // ---- progress -> status state machine --------------------------------
     function progressTransition(task, rawValue) {
-      if (task.status === 'done') return null;
+      if (task.status === 'done' || task.status === 'dropped') return null;
       const progress = clamp(rawValue);
       const status = progress >= 100 ? 'done' : progress > 0 ? 'doing' : 'todo';
       return { progress, status };
@@ -3070,7 +3081,7 @@ window.__ModuleLoader__.load({
     }
     function buildTaskListReply(tasks) {
       if (tasks.length === 0) return '目前还没有任务，在上方快速添加，或直接告诉我要做什么。';
-      const open = tasks.filter((t) => t.status !== 'done');
+      const open = tasks.filter((t) => t.status === 'todo');
       const rows = tasks.slice(0, 8).map((t) => '· [' + (STATUS[t.status] || '待办') + '] ' + t.title + (t.deadline ? ' · ' + formatDeadline(t.deadline) : ''));
       return '你共有 ' + tasks.length + ' 个任务，其中 ' + open.length + ' 个未完成：\n' + rows.join('\n');
     }
@@ -3986,7 +3997,9 @@ window.__ModuleLoader__.load({
 
       /* ---- execution report-back inbox ---- */
       .wp-inbox-list { display: flex; flex-direction: column; gap: 10px; }
-      .wp-inbox-toolbar { display: flex; justify-content: flex-end; gap: 8px; }
+      .wp-inbox-toolbar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 8px; }
+      .wp-inbox-confirm { flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+      .wp-inbox-confirm .wp-trash-confirm-text { white-space: normal; }
       .wp-inbox-item { display: flex; flex-direction: column; gap: 8px; }
       .wp-inbox-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .wp-inbox-source {
@@ -4078,6 +4091,7 @@ window.__ModuleLoader__.load({
       .wp-report-dirty { font-size: 11.5px; color: var(--wp-warning); }
       .wp-report-notice { margin: 0; padding: 7px 10px; border-radius: 7px; font-size: 12px; line-height: 1.5; background: var(--wp-fill); color: var(--wp-text-secondary); }
       .wp-report-notice-warn { background: rgba(250, 173, 20, 0.12); color: var(--wp-warning); }
+      .wp-report-notice-ok { background: rgba(82, 196, 26, 0.12); color: var(--wp-success); }
       .wp-report-notice-err { background: rgba(255, 77, 79, 0.1); color: var(--wp-error); }
       .wp-report-editor {
         flex: 1; min-height: 0; width: 100%; box-sizing: border-box;
@@ -4348,6 +4362,7 @@ window.__ModuleLoader__.load({
       const [inbox, setInbox] = useState([]);
       const [inboxAck, setInboxAck] = useState(loadInboxAck);
       const [inboxPicks, setInboxPicks] = useState({});
+      const [ignoreAllConfirmIds, setIgnoreAllConfirmIds] = useState(null);
       const [importMode, setImportMode] = useState('merge');
       const [preImportReady, setPreImportReady] = useState(() => !!readBackupSlot(PRE_IMPORT_KEY));
       const [clearConfirm, setClearConfirm] = useState(false);
@@ -4375,6 +4390,11 @@ window.__ModuleLoader__.load({
         (extrasRef.current && extrasRef.current.autoSettings) || null));
       const [autoState, setAutoState] = useState(() => normalizeAutoState(
         (extrasRef.current && extrasRef.current.autoState) || null));
+      const autoSettingsRef = useRef(autoSettings);
+      autoSettingsRef.current = autoSettings;
+      const autoStateRef = useRef(autoState);
+      autoStateRef.current = autoState;
+      const autoSettingsRevisionRef = useRef(0);
       const [autoNotice, setAutoNotice] = useState('');
       const [radarBusy, setRadarBusy] = useState('');
       const [radarExplain, setRadarExplain] = useState(null);
@@ -4666,11 +4686,13 @@ window.__ModuleLoader__.load({
       // already part of the canonical workspace, exports and Host sync.
       const saveExtras = (patch) => {
         const next = { ...(extrasRef.current || {}), ...patch };
-        extrasRef.current = next;
-        if (!writeStored(WORKSPACE_EXTRAS_KEY, JSON.stringify(next))) {
+        // Unlike ordinary editable fields, a rejected automation switch must
+        // never linger in pendingWrites and become active on a later retry.
+        if (!writeStoredTransaction([[WORKSPACE_EXTRAS_KEY, JSON.stringify(next)]])) {
           showToast('设置未能保存到本机，请检查存储空间。', 'danger');
           return false;
         }
+        extrasRef.current = next;
         return true;
       };
       const radarRef = useRef(null);
@@ -4682,19 +4704,33 @@ window.__ModuleLoader__.load({
           return next;
         });
       };
+      // A change of reporting kind/scope/zone changes the idempotency namespace.
+      // Reset its period markers, not the person's pause preference.
+      const autoScopeKey = (settings) => [settings.kind, settings.scope, settings.timeZone].join('\u0000');
       const updateAutoSettings = (patch) => {
-        setAutoSettings((prev) => {
-          const next = normalizeAutoSettings({ ...prev, ...patch });
-          saveExtras({ autoSettings: next });
-          return next;
-        });
+        const previous = autoSettingsRef.current;
+        const next = normalizeAutoSettings({ ...previous, ...patch });
+        const changedScope = autoScopeKey(previous) !== autoScopeKey(next);
+        const nextState = changedScope ? normalizeAutoState({ ...autoStateRef.current,
+          lastPeriodKey: null, generatedKeys: [], lastRunOk: null, lastRunAt: null,
+          retryAfter: null, attempts: 0, evidenceByPeriod: {} }) : autoStateRef.current;
+        if (!saveExtras({ autoSettings: next, ...(changedScope ? { autoState: nextState } : {}) })) return false;
+        autoSettingsRevisionRef.current += 1;
+        autoSettingsRef.current = next;
+        setAutoSettings(next);
+        if (changedScope) { autoStateRef.current = nextState; setAutoState(nextState); }
+        return true;
       };
       const updateAutoState = (patch) => {
-        setAutoState((prev) => {
-          const next = normalizeAutoState({ ...prev, ...patch });
-          saveExtras({ autoState: next });
-          return next;
-        });
+        const previous = autoStateRef.current;
+        const next = normalizeAutoState({ ...previous, ...patch });
+        if (!saveExtras({ autoState: next })) return false;
+        // Pausing or resuming during a model call invalidates that call's result.
+        if (next.paused !== previous.paused || next.pausedUntil !== previous.pausedUntil)
+          autoSettingsRevisionRef.current += 1;
+        autoStateRef.current = next;
+        setAutoState(next);
+        return true;
       };
 
       const commitArtifacts = (updater) => {
@@ -4712,8 +4748,8 @@ window.__ModuleLoader__.load({
         const next = statusTransition(task, newStatus);
         const iso = new Date().toISOString();
         const patch = next.status === 'done'
-          ? { ...next, completedAt: iso }
-          : { ...next, completedAt: null };
+          ? { ...next, completedAt: iso, droppedAt: null }
+          : { ...next, completedAt: null, droppedAt: null };
         commit(tasks.map((t) => (t.id === task.id ? { ...t, ...patch, updatedAt: iso } : t)));
       };
       // Dropping keeps the record and moves the task into the closed list without
@@ -4729,7 +4765,7 @@ window.__ModuleLoader__.load({
       const reopenTask = (task) => {
         setLastApply(null);
         const iso = new Date().toISOString();
-        commit(tasks.map((t) => (t.id === task.id ? { ...t, ...reopenedState(), completedAt: null, updatedAt: iso } : t)));
+        commit(tasks.map((t) => (t.id === task.id ? { ...t, ...reopenedState(), completedAt: null, droppedAt: null, updatedAt: iso } : t)));
       };
       const toggleDone = (task) => { if (task.status === 'done') reopenTask(task); else applyStatus(task, 'done'); };
       const updateTask = (id, patch) => {
@@ -5186,12 +5222,16 @@ window.__ModuleLoader__.load({
       const addQuick = () => {
         const title = quickText.trim();
         if (!title) { if (quickInputRef.current) quickInputRef.current.focus(); return; }
-        const deadline = quickDeadline.time ? quickDeadline.date + 'T' + quickDeadline.time : quickDeadline.date;
+        // The calendar opens on today for convenience, but that is not an
+        // explicit deadline until the person picks a date or time.
+        const deadline = quickDeadlineTouched
+          ? quickDeadline.date + (quickDeadline.time ? 'T' + quickDeadline.time : '') : '';
         setLastApply(null);
         const task = newTask({ title, deadline, projectId: activeProject || '' });
         addTaskToState(task);
         setQuickText('');
         setQuickDeadline({ date: todayDate(), time: '' });
+        setQuickDeadlineTouched(false);
         setCalOpen(false);
         if (quickInputRef.current) quickInputRef.current.focus();
       };
@@ -5284,14 +5324,14 @@ window.__ModuleLoader__.load({
       };
 
       const stats = useMemo(() => {
-        const byStatus = { todo: 0, done: 0 };
+        const byStatus = { todo: 0, done: 0, dropped: 0 };
         let overdue = 0; let todayCount = 0; let deletedCount = 0; let total = 0;
         const nowMs = Date.now();
         for (const t of tasks) {
           if (t.deletedAt) { deletedCount += 1; continue; }
           total += 1;
           if (byStatus[t.status] !== undefined) byStatus[t.status] += 1;
-          if (t.status !== 'done') {
+          if (t.status === 'todo') {
             const dl = deadlineMs(t.deadline);
             if (dl !== null && dl < nowMs) overdue += 1;
             if (isTodayDeadline(t.deadline)) todayCount += 1;
@@ -5306,7 +5346,8 @@ window.__ModuleLoader__.load({
       const activeProjectStats = useMemo(() => {
         if (!activeProject) return null;
         const list = liveTasks(tasks).filter((t) => t.projectId === activeProject);
-        return { total: list.length, done: list.filter((t) => t.status === 'done').length };
+        return { total: list.length, done: list.filter((t) => t.status === 'done').length,
+          dropped: list.filter((t) => t.status === 'dropped').length };
       }, [tasks, activeProject]);
 
       const projectCounts = countProjectTasks(tasks);
@@ -5346,10 +5387,10 @@ window.__ModuleLoader__.load({
         const alive = liveTasks(tasks);
         if (activeProject) return alive.filter((t) => t.projectId === activeProject);
         if (activeView === 'done') return alive.filter((t) => t.status === 'done' || t.status === 'dropped');
-        if (activeView === 'today') return alive.filter((t) => t.status !== 'done' && isTodayDeadline(t.deadline));
+        if (activeView === 'today') return alive.filter((t) => t.status === 'todo' && isTodayDeadline(t.deadline));
         if (activeView === 'overdue') {
           const nowMs = Date.now();
-          return alive.filter((t) => t.status !== 'done' && t.deadline && deadlineMs(t.deadline) !== null && deadlineMs(t.deadline) < nowMs);
+          return alive.filter((t) => t.status === 'todo' && t.deadline && deadlineMs(t.deadline) !== null && deadlineMs(t.deadline) < nowMs);
         }
         return alive;
       }, [tasks, activeView]);
@@ -5377,7 +5418,7 @@ window.__ModuleLoader__.load({
 
       const GROUPS = [
         { status: 'todo', label: '待办' },
-        { status: 'done', label: '已完成' },
+        { status: 'done', label: '已完成/废弃' },
       ];
       const grouped = useMemo(() => {
         const map = { todo: [], done: [] };
@@ -5393,8 +5434,9 @@ window.__ModuleLoader__.load({
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
       const viewTitle = activeProjectEntity
         ? activeProjectEntity.name
-        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成', reports: '周报/月报', trash: '回收站', inbox: '执行回传', data: '本地数据', radar: '需要注意' }[activeView] || '全部任务');
-      const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项';
+        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成/废弃', reports: '周报/月报', trash: '回收站', inbox: '执行回传', data: '本地数据', radar: '需要注意' }[activeView] || '全部任务');
+      const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项'
+        + (stats.byStatus.dropped ? ' · 已废弃 ' + stats.byStatus.dropped + ' 项' : '');
       const isReportsView = activeView === 'reports';
       const isTrashView = activeView === 'trash';
       const isInboxView = activeView === 'inbox';
@@ -5410,7 +5452,7 @@ window.__ModuleLoader__.load({
           : isTrashView
           ? stats.deletedCount + ' 条已删除 · 恢复或彻底删除'
           : activeProjectStats
-            ? activeProjectStats.total + ' 项任务 · 已完成 ' + activeProjectStats.done + ' 项'
+            ? activeProjectStats.total + ' 项任务 · 已完成 ' + activeProjectStats.done + ' 项 · 已废弃 ' + activeProjectStats.dropped + ' 项'
             : statsText;
 
       const rowDeadline = (task) => {
@@ -5650,18 +5692,26 @@ window.__ModuleLoader__.load({
           excluded: opts.excluded || reportExcluded.slice(),
           derivedFromReportIds: existing ? existing.derivedFromReportIds || [] : [],
           status: 'draft', createdAt: existing ? existing.createdAt : now, updatedAt: now,
+          ...(opts.autoState ? { auto: true, autoGeneratedAt: now } : {}),
         };
         const next = existing ? previous.map((r) => r.id === existing.id ? record : r) : previous.concat([record]);
         const edits = { ...reportEditsRef.current };
         if (opts.applyToEditor !== false) delete edits[key];
+        const nextExtras = opts.autoState ? { ...(extrasRef.current || {}), autoState: opts.autoState } : null;
         if (!writeStoredTransaction([
           [REPORTS_KEY, JSON.stringify(next)], [REPORT_EDITS_KEY, JSON.stringify(edits)],
+          ...(nextExtras ? [[WORKSPACE_EXTRAS_KEY, JSON.stringify(nextExtras)]] : []),
         ])) {
           setReportNotice({ kind: 'err', text: '草稿未保存，编辑内容仍保留；请释放空间后重试或先导出备份。' });
           return null;
         }
         reportsRef.current = next;
         reportEditsRef.current = edits;
+        if (nextExtras) {
+          extrasRef.current = nextExtras;
+          autoStateRef.current = opts.autoState;
+          setAutoState(opts.autoState);
+        }
         setReports(next);
         if (opts.applyToEditor !== false && editorRef.current.key === key) {
           setReportBody(text); setReportDirty(false);
@@ -5693,36 +5743,52 @@ window.__ModuleLoader__.load({
         const project = autoScopeId(scopeId);
         return project ? liveTasks(tasks).filter((t) => t.projectId === project) : liveTasks(tasks);
       };
-      const autoRunRef = useRef(false);
+      const autoRunRef = useRef(null);
+      const autoRunIsCurrent = () => autoRunRef.current
+        && autoRunRef.current.epoch === epochRef.current
+        && autoRunRef.current.settingsRevision === autoSettingsRevisionRef.current;
       const runAutoReport = async (reason) => {
-        if (autoRunRef.current) return;
-        const settings = normalizeAutoSettings(autoSettings);
-        if (!settings.enabled) return;
-        const todayPeriod = periodForDate(settings.kind, todayDate());
+        if (autoRunIsCurrent()) {
+          if (reason === 'manual') setAutoNotice('正在生成，请等待当前结果。');
+          return;
+        }
+        const settings = autoSettingsRef.current;
+        const runtime = autoStateRef.current;
+        if (!settings.enabled) {
+          if (reason === 'manual') setAutoNotice('请先开启自动生成，再手动生成一次。');
+          return;
+        }
+        const status = hostSyncRef.current && hostSyncRef.current.getStatus();
+        if (!status || !status.canEdit || !['ready', 'syncing'].includes(status.phase)) {
+          if (reason === 'manual') setAutoNotice('请先恢复本机数据主存连接，再生成报告。');
+          return;
+        }
+        const nowMs = Date.now();
+        const local = localDateTimeFor(settings.timeZone, nowMs);
+        if (!local) {
+          if (reason === 'manual') setAutoNotice('时区无法识别（' + settings.timeZone + '），请改成常用时区后再生成。');
+          return;
+        }
+        const todayPeriod = periodForDate(settings.kind, local.y + '-' + pad2(local.m) + '-' + pad2(local.d));
         if (!todayPeriod) return;
-        const todayKey = periodKeyForPeriod(todayPeriod);
         const todayEvidence = collectEvidence(scopeTasksFor(settings.scope), logs, artifacts, todayPeriod);
         // A catch-up decision concerns the PREVIOUS period, so hand the rules that
         // period's record count; otherwise a quiet current week would suppress a
         // report for a week that actually has work.
         const prevPeriod = shiftPeriod(settings.kind, todayPeriod, -1);
         const prevEvidence = collectEvidence(scopeTasksFor(settings.scope), logs, artifacts, prevPeriod);
-        const decisionState = { ...autoState };
+        const decisionState = { ...runtime };
         decisionState.evidenceByPeriod = {
-          ...(autoState.evidenceByPeriod || {}), [periodKeyForPeriod(prevPeriod)]: prevEvidence.length,
+          ...(runtime.evidenceByPeriod || {}), [periodKeyForPeriod(prevPeriod)]: prevEvidence.length,
         };
         // A manual run is the user's explicit request: it targets the period they
         // are viewing and is not gated by the timer or by a scheduled run having
         // "not arrived" yet. Only genuine blockers (disabled/paused/offline work)
         // stop it, so a click never silently does nothing.
         if (reason === 'manual') {
-          if (autoState.paused) { setAutoNotice('自动化已暂停，请先恢复再生成。'); return; }
-          // A manual run ignores the timetable, but never an unusable time zone:
-          // the draft is stamped with the period that zone defines.
-          if (!nextDue(settings, Date.now(), settings.timeZone)) {
-            setAutoNotice('时区无法识别（' + settings.timeZone + '），请改成常用时区后再生成。');
-            return;
-          }
+          if (runtime.paused) { setAutoNotice('自动化已暂停，请先恢复再生成。'); return; }
+          // A manual run ignores the timetable but uses the configured zone.
+
           if (!todayEvidence.length) {
             setAutoNotice(periodLabelFor(settings.kind, todayPeriod) + ' 还没有工作依据，无法生成有依据的报告。'
 );
@@ -5734,10 +5800,10 @@ window.__ModuleLoader__.load({
             setAutoNotice('本期已有你的手工草稿，自动生成会覆盖它，已跳过。');
             return;
           }
-          await generateAutoDraft(settings, todayPeriod, todayEvidence);
+          await generateAutoDraft(settings, todayPeriod, todayEvidence, reason);
           return;
         }
-        const decision = dueGeneration(settings, { ...decisionState, evidenceCount: todayEvidence.length }, Date.now());
+        const decision = dueGeneration(settings, { ...decisionState, evidenceCount: todayEvidence.length }, nowMs);
         if (!decision.due) return;
         // A catch-up run targets the PREVIOUS period and its own evidence set, so a
         // draft is never labelled with another period's work.
@@ -5746,33 +5812,55 @@ window.__ModuleLoader__.load({
         const evidence = collectEvidence(scopeTasksFor(settings.scope), logs, artifacts, targetPeriod);
         if (evidence.length < settings.minEvidence) {
           // Record the empty period so it is not probed on every mount.
-          updateAutoState({ lastPeriodKey: periodKeyForPeriod(targetPeriod), lastRunOk: true, lastRunAt: new Date().toISOString(),
-            generatedKeys: (autoState.generatedKeys || []).concat([periodKeyForPeriod(targetPeriod)]).slice(-200) });
+          updateAutoState({ lastPeriodKey: targetKey, lastRunOk: true, lastRunAt: nowMs,
+            generatedKeys: Array.from(new Set((autoStateRef.current.generatedKeys || []).concat([targetKey]))).slice(-200) });
           return;
         }
-        await generateAutoDraft(settings, targetPeriod, evidence);
+        await generateAutoDraft(settings, targetPeriod, evidence, reason);
       };
 
       // One place actually produces a draft. Both the timer and the explicit
       // manual click call it, so behaviour cannot drift between them.
-      const generateAutoDraft = async (settings, targetPeriod, evidence) => {
-        if (autoRunRef.current) return;
-        autoRunRef.current = true;
+      const autoUnmountedRef = useRef(false);
+      useEffect(() => () => { autoUnmountedRef.current = true; }, []);
+      const generateAutoDraft = async (settings, targetPeriod, evidence, reason) => {
+        if (autoRunIsCurrent()) return;
+        const token = { epoch: epochRef.current, settingsRevision: autoSettingsRevisionRef.current };
+        autoRunRef.current = token;
         const targetKey = reportEditorKey(settings.kind, targetPeriod, autoScopeId(settings.scope));
+        const initialReport = () => reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === targetKey);
+        const reportVersion = JSON.stringify(initialReport());
+        const editVersion = JSON.stringify(reportEditsRef.current[targetKey]);
+        const initialEditorRevision = editorRef.current.key === targetKey ? editorRevision.current : null;
+        const sourceEvidence = JSON.stringify(evidence.map(compactEvidence));
+        const projectVersion = JSON.stringify((workspaceRef.current.projects || []).find((p) => p.id === autoScopeId(settings.scope)));
+        const epoch = epochRef.current;
+        const settingsRevision = autoSettingsRevisionRef.current;
+        const isCurrent = () => {
+          if (autoUnmountedRef.current || epoch !== epochRef.current || settingsRevision !== autoSettingsRevisionRef.current
+            || autoStateRef.current.paused) return false;
+          if (JSON.stringify(initialReport()) !== reportVersion || JSON.stringify(reportEditsRef.current[targetKey]) !== editVersion) return false;
+          if (editorRef.current.key === targetKey && (editorRef.current.dirty
+            || (initialEditorRevision !== null && editorRevision.current !== initialEditorRevision))) return false;
+          if (JSON.stringify((workspaceRef.current.projects || []).find((p) => p.id === autoScopeId(settings.scope))) !== projectVersion) return false;
+          const source = workspaceRef.current;
+          const currentTasks = autoScopeId(settings.scope)
+            ? liveTasks(source.tasks).filter((t) => t.projectId === autoScopeId(settings.scope)) : liveTasks(source.tasks);
+          return JSON.stringify(collectEvidence(currentTasks, source.logs, source.artifacts, targetPeriod).map(compactEvidence)) === sourceEvidence;
+        };
         setAutoNotice('正在生成 ' + periodLabelFor(settings.kind, targetPeriod) + ' 草稿…');
         try {
-          const existing = reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === targetKey);
-          const unsavedEdit = reportEditsRef.current[targetKey];
-          // A draft the user edited (or is editing) always wins over generation.
-          if ((existing && existing.auto !== true) || unsavedEdit) {
-            setAutoNotice('本期已有你的手工草稿，自动生成已跳过，不会覆盖你的编辑。');
+          const existing = initialReport();
+          if ((existing && (existing.auto !== true || reason !== 'manual')) || reportEditsRef.current[targetKey]
+            || (editorRef.current.key === targetKey && editorRef.current.dirty)) {
+            setAutoNotice('本期已有草稿或正在编辑，自动生成已跳过，不会覆盖你的内容。');
             return;
           }
           const res = await fetch(CHAT_ENDPOINT, {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               mode: 'report', kind: settings.kind, ...(settings.model ? { model: settings.model } : {}),
-            projectId: autoScopeId(settings.scope),
+              projectId: autoScopeId(settings.scope),
               project: autoScopeId(settings.scope) ? { name: projectNameOf(autoScopeId(settings.scope)), description: (projectById.get(autoScopeId(settings.scope)) || {}).description || '' } : null,
               period: { start: targetPeriod.start, end: targetPeriod.end },
               weeklies: settings.kind === 'month'
@@ -5784,49 +5872,54 @@ window.__ModuleLoader__.load({
             }),
           });
           const data = await res.json();
+          if (!isCurrent()) {
+            if (!autoUnmountedRef.current && epoch === epochRef.current) setAutoNotice('生成期间设置、依据或草稿发生变化，已丢弃旧结果；请重新生成。');
+            return;
+          }
           if (!res.ok || !data || data.error) throw new Error((data && data.error) || 'model-error');
           const body = data.report && typeof data.report.body === 'string' ? data.report.body.trim() : '';
           if (!body) throw new Error('empty-report');
-          const record = saveReport(body, { kind: settings.kind, period: targetPeriod, scopeId: autoScopeId(settings.scope),
-            evidence, applyToEditor: false });
-          if (!record) throw new Error('save-failed');
-          // Machine-generated markers let a later run refresh its own draft while a
-          // manual edit always blocks replacement.
-          const marked = reportsRef.current.map((r) => r.id === record.id
-            ? { ...r, auto: true, autoGeneratedAt: new Date().toISOString() } : r);
-          writeStored(REPORTS_KEY, JSON.stringify(marked));
-          reportsRef.current = marked; setReports(marked);
           const nextKey = periodKeyForPeriod(targetPeriod);
-          updateAutoState({ lastRunAt: new Date().toISOString(), lastRunOk: true, lastPeriodKey: nextKey, attempts: 0,
-            generatedKeys: (autoState.generatedKeys || []).concat([nextKey]).slice(-200) });
+          const nextState = normalizeAutoState({ ...autoStateRef.current,
+            lastRunAt: Date.now(), lastRunOk: true, lastPeriodKey: nextKey, attempts: 0, retryAfter: null,
+            generatedKeys: Array.from(new Set((autoStateRef.current.generatedKeys || []).concat([nextKey]))).slice(-200) });
+          // A single rollback-protected transaction persists draft, auto marker and
+          // success state together. No second unverified write can claim success.
+          const record = saveReport(body, { kind: settings.kind, period: targetPeriod, scopeId: autoScopeId(settings.scope),
+            evidence, applyToEditor: false, autoState: nextState });
+          if (!record) throw new Error('save-failed');
           setAutoNotice('已生成 ' + periodLabelFor(settings.kind, targetPeriod) + ' 草稿，可在报告页编辑后采用。');
         } catch (error) {
-          const attempt = (autoState.attempts || 0) + 1;
+          if (!isCurrent()) return;
+          const attempt = (autoStateRef.current.attempts || 0) + 1;
           const wait = nextBackoff(attempt);
-          updateAutoState({ lastRunAt: new Date().toISOString(), lastRunOk: false, attempts: attempt,
+          updateAutoState({ lastRunAt: Date.now(), lastRunOk: false, attempts: attempt,
             retryAfter: wait ? Date.now() + wait : null });
           setAutoNotice('自动生成失败：' + String((error && error.message) || error) + '。' + (wait
             ? ' ' + Math.round(wait / 60000) + ' 分钟后可重试（第 ' + attempt + ' 次）。'
             : ' 已停止自动重试；请到自动化设置里手动重试。'));
-        } finally { autoRunRef.current = false; }
+        } finally { if (autoRunRef.current === token) autoRunRef.current = null; }
       };
 
       const autoReasonText = (reason) => ({
         disabled: '功能未开启', 'no-evidence': '本期还没有足够依据', 'already-generated': '本期已生成过',
-        paused: '已暂停', backoff: '失败后等待重试', 'clock-rollback': '检测到系统时间回拨',
+        paused: '已暂停', backoff: '失败后等待重试', 'retry-exhausted': '已停止自动重试，请手动重试',
+        'clock-rollback': '检测到系统时间回拨',
         'not-due': '还没到设定时间', 'invalid-timezone': '时区无法识别',
       }[reason] || reason);
 
+      const autoRunnerRef = useRef(runAutoReport);
+      autoRunnerRef.current = runAutoReport;
       useEffect(() => {
-        if (!autoSettings.enabled) return undefined;
-        // Check on mount and every 5 minutes while the page stays open. This is
-        // deliberately not a Host schedule: the panel never claims delivery
-        // while the app is closed, and a missed period is caught up once.
-        const tick = () => { runAutoReport('auto'); };
+        if (!autoSettings.enabled || !hostSyncStatus.canEdit
+          || !['ready', 'syncing'].includes(hostSyncStatus.phase)) return undefined;
+        // Start after the canonical workspace is editable. One timer while the
+        // page is open; its ref reads fresh settings, state, tasks and evidence.
+        const tick = () => { autoRunnerRef.current('auto'); };
         const timer = setInterval(tick, 5 * 60 * 1000);
         tick();
         return () => clearInterval(timer);
-      }, [autoSettings.enabled, autoSettings.kind, autoSettings.scope, autoSettings.weekday, autoSettings.dayOfMonth, autoSettings.timeOfDay]);
+      }, [autoSettings.enabled, hostSyncStatus.phase, hostSyncStatus.canEdit, workspaceEpoch]);
 
 
       const weekliesFor = (scopeId) => (reportKind === 'month'
@@ -5981,6 +6074,12 @@ window.__ModuleLoader__.load({
         setPolish({ index: -1, source: '', loading: false, error: '', result: '', reply: '' });
         adoptingIdsRef.current = new Set();
         extrasRef.current = workspaceExtras(next);
+        autoSettingsRevisionRef.current += 1;
+        autoSettingsRef.current = normalizeAutoSettings(extrasRef.current.autoSettings);
+        autoStateRef.current = normalizeAutoState(extrasRef.current.autoState);
+        setAutoSettings(autoSettingsRef.current);
+        setAutoState(autoStateRef.current);
+        setIgnoreAllConfirmIds(null);
         reportEditsRef.current = next.reportEdits || {};
         reportsRef.current = next.reports;
         workspaceRef.current = { ...next, reportEdits: reportEditsRef.current };
@@ -6188,8 +6287,17 @@ window.__ModuleLoader__.load({
       };
 
       const ignoreAllInbox = async () => {
-        const ids = inbox.map((item) => item.id);
-        if (!ids.length) return;
+        const ids = ignoreAllConfirmIds;
+        if (!ids || !ids.length) return;
+        // Never acknowledge a receipt that arrived after the confirmation was
+        // shown. If the queue changed, ask for a fresh review instead.
+        const currentIds = inbox.map((item) => item.id);
+        if (currentIds.length !== ids.length || ids.some((id) => !currentIds.includes(id))) {
+          setIgnoreAllConfirmIds(null);
+          showToast('回传收件箱已变化，请重新确认要忽略的内容。', 'danger');
+          return;
+        }
+        setIgnoreAllConfirmIds(null);
         if (await ackInbox(ids)) showToast('已忽略 ' + ids.length + ' 条回传');
       };
 
@@ -6330,7 +6438,7 @@ window.__ModuleLoader__.load({
 
       // ---------- calendar popover (shared by quick-add and detail) ----------
       const calendarPopover = (opts) => {
-        const { month, setMonth, date, time, onPickDate, onPickTime, onClose, onToday } = opts;
+        const { month, setMonth, date, time, onPickDate, onPickTime, onClose, onToday, onClear } = opts;
         const firstDay = new Date(month.year, month.month, 1).getDay();
         const daysInMonth = new Date(month.year, month.month + 1, 0).getDate();
         const today = new Date();
@@ -6340,7 +6448,7 @@ window.__ModuleLoader__.load({
         const grid = cells.map((d, i) => {
           if (d == null) return h('span', { className: 'wp-cal-day wp-blank', key: 'b' + i });
           const dateStr = month.year + '-' + pad2(month.month + 1) + '-' + pad2(d);
-          const selected = dateStr === date;
+          const selected = opts.selected !== false && dateStr === date;
           const isTodayCell = month.year === today.getFullYear() && month.month === today.getMonth() && d === today.getDate();
           return h('button', {
             className: 'wp-cal-day' + (selected ? ' wp-selected' : '') + (isTodayCell ? ' wp-today' : ''),
@@ -6364,6 +6472,7 @@ window.__ModuleLoader__.load({
             }, h('option', { value: '' }, '不设置时间'), TIME_OPTIONS.map((t) => h('option', { value: t, key: t }, t)))),
           h('div', { className: 'wp-cal-footer' },
             h('button', { className: 'wp-btn wp-btn-default wp-cal-btn', type: 'button', onClick: onToday }, '今天'),
+            onClear ? h('button', { className: 'wp-btn wp-btn-text wp-cal-btn', type: 'button', onClick: onClear }, '清除期限') : null,
             h('button', { className: 'wp-btn wp-btn-primary wp-cal-btn', type: 'button', onClick: onClose }, '确定')));
       };
 
@@ -6377,7 +6486,7 @@ window.__ModuleLoader__.load({
         setQuickText(''); setQuickDeadlineTouched(false); setCalOpen(false);
       };
       const quickLabel = quickDeadlineTouched ? formatQuickLabel(quickDeadline.date, quickDeadline.time) : '截止时间';
-      const quickPast = quickDeadline.date < todayDate();
+      const quickPast = quickDeadlineTouched && quickDeadline.date < todayDate();
       const quickAdd = h('div', { className: 'wp-card wp-quick' },
         h('div', { className: 'wp-quick-box', ref: calRef },
           h('input', {
@@ -6392,8 +6501,16 @@ window.__ModuleLoader__.load({
           h('button', {
             className: 'wp-quick-cal' + (quickPast ? ' wp-past' : '') + (calOpen ? ' wp-active' : ''),
             type: 'button', title: '选择日期 / 时间', 'aria-label': '选择日期 / 时间',
-            onClick: () => setCalOpen((v) => !v),
-          }, h(CalDayIcon, { day: Number(quickDeadline.date.slice(8, 10)) }), quickLabel ? h('span', { className: 'wp-quick-cal-label' }, quickLabel) : null),
+            onClick: () => {
+              if (!calOpen && !quickDeadlineTouched) {
+                const now = new Date();
+                setQuickDeadline({ date: todayDate(), time: '' });
+                setCalMonth({ year: now.getFullYear(), month: now.getMonth() });
+              }
+              setCalOpen((v) => !v);
+            },
+          }, h(CalDayIcon, { day: quickDeadlineTouched ? Number(quickDeadline.date.slice(8, 10)) : null }),
+            quickLabel ? h('span', { className: 'wp-quick-cal-label' }, quickLabel) : null),
           h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
             disabled: !quickText.trim(), onClick: addQuick, 'aria-label': '直接添加任务' }, '添加任务'),
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
@@ -6404,10 +6521,13 @@ window.__ModuleLoader__.load({
             setMonth: setCalMonth,
             date: quickDeadline.date,
             time: quickDeadline.time,
+            selected: quickDeadlineTouched,
             onPickDate: (dateStr) => { setQuickDeadlineTouched(true); setQuickDeadline((v) => ({ ...v, date: dateStr })); },
-            onPickTime: (time) => { setQuickDeadlineTouched(true); setQuickDeadline((v) => ({ ...v, time })); },
+            onPickTime: (time) => { setQuickDeadline((v) => ({ ...v,
+              date: quickDeadlineTouched ? v.date : todayDate(), time })); setQuickDeadlineTouched(quickDeadlineTouched || !!time); },
             onClose: () => setCalOpen(false),
-            onToday: () => { setQuickDeadline({ date: todayDate(), time: '' }); const d = new Date(); setCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
+            onToday: () => { setQuickDeadlineTouched(true); setQuickDeadline({ date: todayDate(), time: '' }); const d = new Date(); setCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
+            onClear: () => { setQuickDeadlineTouched(false); setQuickDeadline({ date: todayDate(), time: '' }); setCalOpen(false); },
           }) : null));
 
       const issuesRadarPayload = (issue) => ({
@@ -6562,8 +6682,8 @@ window.__ModuleLoader__.load({
               className: 'wp-btn ' + (autoSettings.enabled ? 'wp-btn-primary' : 'wp-btn-default') + ' wp-act-btn',
               type: 'button', 'aria-pressed': autoSettings.enabled ? 'true' : 'false',
               onClick: () => {
-                updateAutoSettings({ enabled: !autoSettings.enabled });
-                showToast(autoSettings.enabled ? '已关闭自动生成。' : '已开启自动生成；只有面板打开时才会执行。');
+                if (updateAutoSettings({ enabled: !autoSettings.enabled }))
+                  showToast(autoSettings.enabled ? '已关闭自动生成。' : '已开启自动生成；只有面板打开时才会执行。');
               },
             }, autoSettings.enabled ? '已开启 · 点击关闭' : '未开启 · 点击开启')),
           h('div', { className: 'wp-data-row' },
@@ -6612,7 +6732,10 @@ window.__ModuleLoader__.load({
               autoState.paused ? '恢复' : '暂停'),
             autoState.attempts ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
               onClick: () => { updateAutoState({ retryAfter: null, attempts: 0 }); runAutoReport('manual'); } }, '手动重试') : null),
-          autoNotice ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, autoNotice) : null,
+          autoNotice ? h('p', { className: 'wp-report-notice '
+            + (autoNotice.startsWith('已生成') ? 'wp-report-notice-ok'
+              : autoNotice.startsWith('自动生成失败') ? 'wp-report-notice-err' : 'wp-report-notice-warn'),
+            role: 'status' }, autoNotice) : null,
           h('div', { className: 'wp-data-row' },
             h('span', { className: 'wp-data-label' }, '最近结果'),
             h('span', { className: 'wp-data-value' }, autoState.lastRunAt
@@ -6973,7 +7096,14 @@ window.__ModuleLoader__.load({
         : h('div', { className: 'wp-inbox-list' },
             h('div', { className: 'wp-inbox-toolbar' },
               h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: adoptAllInbox }, '全部采纳'),
-              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: ignoreAllInbox }, '全部忽略')),
+              ignoreAllConfirmIds
+                ? h('span', { className: 'wp-trash-confirm wp-inbox-confirm', role: 'group', 'aria-label': '确认全部忽略回传' },
+                    h('span', { className: 'wp-trash-confirm-text', role: 'status' }, '忽略 ' + ignoreAllConfirmIds.length + ' 条？不会采纳为记录，处理后不可恢复。'),
+                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn wp-danger-text', type: 'button', onClick: ignoreAllInbox }, '确认忽略'),
+                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', autoFocus: true,
+                       onClick: () => setIgnoreAllConfirmIds(null) }, '取消'))
+                : h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                    onClick: () => setIgnoreAllConfirmIds(inbox.map((item) => item.id)) }, '全部忽略')),
             inbox.map((item) => {
               const target = resolveInboxTask(tasks, item);
               const picked = inboxPicks[item.id] || '';
@@ -7076,7 +7206,10 @@ window.__ModuleLoader__.load({
             h('span', { className: 'wp-health-label' }, '待办')),
           h('div', { className: 'wp-health-item' },
             h('span', { className: 'wp-health-num' }, String(health.done)),
-            h('span', { className: 'wp-health-label' }, '已完成 · ' + health.rate + '%')),
+            h('span', { className: 'wp-health-label' }, '已完成 · 完成率 ' + health.rate + '%（不含废弃）')),
+          h('div', { className: 'wp-health-item' },
+            h('span', { className: 'wp-health-num' }, String(health.dropped)),
+            h('span', { className: 'wp-health-label' }, '已废弃')),
           h('div', { className: 'wp-health-item' + (health.overdue ? ' wp-health-warn' : '') },
             h('span', { className: 'wp-health-num' }, String(health.overdue)),
             h('span', { className: 'wp-health-label' }, '逾期')),
@@ -7146,7 +7279,7 @@ window.__ModuleLoader__.load({
         { key: 'all', label: '全部任务', count: stats.total },
         { key: 'today', label: '今天到期', count: stats.todayCount },
         { key: 'overdue', label: '已逾期', count: stats.overdue },
-        { key: 'done', label: '已完成', count: stats.byStatus.done },
+        { key: 'done', label: '已完成/废弃', count: stats.byStatus.done + stats.byStatus.dropped },
       ];
       const reportNav = [{ key: 'reports', label: '周报/月报', count: reports.length }];
       const manageNav = [
@@ -7158,7 +7291,7 @@ window.__ModuleLoader__.load({
       const navButton = (it, extraClass) => h('button', {
         className: 'wp-nav-item' + (extraClass ? ' ' + extraClass : '') + (activeView === it.key ? ' wp-active' : ''),
         key: it.key, type: 'button',
-        onClick: () => { setActiveView(it.key); setSelectedId(null); },
+        onClick: () => { setActiveView(it.key); setSelectedId(null); setIgnoreAllConfirmIds(null); },
       },
         h('span', { className: 'wp-nav-label' }, it.label),
         it.count ? h('span', { className: 'wp-nav-count' }, String(it.count)) : null);
@@ -7342,8 +7475,9 @@ window.__ModuleLoader__.load({
               'aria-checked': selectedTask.status === 'dropped' ? 'mixed' : (selectedTask.status === 'done' ? 'true' : 'false'),
               title: selectedTask.status === 'dropped' ? '已废弃 · 点击恢复为待办'
                 : (selectedTask.status === 'done' ? '标记为未完成' : '标记为已完成'),
-              onClick: () => toggleDone(selectedTask),
-            }, selectedTask.status === 'done' ? h(CheckIcon) : null),
+              onClick: () => selectedTask.status === 'dropped' ? reopenTask(selectedTask) : toggleDone(selectedTask),
+            }, selectedTask.status === 'dropped' ? h(CrossIcon)
+              : selectedTask.status === 'done' ? h(CheckIcon) : null),
             h('span', { className: 'wp-detail-sep' }, '|'),
             h('button', {
               className: 'wp-detail-date', type: 'button', title: '选择日期 / 时间',
@@ -7407,7 +7541,7 @@ window.__ModuleLoader__.load({
               placeholder: '当前准备采取的具体动作（可选）',
               onChange: (e) => updateTask(selectedTask.id, { nextStep: e.target.value }),
             })),
-          selectedTask.status !== 'done' ? h('div', { className: 'wp-detail-field' },
+          selectedTask.status === 'todo' ? h('div', { className: 'wp-detail-field' },
             h('label', { className: 'wp-detail-field-label' }, '阻塞原因'),
             h('textarea', {
               className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.blockedReason,
@@ -7437,7 +7571,10 @@ window.__ModuleLoader__.load({
             }, aiLoading ? '分析中…' : 'AI 建议'),
             h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
               onClick: () => prepareDelegation(selectedTask), disabled: delegation && delegation.loading ? 'true' : undefined,
-            }, '交给 AI')),
+            }, '交给 AI'),
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+              onClick: () => selectedTask.status === 'dropped' ? reopenTask(selectedTask) : dropTask(selectedTask),
+            }, selectedTask.status === 'dropped' ? '恢复为待办' : '标记为废弃')),
           delegation && delegation.taskId === selectedTask.id ? h('div', { className: 'wp-delegation' },
             h('div', { className: 'wp-data-section-title' }, '执行指令 · 尚未发送'),
             delegation.loading ? h('p', { className: 'wp-data-hint' }, '正在读取最新任务上下文…') : null,

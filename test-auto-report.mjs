@@ -105,6 +105,22 @@ test('状态归一化：垃圾输入得到保守默认值', () => {
   assert.deepEqual(normalizeAutoState(null).generatedKeys, []);
 });
 
+test('第五次连续失败后自动重试耗尽，等待显式手动重试', () => {
+  const nowMs = Date.UTC(2026, 10, 13, 10, 0);
+  assert.equal(dueGeneration(settings(), { lastRunOk: false, attempts: 5, retryAfter: null, evidenceCount: 1 }, nowMs).reason,
+    'retry-exhausted');
+  assert.notEqual(dueGeneration(settings(), { lastRunOk: false, attempts: 0, retryAfter: null, evidenceCount: 1 }, nowMs).reason,
+    'retry-exhausted');
+});
+
+test('运行时间使用毫秒：ISO 文本不被误认为有效的成功时间', () => {
+  const nowMs = Date.UTC(2026, 10, 13, 10, 0);
+  assert.equal(normalizeAutoState({ lastRunAt: nowMs }).lastRunAt, nowMs);
+  assert.equal(normalizeAutoState({ lastRunAt: new Date(nowMs).toISOString() }).lastRunAt, null);
+  const rolledBack = dueGeneration(settings(), { lastRunAt: nowMs + 60_000, evidenceCount: 1 }, nowMs);
+  assert.equal(rolledBack.reason, 'clock-rollback');
+});
+
 console.log('周期口径（与 client.js 周报/月报一致）');
 
 test('周报：周一为起点、周日结束', () => {

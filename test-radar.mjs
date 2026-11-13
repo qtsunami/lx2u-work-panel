@@ -46,6 +46,14 @@ test('remaining exactly 3 calendar days still triggers at medium severity', () =
   assert.equal(issue.evidence.remainingDays, 3);
 });
 
+test('dropped tasks are closed and never emit actionable overdue or stale alerts', () => {
+  const result = scan({ workspace: workspace([task('d', {
+    status: 'dropped', deadline: '2026-05-01', createdAt: daysAgo(45), updatedAt: daysAgo(45),
+    blockedReason: '已中止', droppedAt: daysAgo(1),
+  })]) });
+  assert.deepEqual(result.items, []);
+});
+
 test('remaining 4 calendar days does not trigger', () => {
   const result = scan({ workspace: workspace([task('a', { deadline: '2026-05-24' })]) });
   assert.deepEqual(result.items, []);

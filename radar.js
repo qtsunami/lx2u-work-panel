@@ -139,12 +139,14 @@ function radarIsDeleted(task) {
 // or unknown, so a reopened task is never reclassified as done.
 function radarIsDone(task) {
   if (task.status === 'done') return true;
+  if (task.status === 'dropped') return false;
   if (task.status === 'todo') return false;
   return radarText(task.completedAt) !== '';
 }
 
 function radarActionableTask(task) {
-  return radarIsObject(task) && radarText(task.id) !== '' && !radarIsDeleted(task) && !radarIsDone(task);
+  return radarIsObject(task) && radarText(task.id) !== '' && !radarIsDeleted(task)
+    && task.status !== 'dropped' && !radarIsDone(task);
 }
 
 function radarTaskTitle(task) {

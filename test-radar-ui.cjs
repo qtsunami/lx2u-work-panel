@@ -16,8 +16,8 @@ function state(tasks = [], patch = {}) {
 }
 const gotoDone = (ui) => {
   const nav = ui.nodes().find(n => n.type === 'button' && has(n, 'wp-nav-item')
-    && (n.children || []).some(c => c && has(c, 'wp-nav-label') && text(c) === '已完成'));
-  assert.ok(nav, 'the 已完成 nav entry exists');
+    && (n.children || []).some(c => c && has(c, 'wp-nav-label') && text(c) === '已完成/废弃'));
+  assert.ok(nav, 'the 已完成/废弃 nav entry exists');
   ui.fire(nav, 'onClick');
 };
 
@@ -567,6 +567,283 @@ test('a user-edited draft is never overwritten by a later automatic run', async 
     assert.ok(next.text().includes('已有你的手工草稿'));
     assert.equal(next.storage.json('@local/work-panel:reports:v1').find(r => r.id === autoId).body, '我手工改过的版本');
   } finally { if (next) next.close(); ui.close(); }
+});
+
+const autoFixture = () => state([task('a', { status: 'done', completedAt: NOW_ISO })],
+  { logs: [{ id: 'l1', taskId: 'a', at: NOW_ISO, kind: 'progress', text: '完成主体工作' }] });
+const startAuto = async (ui) => {
+  ui.click('数据'); ui.click('未开启 · 点击开启'); await ui.settle();
+  ui.button('立即生成一次').props.onClick(); await ui.settle(); await ui.settle();
+  return ui.nextRequest('report');
+};
+
+test('auto report result is discarded when a user edits or saves the target during generation', async () => {
+  for (const save of [false, true]) {
+    const ui = harness(autoFixture()); await ui.settle();
+    try {
+      const request = await startAuto(ui);
+      ui.reports(); ui.edit('我正在写的报告');
+      if (save) ui.click('保存草稿');
+      await ui.respond(request, { report: { body: '过期的 AI 答复' } });
+      const reports = ui.storage.json('@local/work-panel:reports:v1', []);
+      assert.ok(!reports.some(r => r.body === '过期的 AI 答复'), 'AI reply never overwrites human work');
+      if (save) assert.ok(reports.some(r => r.body === '我正在写的报告'));
+      else assert.ok(JSON.stringify(ui.storage.json('@local/work-panel:report-edits:v1', {})).includes('我正在写的报告'),
+        'unsaved human text remains in the edit buffer');
+      const extras = ui.storage.json('@local/work-panel:workspace-extras:v1', {});
+      assert.ok(!extras.autoState || extras.autoState.lastRunOk !== true, 'stale result cannot mark success');
+    } finally { ui.close(); }
+  }
+});
+
+test('auto report result is discarded when settings change before the reply', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    const request = await startAuto(ui);
+    const zone = ui.nodes().find(n => n.type === 'input' && n.props.value === 'Asia/Shanghai');
+    assert.ok(zone, 'the zone setting is editable');
+    ui.fire(zone, 'onChange', { target: { value: 'UTC' } }); await ui.settle();
+    await ui.respond(request, { report: { body: '失效配置的报告' } });
+    assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0);
+    assert.ok(!ui.storage.json('@local/work-panel:workspace-extras:v1').autoState.lastRunOk);
+  } finally { ui.close(); }
+});
+
+test('auto draft and numeric run time persist together; a failed report write cannot claim success', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    const request = await startAuto(ui);
+    ui.storage.fail('set', '@local/work-panel:reports:v1');
+    await ui.respond(request, { report: { body: '不能持久化的报告' } });
+    assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0);
+    const failure = ui.storage.json('@local/work-panel:workspace-extras:v1').autoState;
+    assert.notEqual(failure.lastRunOk, true, 'no false success after write failure');
+    assert.equal(typeof failure.lastRunAt, 'number', 'run time uses milliseconds, not ISO string');
+  } finally { ui.close(); }
+  const good = harness(autoFixture()); await good.settle();
+  try {
+    const request = await startAuto(good);
+    await good.respond(request, { report: { body: '有效自动草稿' } });
+    const draft = good.storage.json('@local/work-panel:reports:v1')[0];
+    const success = good.storage.json('@local/work-panel:workspace-extras:v1').autoState;
+    assert.equal(draft.auto, true);
+    assert.equal(success.lastRunOk, true);
+    assert.equal(typeof success.lastRunAt, 'number');
+    assert.ok(good.text().includes('最近结果') && !good.text().includes('尚未运行过'));
+  } finally { good.close(); }
+});
+
+test('five-minute timer reads fresh success state and does not regenerate the same period', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    ui.click('数据');
+    const time = ui.nodes().find(n => n.type === 'input' && n.props.type === 'time' && n.props.value === '18:00');
+    ui.fire(time, 'onChange', { target: { value: '12:00' } });
+    const weekday = ui.nodes().find(n => n.type === 'select' && n.props.value === '5');
+    assert.ok(weekday, 'weekday setting exists');
+    ui.fire(weekday, 'onChange', { target: { value: '4' } });
+    ui.click('未开启 · 点击开启'); await ui.settle();
+    const request = ui.nextRequest('report');
+    await ui.respond(request, { report: { body: '定时草稿' } });
+    ui.timers.advance(5 * 60 * 1000); await ui.settle();
+    assert.equal(ui.requests.filter(r => r.body.mode === 'report').length, 1, 'fresh success blocks duplicate model request');
+  } finally { ui.close(); }
+});
+
+test('auto report response after workspace replacement cannot rewrite the replacement', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    const request = await startAuto(ui);
+    ui.click('覆盖');
+    const replacement = state([task('replacement')]);
+    const done = ui.import({ app: 'work-panel', schema: 1, version: '1.5.10', exportedAt: NOW_ISO, ...replacement });
+    await done; await ui.settle();
+    await ui.respond(request, { report: { body: '旧工作区自动结果' } });
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].id, 'replacement');
+    assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0);
+    assert.ok(!ui.storage.json('@local/work-panel:workspace-extras:v1', {}).autoState?.lastRunOk);
+  } finally { ui.close(); }
+});
+
+test('auto report result after the panel closes is not saved', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  const request = await startAuto(ui);
+  ui.close();
+  request.respond({ report: { body: '关闭后的自动结果' } });
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+  assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0);
+});
+
+test('timer uses schedule edits made after activation, not an old render closure', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    ui.click('数据'); ui.click('未开启 · 点击开启'); await ui.settle();
+    assert.equal(ui.requests.filter(r => r.body.mode === 'report').length, 0, 'Thursday is not default Friday schedule');
+    const time = ui.nodes().find(n => n.type === 'input' && n.props.type === 'time' && n.props.value === '18:00');
+    ui.fire(time, 'onChange', { target: { value: '12:00' } });
+    const weekday = ui.nodes().find(n => n.type === 'select' && n.props.value === '5');
+    ui.fire(weekday, 'onChange', { target: { value: '4' } }); await ui.settle();
+    ui.timers.advance(5 * 60 * 1000); await ui.settle();
+    const request = ui.nextRequest('report');
+    assert.ok(request, 'the updated Thursday noon setting is used by the original timer');
+    await ui.respond(request, { report: { body: '更新后的计划' } });
+  } finally { ui.close(); }
+});
+
+test('a stale in-flight request does not block the new settings or release their lock', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    const oldRequest = await startAuto(ui);
+    const zone = ui.nodes().find(n => n.type === 'input' && n.props.value === 'Asia/Shanghai');
+    ui.fire(zone, 'onChange', { target: { value: 'UTC' } }); await ui.settle();
+    ui.button('立即生成一次').props.onClick(); await ui.settle();
+    const newer = ui.nextRequest('report');
+    assert.notEqual(newer, oldRequest, 'new settings can start while old network call remains pending');
+    await ui.respond(oldRequest, { report: { body: '过时结果' } });
+    assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0, 'old request cannot write');
+    await ui.respond(newer, { report: { body: '新设置结果' } });
+    assert.equal(ui.storage.json('@local/work-panel:reports:v1')[0].body, '新设置结果');
+  } finally { ui.close(); }
+});
+
+test('pausing in flight discards the pending auto result and errors', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    const request = await startAuto(ui);
+    ui.click('暂停'); await ui.settle();
+    await ui.respond(request, { report: { body: '暂停前的报告' } });
+    assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0);
+    assert.equal(ui.storage.json('@local/work-panel:workspace-extras:v1').autoState.paused, true);
+    assert.ok(!ui.storage.json('@local/work-panel:workspace-extras:v1').autoState.lastRunOk);
+  } finally { ui.close(); }
+});
+
+test('automatic status write failure rolls back draft, marker and success together', async () => {
+  for (const key of ['@local/work-panel:report-edits:v1', '@local/work-panel:workspace-extras:v1']) {
+    const ui = harness(autoFixture()); await ui.settle();
+    try {
+      const request = await startAuto(ui);
+      ui.storage.fail('set', key);
+      await ui.respond(request, { report: { body: '中途失败不能留草稿' } });
+      assert.equal(ui.storage.json('@local/work-panel:reports:v1', []).length, 0, 'rolled back report when ' + key + ' failed');
+      const extra = ui.storage.json('@local/work-panel:workspace-extras:v1');
+      assert.notEqual(extra.autoState.lastRunOk, true, 'rolled back success marker');
+      assert.deepEqual(Array.from(extra.autoState.generatedKeys || []), [], 'no generated key persisted');
+    } finally { ui.close(); }
+  }
+});
+
+test('failed activation is not queued for a later retry or reloaded as enabled', async () => {
+  const ui = harness(autoFixture()); await ui.settle();
+  try {
+    ui.click('数据');
+    ui.storage.fail('set', '@local/work-panel:workspace-extras:v1');
+    ui.click('未开启 · 点击开启'); await ui.settle();
+    assert.ok(ui.text().includes('未开启 · 点击开启'), 'UI did not accept failed switch');
+    assert.equal(ui.storage.json('@local/work-panel:workspace-extras:v1', {}).autoSettings?.enabled, undefined);
+    ui.close();
+    const next = harness(autoFixture(), ui.storage); await next.settle();
+    try { next.click('数据'); assert.ok(next.text().includes('未开启 · 点击开启')); }
+    finally { next.close(); }
+  } finally { ui.close(); }
+});
+
+test('quick add leaves deadline empty unless a date is explicitly chosen, including after reuse', async () => {
+  const ui = harness(state()); await ui.settle();
+  try {
+    ui.change('wp-quick-input', '无期限任务'); ui.click('添加任务'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1').find(t => t.title === '无期限任务').deadline, '');
+    ui.click('选择日期 / 时间'); ui.click('今天'); ui.click('确定');
+    ui.change('wp-quick-input', '显式今天'); ui.click('添加任务'); await ui.settle();
+    assert.notEqual(ui.storage.json('@local/work-panel:tasks:v1').find(t => t.title === '显式今天').deadline, '');
+    ui.change('wp-quick-input', '再次无期限'); ui.click('添加任务'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1').find(t => t.title === '再次无期限').deadline, '');
+    ui.click('选择日期 / 时间'); ui.click('今天'); ui.click('清除期限');
+    ui.change('wp-quick-input', '清除期限任务'); ui.click('添加任务'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1').find(t => t.title === '清除期限任务').deadline, '');
+  } finally { ui.close(); }
+});
+
+test('untouched date has no selected day, and time selection after midnight uses the new day', async () => {
+  const ui = harness(state()); await ui.settle();
+  try {
+    const initial = ui.byClass('wp-quick-cal');
+    assert.ok(initial.children.some(n => n && n.type && n.type.name === 'CalDayIcon' && n.props.day === null),
+      'empty deadline icon has no misleading day number');
+    ui.timers.now = 24 * 60 * 60 * 1000;
+    ui.click('选择日期 / 时间');
+    assert.ok(!ui.nodes().some(n => has(n, 'wp-cal-day') && has(n, 'wp-selected')), 'opening the picker does not silently select today');
+    const time = ui.nodes().find(n => n.type === 'select' && has(n, 'wp-cal-time-select'));
+    assert.ok(time, 'date picker time input exists');
+    ui.fire(time, 'onChange', { target: { value: '14:00' } }); ui.click('确定');
+    ui.change('wp-quick-input', '过午夜的定时任务'); ui.click('添加任务'); await ui.settle();
+    assert.equal(ui.storage.json('@local/work-panel:tasks:v1')[0].deadline, '2026-11-13T14:00',
+      'time selection uses the new date, never the stale previous-day default');
+  } finally { ui.timers.now = 0; ui.close(); }
+});
+
+test('dropped tasks are closed in filters, radar and project health, not completed', async () => {
+  const tasks = [task('d', { projectId: 'p1', status: 'dropped', deadline: '2026-11-01', droppedAt: NOW_ISO }),
+    task('c', { projectId: 'p1', status: 'done', deadline: '2026-11-01', completedAt: NOW_ISO }),
+    task('o', { projectId: 'p1', status: 'todo', deadline: '2026-11-01' })];
+  const ui = harness(state(tasks, { projects: [{ id: 'p1', name: '项目', status: 'active', createdAt: NOW_ISO, updatedAt: NOW_ISO }] }));
+  await ui.settle();
+  try {
+    const nav = ui.nodes().find(n => n.type === 'button' && has(n, 'wp-nav-item') && text(n).includes('已完成/废弃'));
+    assert.ok(nav && text(nav).includes('2'), 'closed view count includes one completed and one dropped');
+    const overdueNav = ui.nodes().find(n => n.type === 'button' && has(n, 'wp-nav-item') && text(n).includes('已逾期'));
+    assert.ok(overdueNav && text(overdueNav).includes('1'), 'only open task counts as overdue');
+    gotoDone(ui); await ui.settle(); expandGroup(ui, '已完成/废弃');
+    assert.ok(ui.text().includes('任务 d') && ui.text().includes('任务 c'), 'both live in the closed view');
+    ui.click('项目'); await ui.settle();
+    assert.ok(ui.text().includes('已废弃'), 'project health distinguishes dropped work');
+  } finally { ui.close(); }
+});
+
+test('detail cross restores a dropped task rather than falsely completing it', async () => {
+  const ui = harness(state([task('d', { status: 'dropped', droppedAt: NOW_ISO })])); await ui.settle();
+  try {
+    gotoDone(ui); await ui.settle(); expandGroup(ui, '已完成/废弃');
+    const row = ui.nodes().find(n => has(n, 'wp-row') && text(n).includes('任务 d'));
+    ui.fire(row, 'onClick');
+    const check = ui.byClass('wp-detail-check');
+    assert.ok(has(check, 'wp-check-dropped') && check.props['aria-checked'] === 'mixed', 'detail shows a cross');
+    assert.ok(check.children.some(n => n && n.type && n.type.name === 'CrossIcon'), 'cross icon is rendered');
+    assert.ok(ui.text().includes('恢复为待办'), 'detail has a discoverable recovery action');
+    ui.fire(check, 'onClick'); await ui.settle();
+    const stored = ui.storage.json('@local/work-panel:tasks:v1')[0];
+    assert.equal(stored.status, 'todo'); assert.equal(stored.droppedAt, null); assert.equal(stored.completedAt, null);
+  } finally { ui.close(); }
+});
+
+test('ignore-all requires a count-specific confirmation; cancel changes nothing', async () => {
+  const receipts = [{ id: 'r1', text: '成果一' }, { id: 'r2', text: '成果二' }];
+  const acks = [];
+  const ui = harness(state(), undefined, { inboxItems: receipts, ackHook: (body) => { acks.push(body.ids); return { ok: true }; } });
+  await ui.settle();
+  try {
+    ui.click('执行回传'); ui.click('全部忽略'); await ui.settle();
+    assert.ok(ui.text().includes('忽略 2 条？不会采纳为记录，处理后不可恢复。'));
+    assert.deepEqual(acks, []); assert.deepEqual(ui.storage.json('@local/work-panel:inbox-ack:v1', []), []);
+    ui.click('取消'); assert.deepEqual(acks, []);
+    ui.click('全部忽略'); ui.click('确认忽略'); await ui.settle();
+    assert.equal(acks.length, 1); assert.deepEqual(acks[0].sort(), ['r1', 'r2']);
+    assert.ok(ui.storage.json('@local/work-panel:inbox-ack:v1').includes('r1'));
+  } finally { ui.close(); }
+});
+
+test('ignore-all cannot acknowledge receipts that arrived after confirmation', async () => {
+  const receipts = [{ id: 'r1', text: '成果一' }, { id: 'r2', text: '成果二' }];
+  const acks = [];
+  const ui = harness(state(), undefined, { inboxItems: receipts, ackHook: (body) => { acks.push(body.ids); return { ok: true }; } });
+  await ui.settle();
+  try {
+    ui.click('执行回传'); ui.click('全部忽略');
+    ui.fire(ui.nodes().find(n => n.type === 'button' && text(n) === '忽略'), 'onClick'); await ui.settle();
+    ui.click('确认忽略'); await ui.settle();
+    assert.ok(ui.text().includes('收件箱已变化'));
+    assert.ok(acks.every(ids => !ids.includes('r2')), 'r2 was not silently ignored');
+  } finally { ui.close(); }
 });
 
 (async () => {

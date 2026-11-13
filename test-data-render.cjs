@@ -17,8 +17,8 @@ const localStorage = {
   key: () => '@local/work-panel:tasks:v1',
 };
 
-// useState order: ... 55 inbox, 56 inboxAck, 57 inboxPicks, 58 importMode,
-// 59 preImportReady, 60 clearConfirm
+// useState order: ... 55 inbox, 56 inboxAck, 57 inboxPicks,
+// 58 ignoreAllConfirmIds, 59 importMode, 60 preImportReady, 61 clearConfirm
 let overrides = {};
 let call = 0;
 const React = {
@@ -97,18 +97,18 @@ assert(dataView.text.indexOf('v' + require('./package.json').version) !== -1, 'p
 assert(!dataView.has('wp-detail'), 'data view should not show the task detail panel');
 
 // ---- 2. import mode copy switches ----
-const replaceMode = render({ 4: 'data', 58: 'replace' });
+const replaceMode = render({ 4: 'data', 59: 'replace' });
 assert(replaceMode.text.indexOf('用备份文件替换当前全部数据') !== -1, 'replace mode explanation missing');
 assert(replaceMode.text.indexOf('不会删除你现有的数据') === -1, 'replace mode must not claim merge behaviour');
 
 // ---- 3. undo entry appears only when a pre-import snapshot exists ----
 assert(dataView.text.indexOf('撤销上次导入/清空') === -1, 'undo must stay hidden without a snapshot');
-const undoView = render({ 4: 'data', 59: true });
+const undoView = render({ 4: 'data', 60: true });
 assert(undoView.text.indexOf('撤销上次导入/清空') !== -1, 'undo should appear once a snapshot exists');
 
 // ---- 4. destructive action asks first ----
 assert(dataView.text.indexOf('确定清空？') === -1, 'clear must not be pre-confirmed');
-const confirming = render({ 4: 'data', 60: true });
+const confirming = render({ 4: 'data', 61: true });
 assert(confirming.text.indexOf('确定清空？') !== -1, 'clear confirmation string missing');
 assert(confirming.text.indexOf('确认清空') !== -1, 'clear confirmation button missing');
 

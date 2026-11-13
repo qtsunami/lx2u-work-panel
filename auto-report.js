@@ -594,6 +594,10 @@ export function dueGeneration(settings, state, nowMs) {
   if (runtime.paused) return { due: false, period: null, reason: 'paused' };
   if (runtime.pausedUntil !== null && nowMs < runtime.pausedUntil) return { due: false, period: null, reason: 'paused' };
   if (runtime.retryAfter !== null && nowMs < runtime.retryAfter) return { due: false, period: null, reason: 'backoff' };
+  // The fifth failure exhausts the four scheduled retries; a missing retryAfter
+  // must not silently enable another run on the next five-minute tick.
+  if (runtime.lastRunOk === false && runtime.attempts > BACKOFF_MS.length)
+    return { due: false, period: null, reason: 'retry-exhausted' };
   const local = localDateTimeFor(zone, nowMs);
   if (!local) return { due: false, period: null, reason: 'invalid-time' };
   const current = periodForDate(normalized.kind, ymdStringOf(local));
