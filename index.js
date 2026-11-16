@@ -10,8 +10,9 @@
  * reviewable and reversible.
  */
 import { randomUUID } from 'node:crypto';
-import { InboxError, InboxStore, inboxFailure } from './inbox-store.js';
+import { InboxError, InboxStore, inboxFailure, RECEIPT_FIELDS, RECEIPT_FIELD_MAX } from './inbox-store.js';
 import { WorkspaceError, WorkspaceStore, workspaceContext, workspaceFailure } from './workspace-store.js';
+import { buildReportPreferenceInstruction } from './report-preferences.js';
 
 export const inject = ['connection'];
 
@@ -307,7 +308,7 @@ function sameEvidence(original, polished) {
   return true;
 }
 
-function buildReportSystemPrompt(period, kind) {
+function buildReportSystemPrompt(period, kind, preferences) {
   const monthly = kind === 'month';
   const lines = [
     '你是一个中文工作报告助手，负责把一个人本期的工作记录整理成' + (monthly ? '月报' : '周报') + '。',
@@ -335,7 +336,8 @@ function buildReportSystemPrompt(period, kind) {
     '5. 依据不足时，在对应段落直接写「本期缺少相关记录」，不要补写成事实。',
     '6. 某一段完全没有内容时写「本期无」。正文里不要使用 ``` 代码块。',
     '7. reply 用一句话说明这份报告依据了多少条任务与记录。',
-  ]).join('\n');
+    buildReportPreferenceInstruction(preferences),
+  ].filter(Boolean)).join('\n');
 }
 
 function buildReportUserText(body) {
@@ -348,13 +350,19 @@ function buildReportUserText(body) {
     const taskId = typeof item.taskId === 'string' ? item.taskId : '';
     if (!taskId) continue;
     lines.push('### 任务 [' + taskId + '] ' + str(item.title, 200));
-    lines.push('状态：' + (item.status === 'done' ? '已完成' : '待办') + (item.completedThisPeriod ? '（本期完成）' : ''));
+    lines.push('状态：' + (item.status === 'done' ? '已完成' : item.status === 'dropped' ? '已废弃' : '待办') + (item.completedThisPeriod ? '（本期完成）' : ''));
     if (str(item.expected, 500)) lines.push('预期结果：' + str(item.expected, 500));
     if (str(item.nextStep, 500)) lines.push('下一步：' + str(item.nextStep, 500));
     if (str(item.blockedReason, 500)) lines.push('阻塞原因：' + str(item.blockedReason, 500));
     for (const entry of countText(item.logs, 8)) {
       if (!entry || typeof entry.id !== 'string') continue;
       lines.push('- 记录 [' + entry.id + '] ' + str(entry.at, 40) + ' ' + str(entry.text, 500));
+      if (entry.receiptFields && typeof entry.receiptFields === 'object') {
+        for (const [key, label] of [['workDone', '已完成工作'], ['verification', '验证情况'], ['remainingIssues', '遗留问题']]) {
+          const value = str(entry.receiptFields[key], 500);
+          if (value) lines.push('  ' + label + '：' + value);
+        }
+      }
     }
     for (const artifact of countText(item.artifacts, 5)) {
       if (!artifact || typeof artifact.id !== 'string') continue;
@@ -415,6 +423,14 @@ function makeReportItem(body, sourceSessionId) {
     || !body.requestId.trim() || body.requestId.length > 200)) {
     throw new InboxError('invalid-request-id', 'requestId 必须是 1–200 字符的非空字符串。');
   }
+  const structured = {};
+  for (const key of RECEIPT_FIELDS) {
+    if (body[key] === undefined) continue;
+    if (typeof body[key] !== 'string' || Array.from(body[key]).length > RECEIPT_FIELD_MAX) {
+      throw new InboxError('invalid-receipt-field', `${key} 必须是长度不超过 ${RECEIPT_FIELD_MAX} 的字符串。`);
+    }
+    structured[key] = body[key].trim();
+  }
   const text = str(body.text, 4000);
   if (!text) return null;
   const artifacts = Array.isArray(body.artifacts)
@@ -435,6 +451,7 @@ function makeReportItem(body, sourceSessionId) {
     ...(typeof sourceSessionId === 'string' && sourceSessionId ? { sourceSessionId } : {}),
     kind: LOG_KINDS.includes(body.kind) ? body.kind : 'progress',
     text,
+    ...structured,
     artifacts,
     receivedAt: new Date().toISOString(),
   };
@@ -587,7 +604,7 @@ export function apply(ctx, config) {
           }
           const raw = await complete(
             llm, preferredProvider, reportModel,
-            buildReportSystemPrompt(body && body.period, body && body.kind === 'month' ? 'month' : 'week'),
+            buildReportSystemPrompt(body && body.period, body && body.kind === 'month' ? 'month' : 'week', body && body.preferences),
             buildReportUserText(body),
             2200,
           );
@@ -750,6 +767,9 @@ export function apply(ctx, config) {
               taskTitle: { type: 'string', description: '没有 taskId 时按此任务标题匹配' },
               requestId: { type: 'string', description: '可选幂等键，1–200字符；重试同一回传时复用，同键不同内容拒绝。待确认期间及确认后最近1000个键去重。' },
               text: { type: 'string', description: '这次推进做了什么、结果如何（一到三句）' },
+              workDone: { type: 'string', maxLength: 4000, description: '已完成的工作（可选）' },
+              verification: { type: 'string', maxLength: 4000, description: '验证方法与结果（可选）' },
+              remainingIssues: { type: 'string', maxLength: 4000, description: '剩余问题或待办（可选）' },
               kind: { type: 'string', enum: ['progress', 'issue', 'decision', 'ai'], description: '记录类型，默认 progress' },
               artifacts: {
                 type: 'array',
@@ -802,7 +822,7 @@ export function apply(ctx, config) {
           taskId: { type: 'string', description: 'read/prepare必填，来自list返回的任务id' },
           query: { type: 'string', description: 'list按标题包含此文字筛选' },
           projectId: { type: 'string', description: 'list按项目id筛选，空字符串为未归属项目' },
-          status: { type: 'string', enum: ['todo', 'done'], description: 'list按任务状态筛选' },
+          status: { type: 'string', enum: ['todo', 'done', 'dropped'], description: 'list按任务状态筛选' },
           limit: { type: 'integer', description: 'list每页数量，1–50，默认20' },
           offset: { type: 'integer', description: 'list跳过条数，默认0；hasMore为true时递增以翻页' },
         },

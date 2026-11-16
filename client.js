@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.5.11';
+    const PANEL_VERSION = '1.6.0';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -1695,6 +1695,205 @@ window.__ModuleLoader__.load({
       return BACKOFF_MS[index];
     }
     // @generated auto-report end
+    // @generated search begin
+    // Generated from search.js by build-client.mjs; do not edit this region.
+    // Browser-safe, side-effect-free local search; no imports, clock, storage or model.
+    // searchWorkspace(workspace, query) returns { tasks, logs, artifacts, reports, total }.
+    // Results retain source order, one result per matching item. `matches` contains
+    // the original field text and the first match's UTF-16 [start,end) offsets;
+    // array fields use e.g. `files[0]`. Treat text as text, never as HTML.
+    // Query is trimmed and matched as a literal, case-insensitive substring, not a
+    // regular expression or a tokenized query. Empty/non-string queries match nothing.
+    // Reports are historical standalone documents: their body remains searchable even
+    // when referenced tasks have been deleted. Only *live* task IDs appear in their
+    // taskIds. Deleted/orphaned tasks' own records and artifacts are never returned.
+
+    function searchObject(value) {
+      return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function searchId(value) {
+      return typeof value === 'string' && value.trim() !== '';
+    }
+
+    function searchList(workspace, key) {
+      return Array.isArray(workspace[key]) ? workspace[key] : [];
+    }
+
+    function searchMatches(record, fields, pattern) {
+      const matches = [];
+      for (const field of fields) {
+        const value = record[field];
+        const values = Array.isArray(value) ? value : [value];
+        for (let index = 0; index < values.length; index += 1) {
+          const text = values[index];
+          if (typeof text !== 'string') continue;
+          const match = pattern.exec(text);
+          if (match) matches.push({ field: Array.isArray(value) ? field + '[' + index + ']' : field,
+            text, start: match.index, end: match.index + match[0].length });
+        }
+      }
+      return matches;
+    }
+
+    /**
+     * Search known human-readable workspace fields; never mutate input or return
+     * references to its mutable objects. Missing/malformed arrays are treated as empty.
+     * Each result is {type,id,taskId,taskTitle,matches}; reports additionally expose
+     * taskIds (deduplicated live references). Reports have null taskId/taskTitle.
+     * `total` counts results, not occurrences; no hidden limit or ranking is applied.
+     */
+    function searchWorkspace(workspace, query) {
+      const result = { tasks: [], logs: [], artifacts: [], reports: [], total: 0 };
+      if (!searchObject(workspace) || typeof query !== 'string' || !query.trim()) return result;
+      // Escaping metacharacters prevents queries such as '[' or '.*' being executed.
+      const pattern = new RegExp(query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
+      const tasks = new Map();
+      for (const task of searchList(workspace, 'tasks')) {
+        if (searchObject(task) && searchId(task.id) && !task.deletedAt) tasks.set(task.id, task);
+      }
+      const add = (group, type, record, fields, task, extra) => {
+        if (!searchObject(record) || !searchId(record.id)) return;
+        const matches = searchMatches(record, fields, pattern);
+        if (!matches.length) return;
+        result[group].push({ type, id: record.id, taskId: task ? task.id : null,
+          taskTitle: task && typeof task.title === 'string' ? task.title : null, matches, ...extra });
+        result.total += 1;
+      };
+      for (const task of tasks.values()) {
+        add('tasks', 'task', task, ['title', 'description', 'expected', 'nextStep', 'blockedReason'], task);
+      }
+      for (const log of searchList(workspace, 'logs')) {
+        if (!searchObject(log)) continue;
+        const task = tasks.get(log.taskId);
+        if (task) add('logs', 'log', log, ['text', 'files'], task);
+      }
+      for (const artifact of searchList(workspace, 'artifacts')) {
+        if (!searchObject(artifact)) continue;
+        const task = tasks.get(artifact.taskId);
+        if (task) add('artifacts', 'artifact', artifact, ['summary', 'links', 'files'], task);
+      }
+      for (const report of searchList(workspace, 'reports')) {
+        if (!searchObject(report)) continue;
+        const taskIds = [];
+        if (Array.isArray(report.refs)) {
+          for (const ref of report.refs) {
+            if (searchObject(ref) && tasks.has(ref.taskId) && !taskIds.includes(ref.taskId)) taskIds.push(ref.taskId);
+          }
+        }
+        add('reports', 'report', report, ['body', 'projectName'], null, { taskIds });
+      }
+      return result;
+    }
+    // @generated search end
+    // @generated recommendations begin
+    // Generated from recommendations.js by build-client.mjs; do not edit this region.
+    // Local, explainable historical artifact suggestions. No model call and no
+    // external data access; matching is an aid to discovery, not verification.
+    function recommendationTerms(value) {
+      const text = typeof value === 'string' ? value.toLowerCase() : '';
+      const words = text.match(/[a-z0-9]{2,}|[\u3400-\u9fff]+/g) || [];
+      const terms = new Set();
+      for (const word of words) {
+        if (/^[\u3400-\u9fff]+$/.test(word)) {
+          for (let i = 0; i + 1 < word.length; i++) terms.add(word.slice(i, i + 2));
+        } else terms.add(word);
+      }
+      return terms;
+    }
+
+    /** Recommend artifacts belonging to other live tasks based on project/terms. */
+    function recommendArtifacts(workspace, taskId, limit = 5) {
+      if (!workspace || !Array.isArray(workspace.tasks) || !Array.isArray(workspace.artifacts)) return [];
+      const tasks = new Map(workspace.tasks.filter(t => t && t.id && !t.deletedAt).map(t => [t.id, t]));
+      const current = tasks.get(taskId);
+      if (!current) return [];
+      const currentTerms = recommendationTerms([current.title, current.description, current.expected].filter(Boolean).join(' '));
+      const ranked = [];
+      for (const artifact of workspace.artifacts) {
+        if (!artifact || !artifact.id || !artifact.taskId || artifact.taskId === taskId || artifact.deletedAt) continue;
+        const source = tasks.get(artifact.taskId);
+        if (!source) continue;
+        const terms = recommendationTerms([source.title, source.description, artifact.summary].filter(Boolean).join(' '));
+        let shared = 0;
+        for (const term of currentTerms) if (terms.has(term)) shared++;
+        const sameProject = !!current.projectId && current.projectId === source.projectId;
+        if (!sameProject && shared < 2) continue;
+        ranked.push({ artifact, task: source, reason: sameProject && shared >= 2 ? '同一项目，内容有相似词' : sameProject ? '同一项目' : '内容有相似词',
+          score: (sameProject ? 4 : 0) + Math.min(shared, 6) });
+      }
+      ranked.sort((a, b) => b.score - a.score || String(b.artifact.createdAt || b.artifact.at || '').localeCompare(String(a.artifact.createdAt || a.artifact.at || '')) || String(a.artifact.id).localeCompare(String(b.artifact.id)));
+      return ranked.slice(0, Number.isInteger(limit) ? Math.max(0, Math.min(limit, 20)) : 5);
+    }
+    // @generated recommendations end
+    // @generated report-preferences begin
+    // Generated from report-preferences.js by build-client.mjs; do not edit this region.
+    // 独立纯模块：仅接受固定枚举，不把用户输入拼接到指令中。
+    const DEFAULT_REPORT_PREFERENCES = Object.freeze({
+      format: 'structured',
+      detail: 'standard',
+      tone: 'neutral',
+    });
+
+    const OPTIONS = Object.freeze({
+      format: Object.freeze(['structured', 'list', 'narrative']),
+      detail: Object.freeze(['concise', 'standard', 'detailed']),
+      tone: Object.freeze(['neutral', 'formal', 'conversational']),
+    });
+
+    const INSTRUCTIONS = Object.freeze({
+      format: Object.freeze({
+        structured: '在各章节内部采用结构化表达，按主题组织内容。',
+        list: '在各章节内部采用清晰的列表组织内容。',
+        narrative: '在各章节内部采用连贯的叙述方式组织内容。',
+      }),
+      detail: Object.freeze({
+        concise: '详略：简洁，突出关键内容。',
+        standard: '详略：适中，覆盖必要内容。',
+        detailed: '详略：详细，充分说明相关内容。',
+      }),
+      tone: Object.freeze({
+        neutral: '语气：中性客观。',
+        formal: '语气：正式专业。',
+        conversational: '语气：自然易读。',
+      }),
+    });
+
+    /**
+     * 仅接收自身数据属性的精确枚举值；非法或缺失字段回落默认值，其他字段丢弃。
+     * 若没有任何合法的显式字段则返回 null，保留「用户未设置」状态。
+     * 调用方持久化时应保留 null，而不是预先写入默认对象。
+     */
+    function normalizeReportPreferences(raw) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const result = { ...DEFAULT_REPORT_PREFERENCES };
+      let explicit = false;
+      for (const key of Object.keys(OPTIONS)) {
+        const descriptor = Object.getOwnPropertyDescriptor(raw, key);
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) continue;
+        const value = descriptor.value;
+        if (typeof value === 'string' && OPTIONS[key].includes(value)) {
+          result[key] = value;
+          explicit = true;
+        }
+      }
+      return explicit ? result : null;
+    }
+
+    /** 没有显式有效偏好时返回空字符串，不改变旧报告生成行为。 */
+    function buildReportPreferenceInstruction(raw) {
+      const preferences = normalizeReportPreferences(raw);
+      if (!preferences) return '';
+      return [
+        '报告表达偏好（仅调整各章节内部的呈现方式）：',
+        '保留既有五个 ## 章节及其标题、顺序和来源引用标记，不得破坏或改写这些结构与标记。',
+        INSTRUCTIONS.format[preferences.format],
+        INSTRUCTIONS.detail[preferences.detail],
+        INSTRUCTIONS.tone[preferences.tone],
+        '上述偏好不改变证据、引用与真实性要求；不得编造、遗漏必要依据或降低既有要求。',
+      ].join('\n');
+    }
+    // @generated report-preferences end
 
     function notifyWorkspaceWrite(keys) {
       const relevant = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
@@ -2235,6 +2434,7 @@ window.__ModuleLoader__.load({
           }
           logs = logs.concat([{ ...makeLogEntry(task.id, body, action.kind, action.source || 'ai', stamp),
             ...(action.originalText ? { originalText: action.originalText } : {}),
+            ...(action.receiptFields ? { receiptFields: action.receiptFields } : {}),
             ...(action.sourceSessionId ? { sourceSessionId: action.sourceSessionId } : {}) }]);
           tasks[index] = { ...task, updatedAt: stamp };
           outcomes.push({ op, status: 'applied', taskId: task.id, title: task.title });
@@ -4785,6 +4985,15 @@ window.__ModuleLoader__.load({
       const rowMenuElRef = useRef(null);
       const [moveRowRect, setMoveRowRect] = useState(null);
       const [moveQuery, setMoveQuery] = useState('');
+      const [inboxDrafts, setInboxDrafts] = useState({});
+      const [globalQuery, setGlobalQuery] = useState('');
+      const [reportPreferences, setReportPreferences] = useState(() => normalizeReportPreferences(extrasRef.current.reportPreferences));
+      const changeReportPreferences = (next) => {
+        const normalized = normalizeReportPreferences(next);
+        if (!saveExtras({ reportPreferences: normalized })) return;
+        autoSettingsRevisionRef.current += 1;
+        setReportPreferences(normalized);
+      };
       // Close the row menu on any outside interaction, so it can never linger
       // over stale state.
       useEffect(() => {
@@ -5434,7 +5643,7 @@ window.__ModuleLoader__.load({
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
       const viewTitle = activeProjectEntity
         ? activeProjectEntity.name
-        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成/废弃', reports: '周报/月报', trash: '回收站', inbox: '执行回传', data: '本地数据', radar: '需要注意' }[activeView] || '全部任务');
+        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成/废弃', reports: '周报/月报', trash: '回收站', inbox: '执行回传', data: '本地数据', radar: '需要注意', globalSearch: '统一检索' }[activeView] || '全部任务');
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项'
         + (stats.byStatus.dropped ? ' · 已废弃 ' + stats.byStatus.dropped + ' 项' : '');
       const isReportsView = activeView === 'reports';
@@ -5442,6 +5651,7 @@ window.__ModuleLoader__.load({
       const isInboxView = activeView === 'inbox';
       const isDataView = activeView === 'data';
       const isRadarView = activeView === 'radar';
+      const isGlobalSearchView = activeView === 'globalSearch';
       const midTitle = isReportsView ? (reportKind === 'month' ? '月报' : '周报') : viewTitle;
       const midStats = isReportsView
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
@@ -5727,7 +5937,8 @@ window.__ModuleLoader__.load({
         expected: item.expected,
         nextStep: item.nextStep,
         blockedReason: item.blockedReason,
-        logs: item.logs.map((entry) => ({ id: entry.id, at: entry.at, kind: entry.kind, text: entry.text })),
+        logs: item.logs.map((entry) => ({ id: entry.id, at: entry.at, kind: entry.kind, text: entry.text,
+          ...(entry.receiptFields ? { receiptFields: entry.receiptFields } : {}) })),
         artifacts: item.artifacts.map((artifact) => ({ id: artifact.id, summary: artifact.summary, links: artifact.links })),
       });
 
@@ -5869,6 +6080,7 @@ window.__ModuleLoader__.load({
                     .slice(-6).map((r) => ({ period: r.period, body: r.body }))
                 : [],
               evidence: evidence.map(compactEvidence),
+              preferences: normalizeReportPreferences(extrasRef.current.reportPreferences),
             }),
           });
           const data = await res.json();
@@ -5946,6 +6158,7 @@ window.__ModuleLoader__.load({
             // concatenating raw records again.
             weeklies: weekliesFor(scopeId),
             evidence: evidence.map(compactEvidence),
+            preferences: normalizeReportPreferences(extrasRef.current.reportPreferences),
           }),
         });
         if (!res.ok) throw new Error('http-' + res.status);
@@ -5966,13 +6179,15 @@ window.__ModuleLoader__.load({
           key: reportEditorKey(reportKind, reportPeriod, reportScope) };
         const baseReport = JSON.stringify(reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === token.key));
         const baseEdit = JSON.stringify(reportEditsRef.current[token.key]);
+        const basePreferences = JSON.stringify(extrasRef.current.reportPreferences || null);
         setReportGenerating(true); setReportNotice(null);
         try {
           const result = await requestReport(reportScope, reportEvidence);
           if (token.epoch !== epochRef.current) return;
           const sourceReport = JSON.stringify(reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === token.key));
-          if (sourceReport !== baseReport || JSON.stringify(reportEditsRef.current[token.key]) !== baseEdit) {
-            showToast('原报告正文已变化，本次生成未替换你的编辑。', 'danger'); return;
+          if (sourceReport !== baseReport || JSON.stringify(reportEditsRef.current[token.key]) !== baseEdit
+            || JSON.stringify(extrasRef.current.reportPreferences || null) !== basePreferences) {
+            showToast('报告草稿或表达偏好已变化，本次生成未覆盖你的内容。', 'danger'); return;
           }
           const applyToEditor = token.key === editorRef.current.key && token.revision === editorRevision.current;
           if (!saveReport(result.body, { evidence: reportEvidence, applyToEditor })) return;
@@ -5999,6 +6214,7 @@ window.__ModuleLoader__.load({
         if (batch.running || reportGenerating || reportDirty || !batchTargets.length) return;
         const epoch = epochRef.current;
         const baseVersions = new Map(reportsRef.current.map((r) => [reportEditorKey(r.kind, r.period, r.projectId), JSON.stringify(r)]));
+        const basePreferences = JSON.stringify(extrasRef.current.reportPreferences || null);
         setBatchConfirm(false);
         setBatch({ running: true, total: batchTargets.length, done: 0, failed: 0, message: '' });
         let done = 0;
@@ -6011,7 +6227,8 @@ window.__ModuleLoader__.load({
             const result = await requestReport(target.project.id, target.evidence);
             if (epoch !== epochRef.current) break;
             const current = reportsRef.current.find((r) => reportEditorKey(r.kind, r.period, r.projectId) === key);
-            if (reportEditsRef.current[key] || JSON.stringify(current) !== baseVersions.get(key)) throw new Error('draft-changed');
+            if (reportEditsRef.current[key] || JSON.stringify(current) !== baseVersions.get(key)
+              || JSON.stringify(extrasRef.current.reportPreferences || null) !== basePreferences) throw new Error('draft-changed');
             const saved = saveReport(result.body, {
               evidence: target.evidence,
               scopeId: target.project.id,
@@ -6079,6 +6296,8 @@ window.__ModuleLoader__.load({
         autoStateRef.current = normalizeAutoState(extrasRef.current.autoState);
         setAutoSettings(autoSettingsRef.current);
         setAutoState(autoStateRef.current);
+        setReportPreferences(normalizeReportPreferences(extrasRef.current.reportPreferences));
+        setInboxDrafts({});
         setIgnoreAllConfirmIds(null);
         reportEditsRef.current = next.reportEdits || {};
         reportsRef.current = next.reports;
@@ -6234,7 +6453,24 @@ window.__ModuleLoader__.load({
        * Adopting writes execution records into the task. It never completes a
        * task, and it batches the whole list into one state write.
        */
-      const adoptInboxItems = async (list) => {
+      const receiptText = (item) => [
+        typeof item.text === 'string' ? item.text : '',
+        ...[['已完成工作', item.workDone], ['验证情况', item.verification], ['遗留问题', item.remainingIssues]]
+          .filter(([, value]) => typeof value === 'string' && value.trim())
+          .map(([label, value]) => label + '：' + value),
+      ].filter((value) => value.trim()).join('\n\n');
+      // These are editable local drafts only; no message is sent and the receipt stays pending.
+      const draftInboxFollowup = (item, mode) => {
+        if (inboxDrafts[item.id] !== undefined) {
+          showToast('已有跟进草稿，请先复制保存；不会覆盖草稿。'); return;
+        }
+        const target = resolveInboxTask(tasks, item) || tasks.find((task) => task.id === inboxPicks[item.id]);
+        const heading = mode === 'supplement' ? '请补充以下回执信息：' : '请继续推进以下任务：';
+        const draft = [heading, target ? '任务：' + target.title : '', receiptText(item),
+          mode === 'supplement' ? '请说明需要补充的内容：' : '请说明下一步安排和验证方式。'].filter(Boolean).join('\n\n');
+        setInboxDrafts((prev) => ({ ...prev, [item.id]: draft }));
+      };
+      const adoptInboxItems = async (list, decision) => {
         let state = { ...currentWorkspace() };
         const accepted = [];
         for (const item of list) {
@@ -6245,7 +6481,9 @@ window.__ModuleLoader__.load({
           if (!task) continue;
           const actions = [{
             op: 'log', taskId: task.id, kind: item.kind || 'progress',
-            text: item.text, source: 'execution', sourceSessionId: item.sourceSessionId || '',
+            text: (decision === 'accept' ? '人工验收：接受成果\n\n' : '') + receiptText(item),
+            receiptFields: { workDone: item.workDone || '', verification: item.verification || '', remainingIssues: item.remainingIssues || '' },
+            source: 'execution', sourceSessionId: item.sourceSessionId || '',
           }];
           for (const artifact of item.artifacts || []) {
             actions.push({
@@ -6261,7 +6499,7 @@ window.__ModuleLoader__.load({
           state.inboxAck = Array.from(new Set(inboxAckRef.current.concat(accepted))).slice(-300);
           if (!writeStoredTransaction(workspaceEntries(state))) {
             showToast('采纳未完成，回传与原数据已保留。', 'danger');
-            return 0;
+            return -1;
           }
           accepted.forEach((id) => adoptingIdsRef.current.add(id));
           workspaceRef.current = state;
@@ -6271,24 +6509,32 @@ window.__ModuleLoader__.load({
         return accepted.length;
       };
 
-      const adoptInboxItem = async (item) => {
-        const count = await adoptInboxItems([item]);
+      const adoptInboxItem = async (item, decision) => {
+        if (inboxDrafts[item.id] !== undefined) { showToast('请先复制或放弃本页跟进草稿，再处理回传。', 'danger'); return; }
+        const count = await adoptInboxItems([item], decision);
+        if (count < 0) return;
         if (count === 0) showToast('请先为这条回传选择任务', 'danger');
-        else showToast(hostSyncRef.current && hostSyncRef.current.getStatus().phase === 'ready' ? '已采纳并保存到本机主存' : '已留在本页缓存，等待主存确认');
+        else showToast(hostSyncRef.current && hostSyncRef.current.getStatus().phase === 'ready' ? '已写入记录并保存到本机主存' : '已留在本页缓存，等待主存确认');
       };
 
       const ignoreInboxItem = async (item) => {
+        if (inboxDrafts[item.id] !== undefined) { showToast('请先复制或放弃本页跟进草稿，再处理回传。', 'danger'); return; }
         if (await ackInbox([item.id])) showToast('已忽略这条回传');
       };
 
       const adoptAllInbox = async () => {
+        if (inbox.some((item) => inboxDrafts[item.id] !== undefined)) { showToast('请先复制或放弃本页跟进草稿，再批量处理。', 'danger'); return; }
         const count = await adoptInboxItems(inbox);
+        if (count < 0) return;
         showToast(count ? '已采纳 ' + count + ' 条回传' : '没有可采纳的回传，请先选择任务');
       };
 
       const ignoreAllInbox = async () => {
         const ids = ignoreAllConfirmIds;
         if (!ids || !ids.length) return;
+        if (ids.some((id) => inboxDrafts[id] !== undefined)) {
+          setIgnoreAllConfirmIds(null); showToast('请先复制或放弃本页跟进草稿，再批量处理。', 'danger'); return;
+        }
         // Never acknowledge a receipt that arrived after the confirmation was
         // shown. If the queue changed, ask for a fresh review instead.
         const currentIds = inbox.map((item) => item.id);
@@ -6869,6 +7115,7 @@ window.__ModuleLoader__.load({
                 }, batch.running ? '生成中 ' + batch.done + '/' + batch.total : '按项目生成')
               : null),
           h('div', { className: 'wp-report-actions' },
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setActiveView('data') }, '报告偏好'),
             h('button', {
               className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
               disabled: reportGenerating ? 'true' : undefined,
@@ -6970,7 +7217,21 @@ window.__ModuleLoader__.load({
       // ---------- local data: export / import / restore ----------
       const autoSnapshot = readBackupSlot(AUTO_BACKUP_KEY);
       const beforeHostSnapshot = readBackupSlot(HOST_MIGRATION_BACKUP_KEY);
+      const preferenceOptions = [
+        ['format', '章节内排版', [['structured', '结构化'], ['list', '列表'], ['narrative', '叙述']]],
+        ['detail', '详略', [['concise', '简洁'], ['standard', '适中'], ['detailed', '详细']]],
+        ['tone', '语气', [['neutral', '中性'], ['formal', '正式'], ['conversational', '自然']]],
+      ];
       const dataPanel = h('div', { className: 'wp-data' },
+        h('div', { className: 'wp-card wp-data-card' },
+          h('div', { className: 'wp-data-section-title' }, '报告表达偏好'),
+          h('p', { className: 'wp-data-hint' }, '仅在你主动选择后应用于新生成的报告；不更改已有草稿，也不改变证据和引用要求。'),
+          preferenceOptions.map(([key, label, options]) => h('div', { className: 'wp-data-row', key },
+            h('label', { className: 'wp-data-label', htmlFor: 'wp-pref-' + key }, label),
+            h('select', { id: 'wp-pref-' + key, className: 'wp-sort-select', value: reportPreferences ? reportPreferences[key] : '',
+              onChange: (e) => { if (e.target.value) changeReportPreferences({ ...DEFAULT_REPORT_PREFERENCES, ...(reportPreferences || {}), [key]: e.target.value }); } },
+              h('option', { value: '' }, '未设置'), options.map(([value, name]) => h('option', { key: value, value }, name))))),
+          reportPreferences ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => changeReportPreferences(null) }, '清除报告偏好') : null),
         autoPanel,
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-row' },
@@ -7119,7 +7380,12 @@ window.__ModuleLoader__.load({
                       },
                         h('option', { value: '' }, '选择任务…'),
                         liveTasks(tasks).map((task) => h('option', { value: task.id, key: task.id }, task.title)))),
-                h('p', { className: 'wp-inbox-text' }, item.text),
+                item.text ? h('p', { className: 'wp-inbox-text' }, item.text) : null,
+                [['已完成工作', item.workDone], ['验证情况', item.verification], ['遗留问题', item.remainingIssues]]
+                  .filter(([, value]) => typeof value === 'string' && value.trim())
+                  .map(([label, value]) => h('div', { key: label },
+                    h('strong', null, label), h('p', { className: 'wp-inbox-text' }, value))),
+                h('p', { className: 'wp-inbox-text' }, '接受成果会记录人工验收；采纳为记录（包括全部采纳）不代表验收。两者都会移出收件箱，但都不会完成任务。'),
                 (item.artifacts || []).length
                   ? h('div', { className: 'wp-inbox-artifacts' }, item.artifacts.map((artifact, i) =>
                       h('div', { className: 'wp-inbox-artifact', key: i },
@@ -7131,11 +7397,24 @@ window.__ModuleLoader__.load({
                             : h('span', { className: 'wp-artifact-url', key: j }, url);
                         }))))
                   : null,
+                inboxDrafts[item.id] !== undefined ? h('div', null,
+                  h('p', { className: 'wp-inbox-text', role: 'status' }, '以下仅为本页临时草稿，刷新或关闭后丢失，尚未发送；请自行复制、修改并发送。回传仍待处理。'),
+                  h('textarea', { className: 'wp-report-editor', 'aria-label': '回执跟进草稿', value: inboxDrafts[item.id],
+                    onChange: (e) => setInboxDrafts((prev) => ({ ...prev, [item.id]: e.target.value })) }),
+                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setInboxDrafts((prev) => {
+                    const next = { ...prev }; delete next[item.id]; return next;
+                  }) }, '放弃本页草稿')) : null,
                 h('div', { className: 'wp-inbox-actions' },
+                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                    onClick: () => draftInboxFollowup(item, 'supplement') }, '要求补充（生成草稿）'),
+                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                    onClick: () => draftInboxFollowup(item, 'continue') }, '继续推进（生成草稿）'),
                   h('button', {
                     className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
                     onClick: () => ignoreInboxItem(item),
                   }, '忽略'),
+                  h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+                    onClick: () => adoptInboxItem(item, 'accept') }, '接受成果'),
                   h('button', {
                     className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
                     onClick: () => adoptInboxItem(item),
@@ -7263,7 +7542,50 @@ window.__ModuleLoader__.load({
       // on every render forces a style recalculation and shows up as flicker.
       const styleNode = useMemo(() => h('style', null, CSS), []);
 
-      const middleBody = isReportsView
+      const searchDraftReports = Object.entries(reportEditsRef.current).flatMap(([key, edit]) => {
+        try {
+          const [kind, start, end, projectId] = JSON.parse(key);
+          if (!['week', 'month'].includes(kind) || !start || !end || !edit || typeof edit.body !== 'string') return [];
+          return [{ id: 'draft:' + key, kind, period: { start, end }, projectId, body: edit.body, searchDraft: true }];
+        } catch { return []; }
+      });
+      const searchableReports = reports.concat(searchDraftReports);
+      const globalResults = searchWorkspace({ tasks, logs, artifacts, reports: searchableReports }, globalQuery);
+      const searchGroups = [['任务', globalResults.tasks], ['记录', globalResults.logs],
+        ['成果', globalResults.artifacts], ['报告', globalResults.reports]];
+      const openSearchResult = (item) => {
+        if (item.type === 'report') {
+          const report = searchableReports.find((r) => r.id === item.id);
+          if (!report || !report.period) return;
+          if (!report.searchDraft && reportEditsRef.current[reportEditorKey(report.kind, report.period, report.projectId)])
+            showToast('该报告存在未保存编辑，打开后显示的是编辑版本。');
+          setReportKind(report.kind); setReportPeriod(report.period); setReportScope(report.projectId || '');
+          setReportMode('preview'); setSelectedId(null); setActiveView('reports');
+        } else if (item.taskId) {
+          setActiveView('all'); setSelectedId(item.taskId);
+        }
+      };
+      const globalSearchPanel = h('div', { className: 'wp-data' },
+        h('div', { className: 'wp-card wp-data-card' },
+          h('label', { className: 'wp-data-section-title', htmlFor: 'wp-global-search' }, '检索任务、记录、成果与报告'),
+          h('input', { id: 'wp-global-search', className: 'wp-detail-input', type: 'search', value: globalQuery,
+            placeholder: '输入关键词', onChange: (e) => setGlobalQuery(e.target.value) }),
+          h('p', { className: 'wp-data-hint', role: 'status' }, globalQuery.trim()
+            ? '找到 ' + globalResults.total + ' 条；搜索只在本机进行，不调用 AI。' : '输入文字后搜索；不搜索回收站。')),
+        globalQuery.trim() && !globalResults.total ? h('div', { className: 'wp-empty' }, '没有找到匹配内容。') : null,
+        searchGroups.map(([label, items]) => items.length ? h('div', { className: 'wp-card wp-data-card', key: label },
+          h('div', { className: 'wp-data-section-title' }, label + ' · ' + items.length),
+          items.slice(0, 50).map((item) => {
+            const match = item.matches[0];
+            const excerpt = match.text.slice(Math.max(0, match.start - 35), Math.min(match.text.length, match.end + 65));
+            return h('button', { className: 'wp-btn wp-btn-text wp-act-btn', key: item.type + ':' + item.id,
+              type: 'button', style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
+              onClick: () => openSearchResult(item) }, (item.taskTitle || (item.id.startsWith('draft:') ? '未保存的报告编辑' : '已保存报告')) + ' · ' + excerpt);
+          }), items.length > 50 ? h('p', { className: 'wp-data-hint' }, '仅显示前 50 条，请缩小搜索范围。') : null) : null));
+
+      const middleBody = isGlobalSearchView
+        ? h('div', { className: 'wp-mid-body' }, globalSearchPanel)
+        : isReportsView
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
         : isRadarView
           ? h('div', { className: 'wp-mid-body' }, radarPanel)
@@ -7283,6 +7605,7 @@ window.__ModuleLoader__.load({
       ];
       const reportNav = [{ key: 'reports', label: '周报/月报', count: reports.length }];
       const manageNav = [
+        { key: 'globalSearch', label: '统一检索', count: 0 },
         { key: 'radar', label: '需要注意', count: (radarScan.items || []).length },
         { key: 'inbox', label: '执行回传', count: inbox.length },
         { key: 'trash', label: '回收站', count: stats.deletedCount },
@@ -7464,6 +7787,7 @@ window.__ModuleLoader__.load({
                   : null) : null),
         h('p', { className: 'wp-ai-hint' }, '以上是 AI 建议，只有点「采纳」才会写入任务。')) : null;
 
+      const relatedArtifacts = selectedTask ? recommendArtifacts({ tasks, artifacts }, selectedTask.id) : [];
       const detailPanel = (selectedTask && !selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-meta' },
@@ -7622,6 +7946,14 @@ window.__ModuleLoader__.load({
                     renderLocalFiles(item.files),
                     h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at), sourceSessionLink(item.sourceSessionId)))))
               : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
+          relatedArtifacts.length ? h('div', { className: 'wp-detail-section' },
+            h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '相关历史成果')),
+            h('p', { className: 'wp-detail-empty' }, '按项目和内容相似词推荐，仅供参考。'),
+            relatedArtifacts.map(({ artifact, task, reason }) => h('button', {
+              className: 'wp-btn wp-btn-text wp-act-btn', key: artifact.id, type: 'button',
+              style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
+              onClick: () => { setActiveView('all'); setSelectedId(task.id); },
+            }, (artifact.summary || '未命名成果') + ' · ' + task.title + '（' + reason + '）'))) : null,
           h('div', { className: 'wp-detail-rows wp-detail-times' },
             detailRow('创建时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.createdAt))),
             detailRow('更新时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.updatedAt)))))) : null;
@@ -7738,7 +8070,7 @@ window.__ModuleLoader__.load({
               h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportRawStorage }, '导出原始数据')) : null,
             inboxIssue ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, inboxIssue) : null,
             middleHeader, middleBody),
-          isReportsView ? evidencePanel : (isInboxView || isDataView || isRadarView) ? null : (trashDetailPanel || detailPanel))),
+          isReportsView ? evidencePanel : (isInboxView || isDataView || isRadarView || isGlobalSearchView) ? null : (trashDetailPanel || detailPanel))),
         toastNode,
         rowMenuNode,
         deleteConfirmNode,

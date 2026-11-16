@@ -290,6 +290,47 @@ test('plain-text file metadata persists; old missing-files hashes stay compatibl
   await store.close();
 });
 
+test('structured receipt identity persists across retries, concurrent operations and acknowledgement', async () => {
+  const mock = mockStorage();
+  let store = storeFor(mock);
+  const original = { ...item('one', 'structured'), workDone: '完成', verification: '通过', remainingIssues: '' };
+  const retries = await Promise.all(Array.from({ length: 8 }, (_, i) => store.enqueue({ ...original, id: 'id-' + i })));
+  assert.equal(new Set(retries.map((result) => result.id)).size, 1);
+  assert.equal(retries.filter((result) => result.duplicate).length, 7);
+  assert.equal(mock.state.maxActive, 1);
+  await assert.rejects(store.enqueue({ ...original, verification: '失败' }), { code: 'request-id-conflict' });
+  const acceptedId = retries[0].id;
+  await store.close(); store = storeFor(mock);
+  assert.deepEqual((await store.list()).items[0].verification, '通过');
+  await store.ack([acceptedId]);
+  await store.close(); store = storeFor(mock);
+  assert.equal((await store.enqueue({ ...original, id: 'retry' })).duplicate, true);
+  await assert.rejects(store.enqueue({ ...original, remainingIssues: '待办' }), { code: 'request-id-conflict' });
+  await assert.rejects(store.enqueue({ ...original, workDone: undefined }), { code: 'request-id-conflict' });
+  await store.close();
+});
+
+test('structured validation rejects bad writes and persisted state without overwriting data', async () => {
+  for (const key of ['workDone', 'verification', 'remainingIssues']) {
+    for (const invalid of [null, 123, 'x'.repeat(4001)]) {
+      const mock = mockStorage(); const store = storeFor(mock);
+      await assert.rejects(store.enqueue({ ...item('one'), [key]: invalid }), { code: 'invalid-receipt-field' });
+      assert.equal(mock.state.disk, null);
+      await store.close();
+      const corrupt = { version: 1, items: [{ ...item('old'), [key]: invalid }], receipts: [] };
+      const badMock = mockStorage(corrupt); const badStore = storeFor(badMock);
+      await assert.rejects(badStore.list(), { code: 'inbox-corrupt' });
+      assert.deepEqual(badMock.state.disk, corrupt);
+      assert.equal(badMock.state.writes, 0);
+      await badStore.close();
+    }
+  }
+  const mock = mockStorage(); const store = storeFor(mock);
+  await store.enqueue({ ...item('unicode'), workDone: '😀'.repeat(4000) });
+  assert.equal((await store.list()).items.length, 1);
+  await store.close();
+});
+
 test('close drains admitted write, rejects new work, and releases unit exactly once', async () => {
   const mock = mockStorage();
   const entered = deferred();

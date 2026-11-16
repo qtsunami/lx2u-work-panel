@@ -5,6 +5,7 @@ const cwd = fileURLToPath(new URL('.', import.meta.url));
 const suites = [
   'test-parse.cjs', 'test-host.mjs', 'test-inbox-store.mjs', 'test-workspace-store.mjs',
   'test-workspace-sync.mjs', 'test-integration-140.mjs', 'test-radar.mjs', 'test-auto-report.mjs',
+  'test-search.mjs', 'test-recommendations.mjs', 'test-report-preferences.mjs', 'test-acceptance-ui.cjs', 'test-p1-ui.cjs',
   'test-stability.cjs', 'test-product-140.cjs', 'test-radar-ui.cjs',
   'test-render.cjs', 'test-detail-render.cjs', 'test-actions-render.cjs',
   'test-report-render.cjs', 'test-trash-render.cjs', 'test-project-render.cjs',

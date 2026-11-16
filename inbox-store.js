@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 
 export const INBOX_LIMIT = 200;
 export const RECEIPT_LIMIT = 1000;
+export const RECEIPT_FIELDS = Object.freeze(['workDone', 'verification', 'remainingIssues']);
+export const RECEIPT_FIELD_MAX = 4000;
+const validReceiptField = (value) => value === undefined
+  || (typeof value === 'string' && Array.from(value).length <= RECEIPT_FIELD_MAX);
 export const INBOX_DESCRIPTOR = Object.freeze({
   name: 'work_panel_inbox', version: 1, tables: Object.freeze([]), hasGlobal: true, layout: 'single',
 });
@@ -28,17 +32,23 @@ export function inboxFailure(error) {
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const fingerprint = (item) => createHash('sha256').update(JSON.stringify([
-  item.taskId, item.taskTitle, item.source, item.kind, item.text,
-  // Preserve historical hashes when files are absent/empty; old receipts remain valid.
-  item.artifacts.map((artifact) => artifact.files?.length ? [artifact.summary, artifact.links, artifact.files] : [artifact.summary, artifact.links]),
-])).digest('hex');
+const fingerprint = (item) => {
+  const payload = [item.taskId, item.taskTitle, item.source, item.kind, item.text,
+    // Preserve historical hashes when files are absent/empty; old receipts remain valid.
+    item.artifacts.map((artifact) => artifact.files?.length ? [artifact.summary, artifact.links, artifact.files] : [artifact.summary, artifact.links])];
+  // Omit the extension entirely for old receipts to keep their fingerprints valid.
+  if (RECEIPT_FIELDS.some((key) => item[key] !== undefined)) {
+    payload.push(RECEIPT_FIELDS.map((key) => item[key] ?? null));
+  }
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+};
 
 function validItem(item) {
   return object(item) && typeof item.id === 'string' && item.id.length > 0
     && ['taskId', 'taskTitle', 'source', 'kind', 'text', 'receivedAt'].every((key) => typeof item[key] === 'string')
     && item.text.trim().length > 0 && Number.isFinite(Date.parse(item.receivedAt))
     && (item.sourceSessionId === undefined || typeof item.sourceSessionId === 'string')
+    && RECEIPT_FIELDS.every((key) => validReceiptField(item[key]))
     && ['progress', 'issue', 'decision', 'ai'].includes(item.kind)
     && (item.requestId === undefined || (typeof item.requestId === 'string' && item.requestId.length > 0 && item.requestId.length <= 200))
     && Array.isArray(item.artifacts) && item.artifacts.every((artifact) => object(artifact)
@@ -170,6 +180,11 @@ export class InboxStore {
     // Capture callers' data before it waits in the chain.
     const captured = clone(item);
     return this.serial(async () => {
+      for (const key of RECEIPT_FIELDS) {
+        if (!validReceiptField(captured[key])) {
+          throw new InboxError('invalid-receipt-field', `${key} 必须是长度不超过 ${RECEIPT_FIELD_MAX} 的字符串。`);
+        }
+      }
       await this.open();
       const requestId = captured.requestId;
       if (requestId) {

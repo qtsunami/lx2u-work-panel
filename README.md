@@ -7,6 +7,14 @@ A personal workbench panel for DeepSeek Harness (DSH): a three-column layout wit
 A personal AI outcomes workbench: fast capture → execution → reliable receipts → review → reusable evidence and reports.
 The next milestones are tracked in [ROADMAP.md](./ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
 
+## Acceptance, search and reuse (v1.6.0)
+
+- Execution receipts may include `workDone`, `verification` and `remainingIssues` alongside the existing text and artifact paths/links. Accepting a result explicitly records the human acceptance and its evidence, but does not mark the task complete. Adopting as a record is distinct from acceptance and removes the receipt from the inbox without an acceptance decision.
+- “要求补充” and “继续推进” create editable, temporary follow-up text only: they do not send a message or acknowledge the receipt. Copy it before closing or refreshing; it is not a durable draft.
+- “统一检索” matches literal text locally across live tasks, logs, artifacts, saved reports and unsaved report edit buffers; no model is called. Deleted task records are excluded; saved historical reports remain searchable. Results open the source task or report; they do not automatically scroll to the exact source item.
+- Report format, detail and tone are opt-in under 数据 → 报告表达偏好. The bounded choices apply to subsequent manual and automatic generations, not existing drafts; source evidence and citation requirements remain in force. Per-field receipt excerpts sent to the model are limited to 500 characters and are not a substitute for reviewing the full receipt.
+- A task may show related historical artifacts from the same project or with shared content terms. These are local, explainable suggestions, not proof of relevance or verified deliverables; opening one navigates to its source task.
+
 ## Personal AI capture and Host data (v1.4.0)
 
 - **Usable quick entry**: Enter or the visible `添加任务` button creates a task directly (Alt+Enter remains compatible). `AI 记录` optionally interprets progress/outcomes with a confirmation preview; the model is not required to create or complete a task. Chinese IME composition does not submit. AI capture uses only explicitly chosen deadline suggestions; overlong AI input is kept.

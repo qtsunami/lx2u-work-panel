@@ -46,6 +46,15 @@ const makeStore = (mock, options) => new WorkspaceStore(() => mock.storage, opti
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
 
 // Every assertion observes the public operation or mock durable medium, never internal mutable state.
+test('dropped tasks persist in Host canonical workspace and are filterable', async () => {
+  const mock = mockStorage(); const store = makeStore(mock);
+  const initial = await store.write(initialize(workspace([task('d', { status: 'dropped' }), task('o')])));
+  assert.equal(initial.ok, true);
+  const filtered = await workspaceContext(store, { action: 'list', status: 'dropped' });
+  assert.equal(filtered.items.length, 1); assert.equal(filtered.items[0].id, 'd');
+  const reloaded = makeStore(mock); const stored = await reloaded.get();
+  assert.equal(stored.workspace.tasks[0].status, 'dropped');
+});
 test('uninitialized GET is explicit null and does not create a unit document', async () => {
   const mock = mockStorage();
   const store = makeStore(mock);

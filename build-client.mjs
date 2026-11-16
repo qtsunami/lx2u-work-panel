@@ -8,7 +8,7 @@ const clientPath = fileURLToPath(new URL('./client.js', import.meta.url));
 const resolve = (file) => fileURLToPath(new URL('./' + file, import.meta.url));
 
 /** Browser-safe modules embedded verbatim (minus `export`) into client.js. */
-const candidates = ['workspace-sync.js', 'radar.js', 'auto-report.js'];
+const candidates = ['workspace-sync.js', 'radar.js', 'auto-report.js', 'search.js', 'recommendations.js', 'report-preferences.js'];
 
 /** Keep every generated region identical to its canonical source. */
 function embed(current, file) {

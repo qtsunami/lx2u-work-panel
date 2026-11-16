@@ -76,7 +76,7 @@ export function validateWorkspace(workspace) {
         optionalString(record, ['description', 'projectId', 'expected', 'nextStep', 'blockedReason', 'deadline', 'createdAt', 'updatedAt']);
         optionalString(record, ['deletedAt', 'completedAt'], true);
         if (record.projectId !== undefined && record.projectId !== '' && !id(record.projectId)) invalid('任务 projectId 必须为空字符串或 1–200 字符的项目 id。');
-        if (record.status !== undefined && !['todo', 'done'].includes(record.status)) invalid('任务 status 无效。');
+        if (record.status !== undefined && !['todo', 'done', 'dropped'].includes(record.status)) invalid('任务 status 无效。');
         if (record.urgency !== undefined && !['low', 'medium', 'high', 'none'].includes(record.urgency)) invalid('任务 urgency 无效。');
         if (record.progress !== undefined && (typeof record.progress !== 'number' || record.progress < 0 || record.progress > 100)) invalid('任务 progress 必须是 0–100。');
       } else if (key === 'projects') {
@@ -283,7 +283,7 @@ function taskSummary(task) {
 export async function workspaceContext(store, args) {
   if (!object(args) || !['list', 'read', 'prepare'].includes(args.action)) throw new WorkspaceError('invalid-context-action', 'action 必须是 list、read 或 prepare。');
   for (const key of ['query', 'projectId', 'status']) if (args[key] !== undefined && typeof args[key] !== 'string') throw new WorkspaceError('invalid-context-filter', `${key} 必须是字符串。`);
-  if (args.status !== undefined && !['todo', 'done'].includes(args.status)) throw new WorkspaceError('invalid-context-filter', 'status 必须是 todo 或 done。');
+  if (args.status !== undefined && !['todo', 'done', 'dropped'].includes(args.status)) throw new WorkspaceError('invalid-context-filter', 'status 必须是 todo、done 或 dropped。');
   const snapshot = await store.get();
   if (!snapshot.initialized) throw new WorkspaceError('workspace-uninitialized', '请先在工作面板确认迁移本地数据。', { currentRevision: 0 });
   const { workspace, revision, storeId } = snapshot;
