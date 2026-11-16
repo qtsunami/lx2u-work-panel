@@ -656,5 +656,37 @@ try {
 } finally {
   await fs.rm(realRoot, { recursive: true, force: true });
 }
+console.log('\n# task assist: bounded untrusted context and citations');
+const assistModel = captureLlm(JSON.stringify({ reply: '建议核查', options: [
+  { text: '核查记录', evidence: [{ type: 'task', id: 't' }, { type: 'log', id: 'l' }, { type: 'artifact', id: 'a' }, { type: 'receipt', id: 'r' }, { type: 'log', id: 'forged' }, { type: '__proto__', id: 'x' }], uncertainty: '尚未验证' },
+  { text: '询问负责人', evidence: [{ type: 'task', id: 'forged' }] },
+], receiptSummary: [{ id: 'r', summary: '回执称已提交' }, { id: 'fake', summary: '伪造' }] }));
+apply(makeCtx(assistModel));
+const assist = await call({ mode: 'task', intent: 'assist', question: '下一步？', task: { id: 't', title: '任务', ignored: 'SECRET' }, logs: [{ id: 'l', text: '记录' }], relatedArtifacts: [{ id: 'a', summary: '成果' }], receipts: [{ id: 'r', text: '回执' }] });
+check('assist-valid-citations', assist.options[0].evidence, [{ type: 'task', id: 't' }, { type: 'log', id: 'l' }, { type: 'artifact', id: 'a' }, { type: 'receipt', id: 'r' }]);
+check('assist-invalid-citation-notice', assist.options[0].uncertainty.includes('已丢弃'), true);
+check('assist-unsupported-explicit', assist.options[1].uncertainty.includes('无可核对引用'), true);
+check('assist-receipt-filter', assist.receiptSummary.map((r) => r.id), ['r']);
+check('assist-human-review', [assist.reply.includes('待人工核实'), assist.receiptSummary[0].uncertainty.includes('未经确认')], [true, true]);
+check('assist-whitelisted-fields', assistModel.captured.user.includes('SECRET'), false);
+check('assist-untrusted-instructions', assistModel.captured.system.includes('不可信数据'), true);
+check('assist-no-actions', Object.hasOwn(assist, 'actions'), false);
+const longLogs = Array.from({ length: 12 }, (_, i) => ({ id: 'l' + i, text: 'x'.repeat(2000) }));
+const boundedModel = captureLlm(JSON.stringify({ reply: 'x'.repeat(3000), options: Array.from({ length: 7 }, () => ({ text: 'x'.repeat(2000), evidence: [{ type: 'log', id: 'l10' }, { type: 'log', id: 'l9' }], uncertainty: 'u'.repeat(1000) })), receiptSummary: [] }));
+apply(makeCtx(boundedModel));
+const bounded = await call({ mode: 'task', intent: 'assist', logs: longLogs, task: { id: 'z'.repeat(121), title: 'bad id' }, question: 'q'.repeat(3000) });
+check('assist-input-count-bound', boundedModel.captured.user.includes('l10'), false);
+check('assist-input-string-bound', boundedModel.captured.user.includes('x'.repeat(1001)), false);
+check('assist-invalid-id-omitted', boundedModel.captured.user.includes('bad id'), false);
+check('assist-output-count-bound', bounded.options.length, 5);
+check('assist-output-bounds', [bounded.reply.length <= 1500, bounded.options[0].text.length, bounded.options[0].uncertainty.length <= 500], [true, 1000, true]);
+check('assist-truncated-context-id-dropped', bounded.options[0].evidence, [{ type: 'log', id: 'l9' }]);
+apply(makeCtx(mockLlm('invalid')));
+const emptyAssist = await call({ mode: 'task', intent: 'assist' });
+check('assist-empty-explicit', [emptyAssist.options, emptyAssist.receiptSummary, emptyAssist.reply.includes('依据不足')], [[], [], true]);
+apply(makeCtx({ stream: async function* () { yield { type: 'text-delta', text: '{"reply":"partial"}' }; yield { type: 'finish', reason: { kind: 'error', failure: { message: 'failed' } } }; } }));
+check('assist-stream-failure', await call({ mode: 'task', intent: 'assist' }), { error: 'model-failed' });
+apply(makeCtx({ stream: async function* () { throw new Error('offline'); } }));
+check('assist-thrown-failure', await call({ mode: 'task', intent: 'assist' }), { error: 'offline' });
 console.log('\n' + (fail === 0 ? 'ALL PASS' : fail + ' FAILED') + ' (' + pass + ' passed)');
 process.exit(fail === 0 ? 0 : 1);

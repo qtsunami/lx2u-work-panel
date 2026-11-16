@@ -7,6 +7,13 @@ A personal workbench panel for DeepSeek Harness (DSH): a three-column layout wit
 A personal AI outcomes workbench: fast capture → execution → reliable receipts → review → reusable evidence and reports.
 The next milestones are tracked in [ROADMAP.md](./ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
 
+## On-demand task work assistant (v1.7.0)
+
+- Open a task and select **工作助手** to see locally matched historical outcomes, then explicitly select **生成工作建议** to ask the configured model to organize matched pending receipts and suggest next steps. Merely opening the panel does not call the model. Related outcomes are a heuristic, not proof of relevance.
+- Before generation the panel discloses the fields sent: the selected task, up to 10 recent logs, 5 related artifact summaries and 5 uniquely matched pending receipts, each text field capped at 1,000 characters. Independent file/link fields are excluded, but URLs, paths or sensitive content embedded in free text are still sent. Review the task and records before using it.
+- Suggestions show model references, expandable source text and uncertainty. Reference ID validation does not establish factual support; verify the original material. Receipts are not accepted or completed by analysis. If inbox reading fails, generation and confirmation stop rather than treating a stale inbox as current. The receipt set is re-read before generation and confirmation, but changes immediately after a read can still occur.
+- Applying a suggested next step requires selecting it and separately confirming the old/new value. The task, source snapshot and current receipt set are rechecked; a changed task or workspace causes the suggestion to be discarded. A successful local write is queued for Host sync and does not imply a receipt was accepted or a task completed. Suggestions are temporary and disappear when switching tasks or closing the panel.
+
 ## Acceptance, search and reuse (v1.6.0)
 
 - Execution receipts may include `workDone`, `verification` and `remainingIssues` alongside the existing text and artifact paths/links. Accepting a result explicitly records the human acceptance and its evidence, but does not mark the task complete. Adopting as a record is distinct from acceptance and removes the receipt from the inbox without an acceptance decision.

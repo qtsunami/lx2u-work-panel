@@ -201,7 +201,10 @@ function harness(state = fixture(), storage = seedStorage(state), options = {}) 
       const value = harnessOptions.contextHook ? harnessOptions.contextHook(body, server) : { ok: false, error: 'no-context-fixture' };
       return Promise.resolve(value).then(response);
     }
-    if (url === '/api/work-panel/inbox') return response({ items: harnessOptions.inboxItems || [] });
+    if (url === '/api/work-panel/inbox') {
+      if (harnessOptions.inboxHook) return Promise.resolve().then(() => harnessOptions.inboxHook()).then(response);
+      return response({ items: harnessOptions.inboxItems || [] });
+    }
     if (url === '/api/work-panel/inbox/ack') {
       const body = JSON.parse(options.body);
       return Promise.resolve(harnessOptions.ackHook ? harnessOptions.ackHook(body, server) : { ok: true }).then(response);

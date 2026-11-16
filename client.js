@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.6.0';
+    const PANEL_VERSION = '1.7.0';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -4687,11 +4687,11 @@ window.__ModuleLoader__.load({
         const poll = async () => {
           try {
             const res = await fetch(INBOX_ENDPOINT);
-            if (!res.ok) return;
+            if (!res.ok) throw new Error('inbox-read-failed');
             const data = await res.json();
             if (stopped) return;
             if (!data || data.error || !Array.isArray(data.items)) {
-              setInboxIssue('回传收件箱暂不可用，已有内容未清空。');
+              setAssistantInboxFresh(false); setInboxIssue('回传收件箱暂不可用，已有内容未清空。');
               return;
             }
             const handled = data.items.filter((item) => item && inboxAckRef.current.includes(item.id)).map((item) => item.id);
@@ -4710,11 +4710,11 @@ window.__ModuleLoader__.load({
               .filter((item) => item && typeof item.id === 'string' && inboxAckRef.current.indexOf(item.id) === -1);
             const added = items.filter((item) => !known.has(item.id));
             known = new Set(items.map((item) => item.id));
-            setInbox(items);
+            setInbox(items); setAssistantInboxFresh(true);
             if (added.length && inboxAckRef.current.length >= 0) {
               showToast('收到 ' + added.length + ' 条执行回传，待确认');
             }
-          } catch { /* Host offline: keep the previous list */ }
+          } catch { if (!stopped) { setAssistantInboxFresh(false); setInboxIssue('回传收件箱暂不可用，已有内容可能过期，请联网重试。'); } }
         };
         poll();
         const timer = setInterval(poll, 5000);
@@ -4988,6 +4988,21 @@ window.__ModuleLoader__.load({
       const [inboxDrafts, setInboxDrafts] = useState({});
       const [globalQuery, setGlobalQuery] = useState('');
       const [reportPreferences, setReportPreferences] = useState(() => normalizeReportPreferences(extrasRef.current.reportPreferences));
+      const [assistantExpanded, setAssistantExpanded] = useState(false);
+      const [assistantResult, setAssistantResult] = useState(null);
+      const [assistantLoading, setAssistantLoading] = useState(false);
+      const [assistantConfirm, setAssistantConfirm] = useState(null);
+      const [assistantInboxFresh, setAssistantInboxFresh] = useState(false);
+      const assistantInboxFreshRef = useRef(assistantInboxFresh); assistantInboxFreshRef.current = assistantInboxFresh;
+      const assistantSequenceRef = useRef(0);
+      const assistantConfirmBusyRef = useRef(false);
+      const assistantInboxRef = useRef(inbox); assistantInboxRef.current = inbox;
+      const assistantIssueRef = useRef(inboxIssue); assistantIssueRef.current = inboxIssue;
+      useEffect(() => {
+        assistantSequenceRef.current += 1;
+        setAssistantExpanded(false); setAssistantResult(null); setAssistantLoading(false); setAssistantConfirm(null);
+      }, [selectedId, workspaceEpoch]);
+      useEffect(() => () => { assistantSequenceRef.current += 1; }, []);
       const changeReportPreferences = (next) => {
         const normalized = normalizeReportPreferences(next);
         if (!saveExtras({ reportPreferences: normalized })) return;
@@ -5109,6 +5124,115 @@ window.__ModuleLoader__.load({
           if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('clipboard-unavailable');
           await navigator.clipboard.writeText(String(text)); showToast('已复制'); return true;
         } catch { showToast('当前环境无法自动复制，请选中文字手动复制。', 'danger'); return false; }
+      };
+      // A snapshot contains exactly the bounded information the user is told
+      // will be sent; local file paths and links are deliberately not included.
+      const assistantReceiptsFor = (items, id, source) => items.filter((item) => {
+        const match = resolveInboxTask(source.tasks, item);
+        return match && match.id === id && !(inboxAckRef.current || []).includes(item.id);
+      }).slice(0, 5).map((item) => ({ id: item.id, text: item.text || '', workDone: item.workDone || '',
+        verification: item.verification || '', remainingIssues: item.remainingIssues || '' }));
+      const assistantSnapshot = (id) => {
+        const source = workspaceRef.current;
+        let task = tasksRef.current.find((item) => item.id === id && !item.deletedAt);
+        if (!task) return null;
+        for (const pending of Object.values(draftValues.current || {}))
+          if (pending && pending.id === id) task = { ...task, ...pending.patch };
+        const records = logsOf(source.logs, id).slice(-10).map((item) => ({ id: item.id, at: item.at || '', text: item.text || '' }));
+        const matches = recommendArtifacts({ tasks: source.tasks, artifacts: source.artifacts }, id, 5)
+          .map(({ artifact, task: other, reason }) => ({ id: artifact.id, taskId: other.id, taskTitle: other.title, summary: artifact.summary || '', reason }));
+        const receipts = assistantReceiptsFor(assistantInboxRef.current, id, source);
+        return { task: { id: task.id, title: task.title || '', description: task.description || '',
+          expected: task.expected || '', nextStep: task.nextStep || '', blockedReason: task.blockedReason || '', status: task.status,
+          urgency: task.urgency || '', deadline: task.deadline || '' },
+          logs: records, relatedArtifacts: matches, receipts,
+          inboxUnavailable: !!assistantIssueRef.current || !assistantInboxFreshRef.current };
+      };
+      const verifyAssistantInbox = async (snapshot) => {
+        try {
+          const res = await fetch(INBOX_ENDPOINT);
+          if (!res.ok) throw new Error('inbox-read-failed');
+          const data = await res.json();
+          if (!data || data.error || !Array.isArray(data.items)) throw new Error('inbox-read-failed');
+          const items = data.items.filter((item) => item && typeof item.id === 'string'
+            && !(inboxAckRef.current || []).includes(item.id));
+          if (JSON.stringify(assistantReceiptsFor(items, snapshot.task.id, workspaceRef.current)) !== JSON.stringify(snapshot.receipts)) {
+            setInbox(items); return false;
+          }
+          return true;
+        } catch {
+          setAssistantInboxFresh(false); setInboxIssue('回传收件箱暂不可用，已有内容可能过期，请联网重试。');
+          return false;
+        }
+      };
+      const runTaskAssistant = async (task) => {
+        if (!task || assistantLoading) return;
+        const snapshot = assistantSnapshot(task.id);
+        if (!snapshot) return;
+        if (snapshot.inboxUnavailable) { setAssistantResult({ error: '回执连接不可用，无法确认待验收内容；请先恢复连接。' }); return; }
+        const signature = JSON.stringify(snapshot);
+        const epoch = epochRef.current;
+        const sequence = ++assistantSequenceRef.current;
+        setAssistantLoading(true); setAssistantResult(null); setAssistantConfirm(null);
+        try {
+          const inboxCurrent = await verifyAssistantInbox(snapshot);
+          if (sequence !== assistantSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
+          if (!inboxCurrent || signature !== JSON.stringify(assistantSnapshot(task.id))) {
+            setAssistantResult({ error: '回执或任务已变化，或回执暂不可用；请重新整理。' }); return;
+          }
+          const res = await fetch(CHAT_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'task', intent: 'assist', ...snapshot }) });
+          const data = await res.json();
+          if (sequence !== assistantSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
+          if (signature !== JSON.stringify(assistantSnapshot(task.id))) {
+            setAssistantResult({ error: '任务、依据或回执已变化，请重新整理。' }); return;
+          }
+          if (!res.ok || !data || data.error) throw new Error('request-failed');
+          setAssistantResult({ taskId: task.id, signature, reply: typeof data.reply === 'string' ? data.reply : '',
+            options: Array.isArray(data.options) ? data.options.filter((item) => item && typeof item.text === 'string')
+              .slice(0, 5).map((item) => ({ text: item.text, evidence: Array.isArray(item.evidence) ? item.evidence : [],
+                uncertainty: typeof item.uncertainty === 'string' ? item.uncertainty : '尚需人工核实' })) : [],
+            receiptSummary: Array.isArray(data.receiptSummary) ? data.receiptSummary.filter((item) => item && typeof item.id === 'string').slice(0, 5) : [] });
+        } catch {
+          if (sequence === assistantSequenceRef.current && epoch === epochRef.current && selectedTaskRef.current === task.id)
+            setAssistantResult({ error: '助手暂时无法整理，请稍后重试；没有更改任务或回执。' });
+        } finally { if (sequence === assistantSequenceRef.current) setAssistantLoading(false); }
+      };
+      const confirmAssistantStep = async (option) => {
+        if (!assistantResult || !option || !option.text || assistantConfirmBusyRef.current) return;
+        assistantConfirmBusyRef.current = true;
+        const sourceResult = assistantResult;
+        const sequence = assistantSequenceRef.current;
+        const epoch = epochRef.current;
+        try {
+          let current = assistantSnapshot(sourceResult.taskId);
+          if (!current || JSON.stringify(current) !== sourceResult.signature || selectedTaskRef.current !== sourceResult.taskId) {
+            setAssistantConfirm(null); setAssistantResult({ error: '任务或依据已变化，请重新整理后再确认。' }); return;
+          }
+          const inboxCurrent = await verifyAssistantInbox(current);
+          if (sequence !== assistantSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== sourceResult.taskId) return;
+          current = assistantSnapshot(sourceResult.taskId);
+          if (!inboxCurrent || !current || JSON.stringify(current) !== sourceResult.signature) {
+            setAssistantConfirm(null); setAssistantResult({ error: '回执或任务已变化，或回执暂不可用；请重新整理。' }); return;
+          }
+          if (current.task.status !== 'todo') { showToast('此任务已关闭，请先恢复为待办。', 'danger'); return; }
+          if (Object.values(draftValues.current || {}).some((item) => item && item.id === current.task.id)) {
+            showToast('请先等待当前编辑保存，再重新整理。', 'danger'); return;
+          }
+          const status = hostSyncRef.current && hostSyncRef.current.getStatus();
+          if (!status || !status.canEdit) { showToast('当前数据不可写，未应用建议。', 'danger'); return; }
+          const next = tasksRef.current.map((item) => item.id === current.task.id
+            ? { ...item, nextStep: option.text, updatedAt: new Date().toISOString() } : item);
+          if (!writeStoredTransaction([[STORAGE_KEY, JSON.stringify(next)]])) {
+            showToast('保存失败，建议未写入任务。', 'danger'); return;
+          }
+          tasksRef.current = next; workspaceRef.current = { ...workspaceRef.current, tasks: next };
+          setTasks(next); setLastApply(null); setAssistantConfirm(null); setAssistantResult(null);
+          showToast('下一步已写入本页缓存，主存同步中；任务和回执状态未改变。');
+          if (hostSyncRef.current) hostSyncRef.current.flush().then((result) => {
+            if (result && result.phase !== 'ready') showToast('下一步已写入本页缓存，主存尚未确认；请留意同步状态。', 'danger');
+          });
+        } finally { assistantConfirmBusyRef.current = false; }
       };
       const openSourceSession = (sessionId) => {
         const service = clientService('uiWorkspace');
@@ -7788,6 +7912,39 @@ window.__ModuleLoader__.load({
         h('p', { className: 'wp-ai-hint' }, '以上是 AI 建议，只有点「采纳」才会写入任务。')) : null;
 
       const relatedArtifacts = selectedTask ? recommendArtifacts({ tasks, artifacts }, selectedTask.id) : [];
+      const assistantContext = selectedTask ? assistantSnapshot(selectedTask.id) : null;
+      const assistantIsStale = !!(assistantResult && assistantResult.signature
+        && JSON.stringify(assistantContext) !== assistantResult.signature);
+      const assistantEvidenceLabel = (ref) => {
+        if (!ref || !assistantContext) return '依据不可用';
+        if (ref.type === 'task') return '当前任务：' + assistantContext.task.title;
+        if (ref.type === 'log') {
+          const log = assistantContext.logs.find((entry) => entry.id === ref.id);
+          return log ? '记录：' + (log.text || '').slice(0, 80) : '记录不可用';
+        }
+        if (ref.type === 'artifact') {
+          const artifact = assistantContext.relatedArtifacts.find((entry) => entry.id === ref.id);
+          return artifact ? '历史成果：' + artifact.summary + '（' + artifact.reason + '）' : '成果不可用';
+        }
+        if (ref.type === 'receipt') {
+          const receipt = assistantContext.receipts.find((entry) => entry.id === ref.id);
+          return receipt ? '待验收回执：' + (receipt.text || '').slice(0, 80) : '回执不可用';
+        }
+        return '依据不可用';
+      };
+      const assistantEvidenceDetail = (ref, index) => {
+        if (!assistantContext || !ref) return null;
+        const item = ref.type === 'log' ? assistantContext.logs.find((entry) => entry.id === ref.id)
+          : ref.type === 'artifact' ? assistantContext.relatedArtifacts.find((entry) => entry.id === ref.id)
+          : ref.type === 'receipt' ? assistantContext.receipts.find((entry) => entry.id === ref.id)
+          : ref.type === 'task' && ref.id === assistantContext.task.id ? assistantContext.task : null;
+        if (!item) return null;
+        const content = ref.type === 'receipt' ? [item.text, item.workDone, item.verification, item.remainingIssues].filter(Boolean).join('\n\n')
+          : ref.type === 'artifact' ? item.summary : ref.type === 'task' ? [item.title, item.description, item.expected].filter(Boolean).join('\n\n') : item.text;
+        return h('details', { className: 'wp-record-original', key: ref.type + ':' + ref.id + ':' + index },
+          h('summary', null, assistantEvidenceLabel(ref) + ' · ' + ref.id + (item.at ? ' · ' + formatDateTime(item.at) : '')),
+          h('p', { style: { whiteSpace: 'pre-wrap' } }, content || '暂无文字内容'));
+      };
       const detailPanel = (selectedTask && !selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-meta' },
@@ -7893,6 +8050,10 @@ window.__ModuleLoader__.load({
                 analyzeTask(selectedTask);
               },
             }, aiLoading ? '分析中…' : 'AI 建议'),
+            h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+              'aria-expanded': assistantExpanded ? 'true' : 'false',
+              onClick: () => { if (assistantExpanded) { assistantSequenceRef.current += 1; setAssistantLoading(false); setAssistantResult(null); setAssistantConfirm(null); }
+                setAssistantExpanded(!assistantExpanded); } }, '工作助手'),
             h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
               onClick: () => prepareDelegation(selectedTask), disabled: delegation && delegation.loading ? 'true' : undefined,
             }, '交给 AI'),
@@ -7912,6 +8073,53 @@ window.__ModuleLoader__.load({
           detailLogComposer,
           detailArtifactComposer,
           detailAiPanel,
+          assistantExpanded && assistantContext ? h('section', { className: 'wp-detail-section', 'aria-label': '工作助手' },
+            h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '工作助手 · 按需整理')),
+            h('p', { className: 'wp-detail-empty' }, '点击生成后，将当前任务的标题、描述、预期、下一步、阻塞、状态、优先级和期限，以及最近最多 10 条记录、5 条相关成果摘要和 5 条匹配的待验收回执发送给已配置模型。每个字段最多取 1000 字；不发送独立文件/链接字段，但正文里包含的路径和网址仍会发送。'),
+            h('p', { className: 'wp-detail-empty' }, '本次可用：' + assistantContext.logs.length + ' 条记录、' + assistantContext.relatedArtifacts.length
+              + ' 条相关成果、' + assistantContext.receipts.length + ' 条待验收回执（截至最近一次读取）。相似成果按本地项目和词语匹配，仅供参考。'),
+            assistantContext.inboxUnavailable ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '回执连接异常，列表可能不完整；请先检查回传收件箱。') : null,
+            assistantContext.relatedArtifacts.length ? h('div', { className: 'wp-ai-sug' },
+              h('span', { className: 'wp-ai-sug-label' }, '相关历史成果 · 本地匹配'),
+              assistantContext.relatedArtifacts.map((item) => h('button', { key: item.id,
+                className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
+                onClick: () => { setActiveView('all'); setSelectedId(item.taskId); } },
+                (item.summary || '未命名成果') + ' · ' + item.taskTitle + '（' + item.reason + '）')))
+              : h('p', { className: 'wp-detail-empty' }, '未找到可推荐的历史成果；不代表不存在相关资料。'),
+            h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button', disabled: assistantLoading || undefined,
+              onClick: () => runTaskAssistant(selectedTask) }, assistantLoading ? '正在整理…' : '生成工作建议'),
+            assistantResult && assistantResult.error ? h('p', { className: 'wp-report-notice wp-report-notice-err', role: 'status' }, assistantResult.error) : null,
+            assistantResult && assistantResult.signature ? h('div', { className: 'wp-ai-body' },
+              h('p', { className: 'wp-ai-hint' }, '以下是 AI 整理和建议，不代表事实核实、回执验收或任务完成。可展开引用查看原文；切换任务或前往收件箱会清除本次结果。'),
+              assistantIsStale ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '任务或依据已变化，建议可能过期，请重新生成。') : null,
+              assistantResult.reply ? h('p', { className: 'wp-ai-reply' }, assistantResult.reply) : null,
+              assistantResult.receiptSummary.length ? h('div', { className: 'wp-ai-sug' },
+                h('span', { className: 'wp-ai-sug-label' }, '待验收回执整理'),
+                assistantResult.receiptSummary.map((item) => h('div', { key: item.id },
+                  h('p', { className: 'wp-ai-sug-text' }, item.summary),
+                  h('p', { className: 'wp-data-hint' }, '模型引用（尚未经核实）：' + assistantEvidenceLabel({ type: 'receipt', id: item.id })),
+                  assistantEvidenceDetail({ type: 'receipt', id: item.id }, 0),
+                  h('p', { className: 'wp-data-hint' }, '不确定性：' + item.uncertainty))),
+                h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                  onClick: () => { setActiveView('inbox'); setSelectedId(null); } }, '前往回传收件箱')) : null,
+              assistantResult.options.length ? h('div', { className: 'wp-ai-sug' },
+                h('span', { className: 'wp-ai-sug-label' }, '可选下一步'),
+                assistantResult.options.map((option, index) => h('div', { key: index, className: 'wp-ai-sug' },
+                  h('p', { className: 'wp-ai-sug-text' }, option.text),
+                  h('p', { className: 'wp-data-hint' }, '模型引用（尚未经核实）：' + (option.evidence.length
+                    ? option.evidence.map(assistantEvidenceLabel).join('；') : '无可核对引用')),
+                  option.evidence.map(assistantEvidenceDetail),
+                  h('p', { className: 'wp-data-hint' }, '不确定性：' + option.uncertainty),
+                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
+                    onClick: () => setAssistantConfirm(index) }, '选择作为下一步'),
+                  assistantConfirm === index ? h('div', { className: 'wp-inline-confirm' },
+                    h('p', null, '当前下一步：' + (assistantContext.task.nextStep || '（未填写）')),
+                    h('p', null, '替换为：' + option.text),
+                    h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
+                      onClick: () => confirmAssistantStep(option) }, '确认写入下一步'),
+                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setAssistantConfirm(null) }, '取消')) : null)))
+                : h('p', { className: 'wp-detail-empty' }, '暂无可用下一步建议；可以补充记录后重试。')) : null) : null,
           h('div', { className: 'wp-detail-section' },
             h('div', { className: 'wp-detail-section-head' },
               h('span', { className: 'wp-detail-section-title' }, '工作记录'),
@@ -7946,7 +8154,7 @@ window.__ModuleLoader__.load({
                     renderLocalFiles(item.files),
                     h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at), sourceSessionLink(item.sourceSessionId)))))
               : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
-          relatedArtifacts.length ? h('div', { className: 'wp-detail-section' },
+          relatedArtifacts.length && !assistantExpanded ? h('div', { className: 'wp-detail-section' },
             h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '相关历史成果')),
             h('p', { className: 'wp-detail-empty' }, '按项目和内容相似词推荐，仅供参考。'),
             relatedArtifacts.map(({ artifact, task, reason }) => h('button', {
