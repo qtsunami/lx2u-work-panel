@@ -34,14 +34,14 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
   {
     const ui = await open(); try {
       const editor = ui.byClass('wp-detail-desc-input');
-      assert.equal(editor.props.value, MARKDOWN, 'edit mode shows the raw Markdown');
-      assert.equal(ui.nodes().filter((node) => has(node, 'wp-md-p')).length, 0, 'no preview while editing');
+      assert.equal(editor.props.value, MARKDOWN, 'the editor still shows the raw Markdown');
+      assert.ok(ui.nodes().some((node) => has(node, 'wp-detail-desc-split')), 'editor and preview are shown together');
+      assert.ok(ui.nodes().filter((node) => has(node, 'wp-md-p')).length >= 1, 'the preview is rendered while editing');
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-tool')), 'toolbar exists');
     } finally { ui.close(); }
   }
   {
     const ui = await open(); try {
-      ui.click('预览');
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-h1')), 'h1 renders');
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-h2')), 'h2 renders');
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-h3')), 'h3 renders');
@@ -59,7 +59,6 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
   }
   {
     const ui = await open(); try {
-      ui.click('预览');
       const checks = ui.nodes().filter((node) => has(node, 'wp-md-check'));
       ui.fire(checks[1], 'onClick'); await ui.settle();
       const next = stored(ui);
@@ -90,9 +89,10 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
       ui.click('关联任务');
       const input = ui.one((node) => node.type === 'input' && String(node.props.placeholder).includes('搜索任务标题'));
       ui.fire(input, 'onChange', { target: { value: '历史' } });
-      ui.click('历史任务'); await ui.settle();
-      ui.click('预览'); await ui.settle();
-      assert.ok(stored(ui).trim().endsWith('[[task:b]]'), 'marker inserted at the caret');
+      ui.fire(ui.one((node) => has(node, 'wp-md-picker-item') && text(node) === '历史任务', 'picker item'), 'onClick'); await ui.settle();
+      assert.ok(ui.byClass('wp-detail-desc-input').props.value.trim().endsWith('[[task:b]]'), 'marker inserted at the caret');
+      ui.timers.advance(600); await ui.settle();
+      assert.ok(stored(ui).trim().endsWith('[[task:b]]'));
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-ref') && text(node) === '历史任务'));
     } finally { ui.close(); }
   }
@@ -107,10 +107,12 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
   {
     const ui = await open(); try {
       ui.change('wp-detail-desc-input', '<img src=x onerror=alert(1)> 新内容');
-      ui.click('预览');
       assert.equal(ui.nodes().filter((node) => node.type === 'img').length, 0, 'raw HTML never becomes an element');
-      assert.ok(ui.text().includes('<img src=x onerror=alert(1)>'), 'the literal text is still shown');
-      assert.ok(stored(ui).includes('新内容'), 'switching to preview flushes the pending edit');
+      assert.ok(ui.text().includes('<img src=x onerror=alert(1)>'), 'the literal text is shown in the live preview');
+      assert.ok(ui.text().includes('新内容'), 'the preview updates immediately, before any save');
+      assert.ok(!stored(ui).includes('新内容'), 'saving is still debounced');
+      ui.timers.advance(600); await ui.settle();
+      assert.ok(stored(ui).includes('新内容'), 'the debounced save lands afterwards');
     } finally { ui.close(); }
   }
   {
@@ -118,7 +120,6 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
       // Pending title edit must survive a preview checkbox write.
       const title = ui.byClass('wp-detail-title-input');
       ui.fire(title, 'onChange', { target: { value: '改过的标题' } });
-      ui.click('预览');
       const checks = ui.nodes().filter((node) => has(node, 'wp-md-check'));
       ui.fire(checks[1], 'onClick'); await ui.settle();
       assert.equal(ui.storage.json(KEY.tasks).find((item) => item.id === 'a').title, '改过的标题', 'the flushed title is not rolled back');
@@ -137,7 +138,6 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
   }
   {
     const ui = await open('[看图](https://example.com/a) 与 //evil.example/x 以及 [坏](data:text/html,x)'); try {
-      ui.click('预览');
       const links = ui.nodes().filter((node) => node.type === 'a');
       assert.equal(links.length, 1, 'only the https link becomes an anchor');
       assert.equal(links[0].props.href, 'https://example.com/a');
@@ -148,7 +148,6 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
   }
   {
     const ui = await open('[[task:missing]]'); try {
-      ui.click('预览');
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-ref-broken') && text(node) === '任务已失效'), 'a deleted or unknown task reference degrades visibly');
     } finally { ui.close(); }
   }
@@ -157,5 +156,21 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
       assert.equal(ui.nodes().filter((node) => has(node, 'wp-row-desc')).length, 0, 'a marker-only description shows no raw syntax in the row');
     } finally { ui.close(); }
   }
-  console.log('MARKDOWN UI: 12 scenarios passed');
+    {
+    const ui = await open(); try {
+      const preview = ui.byClass('wp-detail-desc-preview');
+      assert.equal(preview.props.role, 'region');
+      assert.equal(preview.props['aria-label'], '描述预览');
+      assert.equal(ui.byClass('wp-detail-desc-input').props['aria-label'], '描述 Markdown 源码');
+      const check = ui.nodes().find((node) => has(node, 'wp-md-check'));
+      assert.equal(check.props.title, '勾选会同步改写 Markdown 源码');
+      const input = ui.byClass('wp-detail-desc-input');
+      input.props.ref.current.scrollHeight = 200; input.props.ref.current.clientHeight = 100;
+      const pane = ui.byClass('wp-detail-desc-preview');
+      pane.props.ref.current.scrollHeight = 300; pane.props.ref.current.clientHeight = 100;
+      ui.fire(input, 'onScroll', { target: { scrollTop: 50, scrollHeight: 200, clientHeight: 100 } });
+      assert.equal(pane.props.ref.current.scrollTop, 100, 'scrolling the source drives the preview proportionally');
+    } finally { ui.close(); }
+  }
+console.log('MARKDOWN UI: 13 scenarios passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

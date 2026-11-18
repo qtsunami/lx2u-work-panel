@@ -63,7 +63,7 @@ const classes = [];
 const want = [
   'wp-detail', 'wp-detail-body', 'wp-detail-head', 'wp-detail-meta', 'wp-detail-check', 'wp-detail-date', 'wp-detail-flag',
   'wp-row', 'wp-row-time', 'wp-row-desc',
-  'wp-detail-desc', 'wp-detail-desc-input', 'wp-detail-lower', 'wp-detail-tabs', 'wp-detail-tab', 'wp-detail-pane',
+  'wp-detail-desc', 'wp-detail-desc-split', 'wp-detail-desc-input', 'wp-detail-desc-preview', 'wp-detail-lower', 'wp-detail-tabs', 'wp-detail-tab', 'wp-detail-pane',
   'wp-detail-field',
 ];
 const tabs = [];
