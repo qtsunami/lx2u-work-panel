@@ -42,8 +42,10 @@ async function open(options = {}) {
     const ui = await open(); try {
       ui.click('生成工作建议'); await ui.settle(); const request = ui.nextRequest('task');
       // Modify the same task while the network call is in flight.
-      const description = ui.one(n => n.type === 'textarea' && has(n, 'wp-detail-desc-input'));
-      ui.fire(description, 'onChange', { target: { value: '新增上下文' } });
+      const block = ui.one(n => has(n, 'wp-md-block'), 'description block');
+      ui.fire(block, 'onClick');
+      const description = ui.one(n => n.type === 'textarea' && has(n, 'wp-md-block-input'), 'block editor');
+      ui.fire(description, 'onChange', { target: { value: '新增上下文', selectionStart: 5, selectionEnd: 5 } });
       await ui.respond(request, reply);
       assert.ok(ui.text().includes('已变化，请重新整理'));
       assert.equal(ui.storage.json(KEY.tasks).find(t => t.id === 'a').nextStep, '原下一步');

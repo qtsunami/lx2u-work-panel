@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.8.1';
+    const PANEL_VERSION = '1.9.0';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -61,6 +61,8 @@ window.__ModuleLoader__.load({
     // @generated quick-date end
     // @generated markdown begin
     // @generated markdown end
+    // @generated blocks begin
+    // @generated blocks end
 
     function notifyWorkspaceWrite(keys) {
       const relevant = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
@@ -2115,11 +2117,6 @@ window.__ModuleLoader__.load({
         font-size: 18px; font-weight: 600; line-height: 1.4;
         margin: 0 0 6px;
       }
-      .wp-detail-desc-input {
-        flex: 1; min-height: 0; resize: none;
-        font-size: 14px; line-height: 1.6;
-        margin: 0; color: var(--wp-text-secondary);
-      }
       .wp-detail-desc-hint { flex-shrink: 0; font-size: 12px; color: var(--wp-text-secondary); }
       .wp-md-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; flex-wrap: wrap; margin: 0 0 6px; }
       .wp-md-tool {
@@ -2140,49 +2137,50 @@ window.__ModuleLoader__.load({
         text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       .wp-md-picker-item:hover { background: var(--wp-fill); }
-      .wp-detail-desc-split { flex: 1; min-height: 0; display: flex; gap: 10px; min-width: 0; }
-      .wp-detail-desc-editor { position: relative; flex: 1 1 50%; min-width: 0; min-height: 0; display: flex; }
-      .wp-detail-desc-preview { flex: 1 1 50%; min-width: 0; min-height: 0; overflow: auto; padding: 4px 2px 0 10px; border-left: 1px solid var(--wp-border-secondary); }
-      .wp-md-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--wp-text-secondary); }
-      .wp-md-mirror {
-        position: absolute; inset: 0; visibility: hidden; pointer-events: none; overflow: hidden;
-        width: 100%; padding: 4px 0; box-sizing: border-box;
-        font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere;
+      .wp-md-blocks {
+        flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column;
+        gap: 2px; padding: 2px 0; outline: none;
       }
-      .wp-md-style-menu {
-        position: absolute; z-index: 220; top: 28px; left: 0; width: 188px; box-sizing: border-box; padding: 6px;
-        display: flex; flex-direction: column; gap: 2px;
-        background: var(--wp-bg-container); border: 1px solid var(--wp-border-secondary);
-        border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+      .wp-md-block {
+        min-height: 22px; padding: 1px 2px; border-radius: 4px; cursor: text;
+        overflow-wrap: anywhere; line-height: 1.6; font-size: 14px; color: var(--wp-text);
       }
-      .wp-md-style-item {
-        display: flex; align-items: center; justify-content: space-between; gap: 8px;
-        padding: 6px 8px; border: none; border-radius: 6px; background: transparent;
-        color: var(--wp-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+      .wp-md-block:hover { background: var(--wp-fill); }
+      .wp-md-block-editing { display: flex; flex-direction: column; padding: 0; }
+      .wp-md-block-editing.wp-md-edit-quote { border-left: 3px solid var(--wp-border); padding-left: 10px; }
+      .wp-md-block-input {
+        width: 100%; box-sizing: border-box; display: block;
+        border: none; outline: none; background: transparent; resize: none; overflow: hidden;
+        margin: 0; padding: 1px 2px; font: inherit; font-size: 14px; line-height: 1.6;
+        color: var(--wp-text); caret-color: var(--wp-primary); white-space: pre-wrap; overflow-wrap: anywhere;
       }
-      .wp-md-style-item:hover, .wp-md-style-item.wp-active { background: var(--wp-fill); }
-      .wp-md-style-key { color: var(--wp-text-tertiary); font-size: 11px; }
-      .wp-md-p { margin: 0 0 8px; font-size: 14px; line-height: 1.65; color: var(--wp-text); overflow-wrap: anywhere; }
-      .wp-md-p:last-child { margin-bottom: 0; }
-      .wp-md-h { margin: 4px 0 6px; font-weight: 600; line-height: 1.4; color: var(--wp-text); }
-      .wp-md-h1 { font-size: 18px; }
-      .wp-md-h2 { font-size: 16px; }
-      .wp-md-h3 { font-size: 14.5px; }
-      .wp-md-list { margin: 0 0 8px; padding-left: 18px; font-size: 14px; line-height: 1.65; color: var(--wp-text); }
-      .wp-md-li { margin: 2px 0; overflow-wrap: anywhere; }
-      .wp-md-li-check { list-style: none; display: flex; align-items: flex-start; gap: 6px; margin-left: -18px; }
+      .wp-md-block-input:focus { outline: 2px solid var(--wp-primary); outline-offset: 2px; border-radius: 4px; }
+      .wp-md-block:focus-visible, .wp-md-blocks:focus-visible {
+        outline: 2px solid var(--wp-primary); outline-offset: -2px; border-radius: 4px;
+      }
+      .wp-md-block-empty { min-height: 22px; }
+      .wp-md-size-h1 { font-size: 18px; font-weight: 600; line-height: 1.4; }
+      .wp-md-size-h2 { font-size: 16px; font-weight: 600; line-height: 1.4; }
+      .wp-md-size-h3 { font-size: 14.5px; font-weight: 600; line-height: 1.45; }
+      .wp-md-size-quote { color: var(--wp-text-secondary); }
+      .wp-md-block-heading1 { font-size: 18px; font-weight: 600; line-height: 1.4; }
+      .wp-md-block-heading2 { font-size: 16px; font-weight: 600; line-height: 1.4; }
+      .wp-md-block-heading3 { font-size: 14.5px; font-weight: 600; line-height: 1.45; }
+      .wp-md-block-quote { border-left: 3px solid var(--wp-border); padding-left: 10px; color: var(--wp-text-secondary); }
+      .wp-md-block-item { display: flex; align-items: flex-start; gap: 6px; }
+      .wp-md-block-check { display: flex; align-items: flex-start; gap: 6px; }
+      .wp-md-block-empty { color: var(--wp-text-quaternary); }
+      .wp-md-marker { flex-shrink: 0; min-width: 14px; color: var(--wp-text-tertiary); }
+      .wp-md-placeholder { font-size: 13px; color: var(--wp-text-quaternary); }
+      .wp-md-editor-hint { margin: 4px 2px 0; }
       .wp-md-check {
-        flex-shrink: 0; width: 16px; height: 16px; margin-top: 2px; padding: 0;
+        flex-shrink: 0; width: 16px; height: 16px; margin-top: 3px; padding: 0;
         display: inline-flex; align-items: center; justify-content: center;
         border: 1.5px solid var(--wp-text-tertiary); border-radius: 4px;
         background: transparent; color: #fff; cursor: pointer;
       }
       .wp-md-check.wp-checked { background: var(--wp-primary); border-color: var(--wp-primary); }
       .wp-md-item-text.wp-done { color: var(--wp-text-tertiary); text-decoration: line-through; }
-      .wp-md-quote {
-        margin: 0 0 8px; padding: 2px 0 2px 10px; border-left: 3px solid var(--wp-border);
-        color: var(--wp-text-secondary); font-size: 14px; line-height: 1.65;
-      }
       .wp-md-code { padding: 1px 4px; border-radius: 4px; background: var(--wp-fill); font-size: 12.5px; }
       .wp-md-link { color: var(--wp-primary); text-decoration: none; }
       .wp-md-link:hover { text-decoration: underline; }
@@ -2194,6 +2192,22 @@ window.__ModuleLoader__.load({
       }
       .wp-md-ref:hover { background: rgba(22, 119, 255, 0.22); }
       .wp-md-ref-broken { background: var(--wp-fill); color: var(--wp-text-tertiary); cursor: help; }
+      .wp-md-empty { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--wp-text-secondary); }
+      .wp-md-style-menu {
+        width: 100%; max-width: 280px; box-sizing: border-box; padding: 6px;
+        display: flex; flex-direction: column; gap: 2px;
+        background: var(--wp-bg-container); border: 1px solid var(--wp-border-secondary);
+        border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+      }
+      .wp-md-menu-inline { margin: 4px 2px 6px; align-self: flex-start; }
+      .wp-md-picker-inline { width: 100%; max-width: 300px; box-sizing: border-box; margin: 4px 2px 6px; align-self: flex-start; }
+      .wp-md-style-item {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        padding: 6px 8px; border: none; border-radius: 6px; background: transparent;
+        color: var(--wp-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+      }
+      .wp-md-style-item:hover, .wp-md-style-item.wp-active { background: var(--wp-fill); }
+      .wp-md-style-key { color: var(--wp-text-tertiary); font-size: 11px; }
       .wp-detail-field { margin: 0 0 10px; }
       .wp-detail-project { height: 30px; padding: 2px 0; }
       .wp-nav-group { margin: 0 0 10px; }
@@ -2671,11 +2685,6 @@ window.__ModuleLoader__.load({
       .wp-status-seg-item[data-active='true'] { background: var(--wp-bg-container); color: var(--wp-primary); font-weight: 500; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
 
       /* Wider detail column: keep the middle list usable by stepping down early. */
-      @container (max-width: 560px) {
-        .wp-detail-desc-split { flex-direction: column; gap: 6px; }
-        .wp-detail-desc-editor { flex: 1 1 auto; min-height: 140px; }
-        .wp-detail-desc-preview { flex: 1 1 auto; padding: 6px 2px 0 0; border-left: none; border-top: 1px solid var(--wp-border-secondary); }
-      }
       @media (max-width: 1440px) { .wp-detail { width: 520px; } }
       @media (max-width: 1200px) { .wp-detail { width: 440px; } .wp-evidence { width: 340px; } }
       @media (max-width: 980px) {
@@ -2694,9 +2703,6 @@ window.__ModuleLoader__.load({
         .wp-detail, .wp-evidence { width: 100%; }
         .wp-detail-desc { min-height: 160px; }
         .wp-detail-lower { min-height: 140px; }
-        .wp-detail-desc-split { flex-direction: column; gap: 6px; }
-        .wp-detail-desc-editor { min-height: 120px; }
-        .wp-detail-desc-preview { padding: 6px 2px 0 0; border-left: none; border-top: 1px solid var(--wp-border-secondary); }
       }
 
       @media (max-width: 760px) {
@@ -3157,36 +3163,26 @@ window.__ModuleLoader__.load({
         setArtifactComposerOpen(false); setArtifactSummary(''); setArtifactLinks('');
         setAiPanelOpen(false); setAiResult(null); setAiAdopted({});
         setDetailMoreOpen(false); setDescPicker(null); setStyleMenu(null);
-        descComposingRef.current = false; descSelectionRef.current = null; pendingCaretRef.current = null; descPrevValueRef.current = '';
+        descComposingRef.current = false; pendingCaretRef.current = null; setDescFocus(null);
         setTidyLoading(false); setTidyNote(''); setDelegation(null); tidySourceRef.current = null;
-        // Baseline for 'only newly typed characters open the style menu'.
-        descPrevValueRef.current = (tasks.find((t) => t.id === selectedId) || {}).description || '';
       }, [selectedId]);
-      // Restore the caret after a toolbar command rewrites the description.
+      // Restore the caret (and grow the active block) after a command.
       useEffect(() => {
+        if (styleMenu && styleMenuRef.current && typeof styleMenuRef.current.scrollIntoView === 'function')
+          styleMenuRef.current.scrollIntoView({ block: 'nearest' });
+        const el = descBlockInputRef.current;
+        if (!el) return;
+        if (typeof el.style === 'object' && el.style) {
+          el.style.height = 'auto';
+          const nextHeight = Number(el.scrollHeight);
+          if (Number.isFinite(nextHeight) && nextHeight > 0) el.style.height = Math.min(nextHeight, 240) + 'px';
+        }
         if (descPicker) { pendingCaretRef.current = null; return; }
         const pending = pendingCaretRef.current;
-        const el = detailDescRef.current;
-        if (!pending || !el) return;
+        if (!pending) return;
         pendingCaretRef.current = null;
         el.focus();
         if (typeof el.setSelectionRange === 'function') el.setSelectionRange(pending.start, pending.end);
-      });
-      // Anchor the style menu under the caret. Layout is unavailable in the VM
-      // harness, so a guarded fallback keeps it docked inside the editor there.
-      useEffect(() => {
-        if (!styleMenu || styleMenu.pos) return;
-        const mirror = styleMenuMirrorRef.current;
-        if (!mirror || typeof mirror.querySelector !== 'function') return;
-        const caret = mirror.querySelector('.wp-md-mirror-caret');
-        if (!caret) return;
-        const el = detailDescRef.current;
-        const top = Number(caret.offsetTop) - (el && Number(el.scrollTop) || 0);
-        const left = Number(caret.offsetLeft) - (el && Number(el.scrollLeft) || 0);
-        if (!Number.isFinite(top) || !Number.isFinite(left)) return;
-        const editorWidth = Number(el && el.clientWidth) || Number(mirror.clientWidth) || 0;
-        const maxLeft = Math.max(0, editorWidth - 202);
-        setStyleMenu((prev) => (prev && !prev.pos ? { ...prev, pos: { top: Math.max(0, top + 24), left: Math.max(0, Math.min(left - 8, maxLeft)) } } : prev));
       });
       useEffect(() => {
         if (!calOpen) return undefined;
@@ -3328,15 +3324,13 @@ window.__ModuleLoader__.load({
       const [detailMoreOpen, setDetailMoreOpen] = useState(false);
       const [descPicker, setDescPicker] = useState(null);
       const [styleMenu, setStyleMenu] = useState(null);
+      const [descFocus, setDescFocus] = useState(null);
       const pendingCaretRef = useRef(null);
-      const detailDescRef = useRef(null);
-      const descSelectionRef = useRef(null);
+      const descBlockInputRef = useRef(null);
+      const styleMenuRef = useRef(null);
       const descAreaRef = useRef(null);
       const detailMoreRef = useRef(null);
       const descComposingRef = useRef(false);
-      const descPrevValueRef = useRef('');
-      const styleMenuMirrorRef = useRef(null);
-      const descPreviewRef = useRef(null);
       // Popovers close on an outside press or Escape, and never survive a tab switch.
       useEffect(() => {
         if (!styleMenu && !descPicker && !detailMoreOpen) return undefined;
@@ -6361,47 +6355,160 @@ window.__ModuleLoader__.load({
           h('summary', null, assistantEvidenceLabel(ref) + ' · ' + ref.id + (item.at ? ' · ' + formatDateTime(item.at) : '')),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, content || '暂无文字内容'));
       };
-      // ---- description Markdown editor -----------------------------------
+      // ---- description: in-place block editor (Obsidian-style) --------------
       const descriptionText = () => {
         if (!selectedTask) return '';
         const key = selectedTask.id + ':description';
         return draftText[key] !== undefined ? draftText[key] : (selectedTask.description || '');
       };
-      const commitDescription = (text, selectionStart, selectionEnd) => {
+      const commitDescription = (text) => {
         if (!selectedTask) return;
         setDraftText((prev) => ({ ...prev, [selectedTask.id + ':description']: text }));
         updateTaskDebounced(selectedTask.id, { description: text });
-        pendingCaretRef.current = { start: selectionStart, end: selectionEnd };
       };
-      const applyDescPrefix = (prefix) => {
-        if (!selectedTask) return;
+      const descBlocks = useMemo(() => parseBlocks(descriptionText()),
+        [descriptionText(), selectedTask && selectedTask.id]);
+      const blockSource = (index) => (descBlocks[index] ? descBlocks[index].source : '');
+      const focusBlock = (index, caret) => {
+        if (index < 0 || index >= descBlocks.length) return;
         setStyleMenu(null); setDescPicker(null);
-        const el = detailDescRef.current;
-        const value = descriptionText();
-        const start = el && typeof el.selectionStart === 'number' ? el.selectionStart : value.length;
-        const end = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
-        const result = applyBlockPrefix(value, start, end, prefix);
-        commitDescription(result.text, result.selectionStart, result.selectionEnd);
+        setDescFocus(index);
+        pendingCaretRef.current = { start: caret, end: caret };
       };
-      const insertDescTaskRef = (id) => {
+      const commitBlocks = (blocks, focusIndex, caret) => {
+        commitDescription(serializeBlocks(blocks));
+        if (focusIndex == null) return;
+        setDescFocus(focusIndex);
+        pendingCaretRef.current = { start: caret, end: caret };
+      };
+      const changeBlock = (index, value, caret, eventComposing, eventPaste) => {
+        const previous = blockSource(index);
+        const parts = value.split('\n');
+        const next = descBlocks.slice(0, index)
+          .concat(parts.map((source) => ({ source })), descBlocks.slice(index + 1));
+        commitDescription(serializeBlocks(next));
+        if (parts.length > 1) {
+          // The block list just grew, so set focus directly instead of bounds-checking
+          // against the stale snapshot.
+          const lastIndex = index + parts.length - 1;
+          const caretAfter = parts[parts.length - 1].length;
+          setDescFocus(lastIndex);
+          pendingCaretRef.current = { start: caretAfter, end: caretAfter };
+          setStyleMenu(null);
+          return;
+        }
+        // Only newly typed characters may open the style menu.
+        const deleting = value.length < previous.length;
+        const composing = descComposingRef.current || !!eventComposing;
+        const hit = composing || eventPaste || deleting || caret == null ? null : styleTriggerAt(value, caret);
+        if (hit) setStyleMenu({ blockIndex: index, index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0 });
+        else if (styleMenu) setStyleMenu(null);
+      };
+      const mergeWithPrevious = (index) => {
+        if (index <= 0) return;
+        const previous = blockSource(index - 1);
+        const merged = mergeBlocks(previous, blockSource(index));
+        const next = descBlocks.slice();
+        next.splice(index - 1, 2, { source: merged });
+        commitBlocks(next, index - 1, previous.length);
+      };
+      const blockKeyDown = (e, index) => {
+        if (e.isComposing) return;
+        if (styleMenu && styleMenu.blockIndex === index) {
+          if (e.key === 'Escape') { e.preventDefault(); setStyleMenu(null); return; }
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const step = e.key === 'ArrowDown' ? 1 : styleMenuItems.length - 1;
+            setStyleMenu((prev) => (prev ? { ...prev, active: (prev.active + step) % styleMenuItems.length } : prev));
+            return;
+          }
+          if (e.key === 'Enter') { e.preventDefault(); applyStyleItem(styleMenuItems[styleMenu.active]); return; }
+        }
+        const el = e.target || {};
+        const start = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+        const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+        const value = typeof el.value === 'string' ? el.value : blockSource(index);
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          const cleaned = value.slice(0, start) + value.slice(end);
+          const split = splitBlock(cleaned, start);
+          const next = descBlocks.slice();
+          next.splice(index, 1, { source: split.left }, { source: split.right });
+          commitBlocks(next, index + 1, markerLength(split.right));
+          return;
+        }
+        if (e.key === 'Backspace' && start === 0 && end === 0) {
+          if (index === 0) return;
+          e.preventDefault();
+          mergeWithPrevious(index);
+          return;
+        }
+        if (e.key === 'ArrowUp' && start === 0 && index > 0) { e.preventDefault(); focusBlock(index - 1, blockSource(index - 1).length); return; }
+        if (e.key === 'ArrowDown' && start === value.length && index < descBlocks.length - 1) { e.preventDefault(); focusBlock(index + 1, 0); }
+      };
+      const applyBlockType = (type, level) => {
         if (!selectedTask) return;
-        const value = descriptionText();
-        const selection = descSelectionRef.current || { start: value.length, end: value.length };
-        const result = insertTaskRef(value, selection.start, selection.end, id);
-        commitDescription(result.text, result.selectionStart, result.selectionEnd);
+        const index = descFocus != null ? descFocus : Math.max(0, descBlocks.length - 1);
+        const typed = setBlockType(blockSource(index), type, level);
+        const next = descBlocks.slice();
+        next[index] = { source: typed };
+        setStyleMenu(null); setDescPicker(null);
+        commitBlocks(next, index, markerLength(typed));
+      };
+      const applyStyleItem = (item) => {
+        if (!item || !styleMenu) return;
+        const index = styleMenu.blockIndex;
+        const source = blockSource(index);
+        // Never delete the wrong character if the text changed meanwhile.
+        if (source[styleMenu.index] !== styleMenu.trigger) { setStyleMenu(null); return; }
+        const cleaned = removeStyleTrigger(source, styleMenu.index);
+        if (item.type === 'ref') {
+          const next = descBlocks.slice();
+          next[index] = { source: cleaned };
+          commitDescription(serializeBlocks(next));
+          setStyleMenu(null);
+          setDescPicker({ blockIndex: index, caret: Math.min(styleMenu.removeStart, cleaned.length), query: '' });
+          setDescFocus(index);
+          return;
+        }
+        const typed = setBlockType(cleaned, item.type, item.level);
+        const next = descBlocks.slice();
+        next[index] = { source: typed };
+        setStyleMenu(null);
+        commitBlocks(next, index, markerLength(typed));
+      };
+      const openRefPicker = () => {
+        if (!selectedTask) return;
+        const index = descFocus != null ? descFocus : Math.max(0, descBlocks.length - 1);
+        const el = descFocus === index ? descBlockInputRef.current : null;
+        const caret = el && typeof el.selectionStart === 'number' ? el.selectionStart : blockSource(index).length;
+        setStyleMenu(null);
+        setDescPicker((prev) => (prev ? null : { blockIndex: index, caret, query: '' }));
+        setDescFocus(index);
+        pendingCaretRef.current = { start: caret, end: caret };
+      };
+      const closeDescPicker = () => {
+        const pending = descPicker;
         setDescPicker(null);
+        if (!pending) return;
+        setDescFocus(pending.blockIndex);
+        pendingCaretRef.current = { start: pending.caret, end: pending.caret };
       };
-      const toggleDescCheckbox = (line) => {
-        if (!selectedTask) return;
-        flushDraftsRef.current();
-        const next = toggleCheckboxAtLine(descriptionText(), line);
-        if (next == null) return;
-        updateTask(selectedTask.id, { description: next });
-        setDraftText((prev) => {
-          const copy = { ...prev };
-          delete copy[selectedTask.id + ':description'];
-          return copy;
-        });
+      const insertTaskRefIntoBlock = (id) => {
+        if (!descPicker) return;
+        const { blockIndex, caret } = descPicker;
+        const result = insertTaskRef(blockSource(blockIndex), caret, caret, id);
+        const next = descBlocks.slice();
+        next[blockIndex] = { source: result.text };
+        setDescPicker(null);
+        commitBlocks(next, blockIndex, result.selectionStart);
+      };
+      const toggleBlockTask = (index) => {
+        const source = toggleBlockCheckbox(blockSource(index));
+        if (source == null) return;
+        const next = descBlocks.slice();
+        next[index] = { source };
+        commitDescription(serializeBlocks(next));
       };
       const inlineNodes = (text) => parseInline(text).flatMap((token, index) => {
         if (token.type === 'task') {
@@ -6409,7 +6516,7 @@ window.__ModuleLoader__.load({
           return [linked
             ? h('button', {
                 className: 'wp-md-ref', key: 'md' + index, type: 'button', title: '关联任务：' + linked.title, tabIndex: -1,
-                onClick: () => { setActiveView('all'); setSelectedId(linked.id); },
+                onClick: (e) => { e.stopPropagation(); setActiveView('all'); setSelectedId(linked.id); },
               }, linked.title)
             : h('span', { className: 'wp-md-ref wp-md-ref-broken', key: 'md' + index, title: '关联任务不可用' }, '任务已失效')];
         }
@@ -6419,86 +6526,120 @@ window.__ModuleLoader__.load({
         if (token.type === 'link') {
           const href = safeHref(token.href);
           return [href
-            ? h('a', { className: 'wp-md-link', key: 'md' + index, href, target: '_blank', rel: 'noreferrer noopener', tabIndex: -1 }, token.text)
+            ? h('a', {
+                className: 'wp-md-link', key: 'md' + index, href, target: '_blank', rel: 'noreferrer noopener',
+                onClick: (e) => { if (e && e.stopPropagation) e.stopPropagation(); },
+              }, token.text)
             : h('span', { className: 'wp-md-link-broken', key: 'md' + index }, token.text)];
         }
-        return String(token.text == null ? '' : token.text).split('\n').flatMap((part, partIndex) =>
-          partIndex ? [h('br', { key: 'md' + index + '-' + partIndex }), part] : [part]);
+        return [String(token.text == null ? '' : token.text)];
       });
-      const markdownBlocks = (text) => parseMarkdown(text).map((block, index) => {
-        if (block.type === 'heading') {
-          return h('div', { className: 'wp-md-h wp-md-h' + block.level, key: 'b' + index, role: 'heading', 'aria-level': block.level },
-            inlineNodes(block.text));
-        }
-        if (block.type === 'quote') return h('blockquote', { className: 'wp-md-quote', key: 'b' + index }, inlineNodes(block.text));
-        if (block.type === 'list') {
-          return h(block.ordered ? 'ol' : 'ul', { className: 'wp-md-list' + (block.ordered ? ' wp-md-ordered' : ''), key: 'b' + index },
-            block.items.map((item, itemIndex) => h('li', {
-              className: 'wp-md-li' + (item.checked === null ? '' : ' wp-md-li-check'), key: itemIndex,
-              style: item.depth ? { marginLeft: (item.depth * 14) + 'px' } : undefined,
-            }, item.checked === null ? h('span', { className: 'wp-md-item-text' }, inlineNodes(item.text))
-              : [h('button', {
-                  className: 'wp-md-check' + (item.checked ? ' wp-checked' : ''), key: 'check', type: 'button',
-                  role: 'checkbox', 'aria-checked': item.checked ? 'true' : 'false',
-                  title: '勾选会同步改写 Markdown 源码',
-                  onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
-                  'aria-label': markdownToPlainText(item.text).slice(0, 60),
-                  onClick: () => toggleDescCheckbox(item.line),
-                }, item.checked ? h(CheckIcon) : null),
-                h('span', { className: 'wp-md-item-text' + (item.checked ? ' wp-done' : ''), key: 'text' }, inlineNodes(item.text))])));
-        }
-        return h('p', { className: 'wp-md-p', key: 'b' + index }, inlineNodes(block.text));
-      });
-      const descBlocks = useMemo(() => markdownBlocks(descriptionText()),
-        [descriptionText(), selectedTask && selectedTask.id, tasks]);
       const styleMenuItems = [
-        { key: 'h1', label: '一级标题', hint: 'H1', prefix: '# ' },
-        { key: 'h2', label: '二级标题', hint: 'H2', prefix: '## ' },
-        { key: 'h3', label: '三级标题', hint: 'H3', prefix: '### ' },
-        { key: 'ul', label: '无序列表', hint: '•', prefix: '- ' },
-        { key: 'ol', label: '有序列表', hint: '1.', prefix: '1. ' },
-        { key: 'task', label: '复选框', hint: '☑', prefix: '- [ ] ' },
-        { key: 'quote', label: '引用', hint: '❝', prefix: '> ' },
-        { key: 'ref', label: '关联任务', hint: '⟦⟧', prefix: null },
+        { key: 'h1', label: '一级标题', hint: 'H1', type: 'heading', level: 1 },
+        { key: 'h2', label: '二级标题', hint: 'H2', type: 'heading', level: 2 },
+        { key: 'h3', label: '三级标题', hint: 'H3', type: 'heading', level: 3 },
+        { key: 'ul', label: '无序列表', hint: '•', type: 'bullet' },
+        { key: 'ol', label: '有序列表', hint: '1.', type: 'ordered' },
+        { key: 'task', label: '复选框', hint: '☐', type: 'task' },
+        { key: 'quote', label: '引用', hint: '❝', type: 'quote' },
+        { key: 'ref', label: '关联任务', hint: '⟦⟧', type: 'ref' },
       ];
-      const applyStyleMenu = (item) => {
-        if (!item || !selectedTask || !styleMenu) return;
-        const value = descriptionText();
-        // The menu may have been open while the text changed; never delete the
-        // wrong character. Require the trigger to still be exactly where it was.
-        if (value[styleMenu.index] !== styleMenu.trigger || styleMenu.removeStart < 0) { setStyleMenu(null); return; }
-        const cleaned = removeStyleTrigger(value, styleMenu.index);
-        const caret = Math.min(styleMenu.removeStart, cleaned.length);
-        if (!item.prefix) {
-          commitDescription(cleaned, caret, caret);
-          descSelectionRef.current = { start: caret, end: caret };
-          setStyleMenu(null);
-          setDescPicker({ query: '' });
-          return;
-        }
-        const result = applyBlockPrefix(cleaned, caret, caret, item.prefix);
-        commitDescription(result.text, result.selectionStart, result.selectionEnd);
-        setStyleMenu(null);
-      };
-      const onDescChange = (e) => {
-        if (!selectedTask) return;
-        const value = e.target.value;
-        updateTaskDebounced(selectedTask.id, { description: value });
-        const caret = typeof e.target.selectionStart === 'number' ? e.target.selectionStart : value.length;
-        const previousLength = descPrevValueRef.current.length;
-        const paste = !!(e.nativeEvent && e.nativeEvent.inputType === 'insertFromPaste');
-        descPrevValueRef.current = value;
-        const composing = descComposingRef.current || !!(e.nativeEvent && e.nativeEvent.isComposing);
-        // Deleting back to a trigger or pasting text ending with one must not pop
-        // the menu: only newly typed characters open it.
-        const hit = composing || paste || value.length < previousLength ? null : styleTriggerAt(value, caret);
-        if (!hit) { if (styleMenu) setStyleMenu(null); return; }
-        setStyleMenu({ index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0, pos: null });
-      };
       const descPickerList = descPicker && selectedTask
         ? tasks.filter((item) => !item.deletedAt && item.id !== selectedTask.id
             && item.title.includes(descPicker.query.trim())).slice(0, 8)
         : [];
+      const styleMenuNode = (blockIndex) => h('div', {
+        className: 'wp-md-style-menu wp-md-menu-inline', role: 'listbox', 'aria-label': '插入样式', ref: styleMenuRef,
+      }, styleMenuItems.map((item, index) => h('button', {
+        className: 'wp-md-style-item' + (styleMenu.active === index ? ' wp-active' : ''),
+        key: item.key, type: 'button', role: 'option',
+        'aria-selected': styleMenu.active === index ? 'true' : 'false',
+        onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+        onMouseEnter: () => setStyleMenu((prev) => (prev ? { ...prev, active: index } : prev)),
+        onClick: () => applyStyleItem(item),
+      }, h('span', null, item.label), h('span', { className: 'wp-md-style-key' }, item.hint))));
+      const descPickerNode = (blockIndex) => h('div', { className: 'wp-md-picker wp-md-picker-inline' },
+        h('input', {
+          className: 'wp-detail-input wp-detail-small', type: 'search', autoFocus: true,
+          placeholder: '搜索任务标题…', value: descPicker.query,
+          onChange: (e) => setDescPicker({ ...descPicker, query: e.target.value }),
+          onKeyDown: (e) => {
+            if (e.key === 'Escape') { closeDescPicker(); return; }
+            if (e.key === 'Enter' && descPickerList.length) { e.preventDefault(); insertTaskRefIntoBlock(descPickerList[0].id); }
+          },
+        }),
+        descPickerList.length
+          ? descPickerList.map((item) => h('button', {
+              className: 'wp-md-picker-item', key: item.id, type: 'button',
+              onClick: () => insertTaskRefIntoBlock(item.id),
+            }, item.title))
+          : h('p', { className: 'wp-md-empty' }, '没有匹配的任务。'),
+        h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: closeDescPicker }, '取消'));
+      const renderedBlock = (block, index) => {
+        const line = block && typeof block.source === 'string' ? block.source : '';
+        const style = blockStyle(line);
+        const indent = (/^[ \t]*/.exec(line) || [''])[0].length;
+        const focusHere = () => focusBlock(index, line.length);
+        if (!line.trim()) {
+          const onlyBlock = descBlocks.length === 1;
+          return h('div', {
+            className: 'wp-md-block wp-md-block-empty', key: 'b' + index, tabIndex: 0,
+            role: 'button', 'aria-label': onlyBlock ? '添加描述' : '空行，点击编辑',
+            onClick: focusHere, onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); focusHere(); } },
+          }, onlyBlock ? h('span', { className: 'wp-md-placeholder' }, '点击输入描述…') : null);
+        }
+        if (style.type === 'heading') {
+          return h('div', {
+            className: 'wp-md-block wp-md-block-heading' + style.level, key: 'b' + index,
+            role: 'heading', 'aria-level': style.level, tabIndex: 0, onClick: focusHere,
+            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); focusHere(); } },
+          }, inlineNodes(style.content));
+        }
+        if (style.type === 'quote') {
+          return h('blockquote', {
+            className: 'wp-md-block wp-md-block-quote', key: 'b' + index, tabIndex: 0, onClick: focusHere,
+            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); focusHere(); } },
+          }, inlineNodes(style.content));
+        }
+        if (style.type === 'item') {
+          const indentStyle = indent ? { marginLeft: (indent * 7) + 'px' } : undefined;
+          if (style.checked !== null) {
+            return h('div', {
+              className: 'wp-md-block wp-md-block-check', key: 'b' + index, style: indentStyle, tabIndex: 0,
+              onClick: focusHere, onKeyDown: (e) => { if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); focusHere(); } },
+            },
+              h('button', {
+                className: 'wp-md-check' + (style.checked ? ' wp-checked' : ''), type: 'button',
+                role: 'checkbox', 'aria-checked': style.checked ? 'true' : 'false',
+                title: '勾选会同步改写 Markdown 源码',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+                'aria-label': markdownToPlainText(style.content).slice(0, 60) || '复选框',
+                onClick: () => toggleBlockTask(index),
+              }, style.checked ? h(CheckIcon) : null),
+              h('span', {
+                className: 'wp-md-item-text' + (style.checked ? ' wp-done' : ''), onClick: focusHere,
+              }, inlineNodes(style.content)));
+          }
+          return h('div', {
+            className: 'wp-md-block wp-md-block-item', key: 'b' + index, style: indentStyle, tabIndex: 0, onClick: focusHere,
+            onKeyDown: (e) => { if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); focusHere(); } },
+          },
+            h('span', { className: 'wp-md-marker' }, style.ordered ? orderedNumber(descBlocks, index) + '.' : '•'),
+            h('span', { className: 'wp-md-item-text' }, inlineNodes(style.content)));
+        }
+        return h('div', {
+          className: 'wp-md-block wp-md-block-paragraph', key: 'b' + index, tabIndex: 0, onClick: focusHere,
+          onKeyDown: (e) => { if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); focusHere(); } },
+        }, inlineNodes(style.content));
+      };
+      const blockInputClass = (source) => {
+        const style = blockStyle(source);
+        if (style.type === 'heading') return 'wp-md-size-h' + style.level;
+        if (style.type === 'quote') return 'wp-md-size-quote';
+        if (style.type === 'item') return 'wp-md-size-item';
+        return 'wp-md-size-paragraph';
+      };
+
       const detailTabs = [
         { key: 'exec', label: '执行' },
         { key: 'logs', label: '记录', count: selectedLogs.length },
@@ -6581,106 +6722,81 @@ window.__ModuleLoader__.load({
           h('div', { className: 'wp-detail-desc', ref: descAreaRef },
             h('div', { className: 'wp-detail-desc-head' },
               h('span', { className: 'wp-detail-desc-label' }, '描述'),
-              h('span', { className: 'wp-detail-desc-hint' }, '实时预览')),
+              h('span', { className: 'wp-detail-desc-hint' }, 'Markdown · 就地渲染')),
             h('div', { className: 'wp-md-toolbar' },
-              [['H1', '# ', '一级标题'], ['H2', '## ', '二级标题'], ['H3', '### ', '三级标题']].map(([label, prefix, name]) => h('button', {
+              [['H1', 1, '一级标题'], ['H2', 2, '二级标题'], ['H3', 3, '三级标题']].map(([label, level, name]) => h('button', {
                 className: 'wp-md-tool', key: label, type: 'button', title: name, 'aria-label': name,
                 onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
-                onClick: () => applyDescPrefix(prefix),
+                onClick: () => applyBlockType('heading', level),
               }, label)),
-              h('button', { className: 'wp-md-tool', key: 'ul', type: 'button', title: '无序列表', 'aria-label': '无序列表',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('- ') }, '•'),
-              h('button', { className: 'wp-md-tool', key: 'ol', type: 'button', title: '有序列表', 'aria-label': '有序列表',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('1. ') }, '1.'),
-              h('button', { className: 'wp-md-tool', key: 'task', type: 'button', title: '复选框', 'aria-label': '复选框',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('- [ ] ') }, '☐'),
-              h('button', { className: 'wp-md-tool', key: 'quote', type: 'button', title: '引用', 'aria-label': '引用',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('> ') }, '❝'),
+              h('button', {
+                className: 'wp-md-tool', key: 'ul', type: 'button', title: '无序列表', 'aria-label': '无序列表',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('bullet'),
+              }, '•'),
+              h('button', {
+                className: 'wp-md-tool', key: 'ol', type: 'button', title: '有序列表', 'aria-label': '有序列表',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('ordered'),
+              }, '1.'),
+              h('button', {
+                className: 'wp-md-tool', key: 'task', type: 'button', title: '复选框', 'aria-label': '复选框',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('task'),
+              }, '☐'),
+              h('button', {
+                className: 'wp-md-tool', key: 'quote', type: 'button', title: '引用', 'aria-label': '引用',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('quote'),
+              }, '❝'),
               h('button', {
                 className: 'wp-md-tool wp-md-tool-link', key: 'ref', type: 'button', title: '关联任务', 'aria-label': '关联任务',
-                onMouseDown: (e) => {
-                  if (e && e.preventDefault) e.preventDefault();
-                  const el = detailDescRef.current;
-                  if (el && typeof el.selectionStart === 'number') descSelectionRef.current = { start: el.selectionStart, end: el.selectionEnd };
-                },
-                onClick: () => setDescPicker((prev) => (prev ? null : { query: '' })),
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+                onClick: openRefPicker,
               }, '关联任务')),
-            h('div', { className: 'wp-detail-desc-split' },
-              h('div', { className: 'wp-detail-desc-editor' },
+            h('div', {
+              className: 'wp-md-blocks', role: 'group', 'aria-label': '描述（Markdown 就地编辑）', tabIndex: 0,
+              onClick: (e) => {
+                if (e.target !== e.currentTarget) return;
+                const last = descBlocks.length - 1;
+                focusBlock(last, blockSource(last).length);
+              },
+              onKeyDown: (e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                const last = descBlocks.length - 1;
+                focusBlock(last, blockSource(last).length);
+              },
+            }, descBlocks.map((block, index) => (descFocus === index
+              ? h('div', {
+                  className: 'wp-md-block wp-md-block-editing' + (blockStyle(block.source).type === 'quote' ? ' wp-md-edit-quote' : ''),
+                  key: 'b' + index,
+                },
                   h('textarea', {
-                    ref: detailDescRef,
-                    className: 'wp-detail-input wp-detail-desc-input',
-                    'aria-label': '描述 Markdown 源码',
-                    value: descriptionText(),
-                    placeholder: '添加任务描述，可用 Markdown；行首或空格后输入 / 或 、 选择样式',
-                    onChange: onDescChange,
-                    onScroll: (e) => {
-                      const mirror = styleMenuMirrorRef.current;
-                      if (mirror) { mirror.scrollTop = e.target.scrollTop; mirror.scrollLeft = e.target.scrollLeft; }
-                      const preview = descPreviewRef.current;
-                      const range = e.target.scrollHeight - e.target.clientHeight;
-                      const previewRange = preview ? preview.scrollHeight - preview.clientHeight : 0;
-                      if (preview && range > 0 && previewRange > 0) preview.scrollTop = (e.target.scrollTop / range) * previewRange;
+                    ref: descBlockInputRef,
+                    className: 'wp-md-block-input ' + blockInputClass(block.source),
+                    rows: 1,
+                    value: block.source,
+                    'aria-label': '描述第 ' + (index + 1) + ' 段（Markdown）',
+                    onChange: (e) => changeBlock(index, e.target.value, e.target.selectionStart,
+                      !!(e.nativeEvent && e.nativeEvent.isComposing),
+                      !!(e.nativeEvent && e.nativeEvent.inputType === 'insertFromPaste')),
+                    onKeyDown: (e) => blockKeyDown(e, index),
+                    onBlur: () => {
+                      const ownsMenu = styleMenu && styleMenu.blockIndex === index;
+                      const ownsPicker = descPicker && descPicker.blockIndex === index;
+                      if (!ownsMenu && !ownsPicker) setDescFocus(null);
                     },
-                    onSelect: (e) => { descSelectionRef.current = { start: e.target.selectionStart, end: e.target.selectionEnd }; },
                     onCompositionStart: () => { descComposingRef.current = true; },
                     onCompositionEnd: (e) => {
                       descComposingRef.current = false;
-                      // Some IMEs commit the punctuation without a later input event.
                       const value = e.target.value;
                       const caret = typeof e.target.selectionStart === 'number' ? e.target.selectionStart : value.length;
                       const hit = styleTriggerAt(value, caret);
-                      if (hit) setStyleMenu({ index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0, pos: null });
-                    },
-                    onKeyDown: (e) => {
-                      if (!styleMenu || e.isComposing) return;
-                      if (e.key === 'Escape') { e.preventDefault(); setStyleMenu(null); return; }
-                      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                        e.preventDefault();
-                        const step = e.key === 'ArrowDown' ? 1 : styleMenuItems.length - 1;
-                        setStyleMenu((prev) => (prev ? { ...prev, active: (prev.active + step) % styleMenuItems.length } : prev));
-                        return;
-                      }
-                      if (e.key === 'Enter') { e.preventDefault(); applyStyleMenu(styleMenuItems[styleMenu.active]); }
+                      if (hit) setStyleMenu({ blockIndex: index, index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0 });
                     },
                   }),
-                  descPicker ? h('div', { className: 'wp-md-picker' },
-                    h('input', {
-                      className: 'wp-detail-input wp-detail-small', type: 'search', autoFocus: true,
-                      placeholder: '搜索任务标题…', value: descPicker.query,
-                      onChange: (e) => setDescPicker({ query: e.target.value }),
-                      onKeyDown: (e) => {
-                        if (e.key === 'Escape') { setDescPicker(null); return; }
-                        if (e.key === 'Enter' && descPickerList.length) { e.preventDefault(); insertDescTaskRef(descPickerList[0].id); }
-                      },
-                    }),
-                    descPickerList.length
-                      ? descPickerList.map((item) => h('button', {
-                          className: 'wp-md-picker-item', key: item.id, type: 'button',
-                          onClick: () => insertDescTaskRef(item.id),
-                        }, item.title))
-                      : h('p', { className: 'wp-detail-empty' }, '没有匹配的任务。'),
-                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setDescPicker(null) }, '取消')) : null,
-                  styleMenu ? h('div', {
-                    className: 'wp-md-mirror', ref: styleMenuMirrorRef, 'aria-hidden': true,
-                  }, [descriptionText().slice(0, styleMenu.index),
-                      h('span', { className: 'wp-md-mirror-caret', key: 'caret' }, '\u200b')]) : null,
-                  styleMenu ? h('div', {
-                    className: 'wp-md-style-menu', role: 'listbox', 'aria-label': '插入样式',
-                    style: styleMenu.pos ? { top: styleMenu.pos.top + 'px', left: styleMenu.pos.left + 'px' } : undefined,
-                    onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
-                  }, styleMenuItems.map((item, index) => h('button', {
-                    className: 'wp-md-style-item' + (styleMenu.active === index ? ' wp-active' : ''),
-                    key: item.key, type: 'button', role: 'option',
-                    'aria-selected': styleMenu.active === index ? 'true' : 'false',
-                    onMouseEnter: () => setStyleMenu((prev) => (prev ? { ...prev, active: index } : prev)),
-                    onClick: () => applyStyleMenu(item),
-                  }, h('span', null, item.label), h('span', { className: 'wp-md-style-key' }, item.hint)))) : null)),
-              h('div', { className: 'wp-detail-desc-preview', role: 'region', 'aria-label': '描述预览',
-                key: 'desc-preview-' + selectedTask.id, ref: descPreviewRef },
-                descriptionText().trim()
-                  ? descBlocks
-                  : h('p', { className: 'wp-md-empty' }, '预览会随输入实时更新；行首或空格后输入 / 或 、 可插入样式。'))),
+                  styleMenu && styleMenu.blockIndex === index ? styleMenuNode(index) : null,
+                  descPicker && descPicker.blockIndex === index ? descPickerNode(index) : null)
+              : renderedBlock(block, index)))),
+            styleMenu || descPicker ? null : h('p', { className: 'wp-md-empty wp-md-editor-hint' },
+              '点击任一行开始编辑：## 变标题、- 变列表、- [ ] 变复选框；行首或空格后输入 / 或 、 选择样式。')),
           h('div', { className: 'wp-detail-lower' },
             h('div', { className: 'wp-detail-tabs', role: 'tablist', 'aria-label': '任务详情',
               onKeyDown: (e) => {

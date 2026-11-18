@@ -6,7 +6,7 @@ const suites = [
   'tests/unit/test-parse.cjs', 'tests/host/test-host.mjs', 'tests/host/test-inbox-store.mjs', 'tests/host/test-workspace-store.mjs',
   'tests/integration/test-workspace-sync.mjs', 'tests/integration/test-integration-140.mjs', 'tests/unit/test-radar.mjs', 'tests/unit/test-auto-report.mjs',
   'tests/unit/test-search.mjs', 'tests/unit/test-recommendations.mjs', 'tests/unit/test-report-preferences.mjs', 'tests/ui/test-acceptance-ui.cjs', 'tests/ui/test-p1-ui.cjs', 'tests/ui/test-task-assistant.cjs',
-  'tests/ui/test-stability.cjs', 'tests/ui/test-product-140.cjs', 'tests/ui/test-radar-ui.cjs', 'tests/unit/test-quick-date.mjs', 'tests/ui/test-quick-date-ui.cjs', 'tests/unit/test-markdown.mjs', 'tests/ui/test-markdown-ui.cjs', 'tests/ui/test-style-menu-ui.cjs',
+  'tests/ui/test-stability.cjs', 'tests/ui/test-product-140.cjs', 'tests/ui/test-radar-ui.cjs', 'tests/unit/test-quick-date.mjs', 'tests/ui/test-quick-date-ui.cjs', 'tests/unit/test-markdown.mjs', 'tests/unit/test-blocks.mjs', 'tests/ui/test-markdown-ui.cjs', 'tests/ui/test-style-menu-ui.cjs',
   'tests/ui/test-render.cjs', 'tests/ui/test-detail-render.cjs', 'tests/ui/test-actions-render.cjs',
   'tests/ui/test-report-render.cjs', 'tests/ui/test-trash-render.cjs', 'tests/ui/test-project-render.cjs',
   'tests/ui/test-inbox-render.cjs', 'tests/ui/test-data-render.cjs',
