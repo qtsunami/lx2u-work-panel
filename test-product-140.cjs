@@ -29,7 +29,7 @@ test('AI quick capture prioritizes selected task beyond the first fifty and reta
     const request = ui.nextRequest('chat');
     assert.equal(request.body.context.taskId, 't-54');
     assert.equal(request.body.tasks[0].id, 't-54'); assert.equal(request.body.tasks.length, 50);
-    assert.ok(!request.body.context.suggestedDeadline, 'the untouched date picker must not invent a deadline');
+    assert.equal(request.body.context.suggestedDeadline, '2026-11-12', 'the first explicit 今天 expression updates the date suggestion');
     await ui.respond(request, { reply: '记录一次推进', actions: [{ op: 'log', taskId: 't-54', kind: 'progress', text: '修复登录并验证通过' }] });
     assert.equal(ui.storage.json(LOG_KEY).length, 0, 'model output alone is not permission');
     ui.click('确认执行');

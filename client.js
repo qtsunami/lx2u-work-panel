@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.7.0';
+    const PANEL_VERSION = '1.7.1';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -1894,6 +1894,65 @@ window.__ModuleLoader__.load({
       ].join('\n');
     }
     // @generated report-preferences end
+    // @generated quick-date begin
+    // Generated from quick-date.js by build-client.mjs; do not edit this region.
+    // Calendar dates use the caller's local calendar. No implicit clock or dependencies.
+    const RELATIVE_DAYS = { 今天: 0, 昨天: -1, 前天: -2, 明天: 1, 后天: 2, 大后天: 3 };
+    const QUICK_DATE_WEEKDAYS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7 };
+
+    function calendarDate(year, month, day) {
+      if (!Number.isInteger(year) || year < 0 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+      // setFullYear avoids the Date constructor's special handling of years 0–99.
+      const date = new Date(0);
+      date.setHours(12, 0, 0, 0);
+      date.setFullYear(year, month - 1, day);
+      return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null;
+    }
+
+    function formatDate(date) {
+      const year = date.getFullYear();
+      if (!Number.isFinite(date.getTime()) || year < 0 || year > 9999) return null;
+      return `${String(year).padStart(4, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    }
+
+    /**
+     * Return the first valid expression in source order, or null.
+     * now must be a valid Date; invalid input returns null. Offsets are original
+     * JavaScript UTF-16 indices, with end exclusive. M月D日 uses now's year;
+     * unprefixed weekdays use the current Monday-based natural week (even if past).
+     */
+    function recognizeQuickDate(text, now) {
+      if (typeof text !== 'string' || !(now instanceof Date) || !Number.isFinite(now.getTime()) || now.getFullYear() < 0 || now.getFullYear() > 9999) return null;
+      // Longer relative words must win at the same position. Consume whole numeric
+      // tokens, including invalid ones, rather than accepting a valid suffix.
+      const expressions = /大后天|今天|昨天|前天|明天|后天|[上下本这]?(?:星期|礼拜|周)(?:[一二三四五六日天]|\d+)?|\d+-\d+-\d+|\d+月\d+日/g;
+      for (const match of text.matchAll(expressions)) {
+        const token = match[0];
+        let date = null;
+        if (Object.prototype.hasOwnProperty.call(RELATIVE_DAYS, token)) {
+          date = calendarDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
+          date.setDate(date.getDate() + RELATIVE_DAYS[token]);
+        } else if (/^\d/.test(token)) {
+          const absolute = /^(\d{4})-(\d{2})-(\d{2})$/.exec(token);
+          const monthDay = /^(\d{1,2})月(\d{1,2})日$/.exec(token);
+          if (absolute) date = calendarDate(Number(absolute[1]), Number(absolute[2]), Number(absolute[3]));
+          else if (monthDay) date = calendarDate(now.getFullYear(), Number(monthDay[1]), Number(monthDay[2]));
+        } else {
+          const week = /^([上下本这]?)(?:星期|礼拜|周)([一二三四五六日天]|\d+)?$/.exec(token);
+          if (!week || (!week[1] && !week[2])) continue;
+          const weekOffset = week[1] === '上' ? -7 : week[1] === '下' ? 7 : 0;
+          const weekday = week[2] ? (QUICK_DATE_WEEKDAYS[week[2]] ?? Number(week[2])) : null;
+          if (weekday !== null && !Object.prototype.hasOwnProperty.call(QUICK_DATE_WEEKDAYS, week[2]) && !/^[1-7]$/.test(week[2])) continue;
+          date = calendarDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
+          const offset = weekday === null ? weekOffset : weekOffset + weekday - (now.getDay() || 7);
+          date.setDate(date.getDate() + offset);
+        }
+        const formatted = date && formatDate(date);
+        if (formatted) return { text: token, start: match.index, end: match.index + token.length, date: formatted };
+      }
+      return null;
+    }
+    // @generated quick-date end
 
     function notifyWorkspaceWrite(keys) {
       const relevant = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
@@ -3494,10 +3553,21 @@ window.__ModuleLoader__.load({
         transition: border-color 0.2s, box-shadow 0.2s;
       }
       .wp-quick-box:focus-within { border-color: var(--wp-primary); box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1); }
-      .wp-quick-input {
-        flex: 1; min-height: 24px; border: none; background: transparent; outline: none;
-        font: inherit; font-size: 14px; color: var(--wp-text); padding: 4px 0;
+      .wp-quick-input-wrap { position: relative; flex: 1; min-width: 0; }
+      .wp-quick-input, .wp-quick-highlight {
+        box-sizing: border-box; width: 100%; height: 32px; margin: 0; border: none;
+        font: inherit; font-size: 14px; line-height: 24px; letter-spacing: normal; padding: 4px 0;
       }
+      .wp-quick-input { position: relative; display: block; background: transparent; outline: none; color: var(--wp-text); }
+      .wp-quick-highlight {
+        position: absolute; inset: 0; overflow: hidden; white-space: pre; color: transparent;
+        pointer-events: none; user-select: none;
+      }
+      .wp-quick-date-mark {
+        color: transparent; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent);
+        border-radius: 3px;
+      }
+      .wp-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
       .wp-quick-input::placeholder { color: var(--wp-text-quaternary); }
       .wp-quick-cal {
         display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
@@ -5552,17 +5622,49 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const quickDateBindingRef = useRef({ key: '', auto: false });
+      const quickDateBaseRef = useRef(null);
+      const quickHighlightRef = useRef(null);
+      const quickComposingRef = useRef(false);
+      useEffect(() => {
+        if (quickHighlightRef.current && quickInputRef.current)
+          quickHighlightRef.current.scrollLeft = quickInputRef.current.scrollLeft;
+      }, [quickText]);
+      const updateQuickText = (text) => {
+        setQuickText(text);
+        if (quickComposingRef.current) return;
+        const base = quickDateBaseRef.current || new Date();
+        const match = recognizeQuickDate(text, base);
+        quickDateBaseRef.current = match ? base : null;
+        const key = match ? match.text + ':' + match.date : '';
+        const binding = quickDateBindingRef.current;
+        // A manual calendar choice wins until the first recognized expression
+        // changes. Editing other words must not undo that explicit choice.
+        if (key !== binding.key) {
+          if (match) {
+            setQuickDeadline((value) => ({ ...value, date: match.date }));
+            setQuickDeadlineTouched(true);
+            const parts = match.date.split('-').map(Number);
+            setCalMonth({ year: parts[0], month: parts[1] - 1 });
+          } else if (binding.auto) {
+            setQuickDeadlineTouched(false); setQuickDeadline({ date: todayDate(), time: '' });
+          }
+          quickDateBindingRef.current = { key, auto: !!match };
+        }
+      };
+      // Freeze the displayed choice while this text is being composed. Crossing
+      // midnight must never silently move the deadline at submission time.
+      const quickDeadlineValue = () => quickDeadlineTouched
+        ? quickDeadline.date + (quickDeadline.time ? 'T' + quickDeadline.time : '') : '';
       const addQuick = () => {
         const title = quickText.trim();
         if (!title) { if (quickInputRef.current) quickInputRef.current.focus(); return; }
-        // The calendar opens on today for convenience, but that is not an
-        // explicit deadline until the person picks a date or time.
-        const deadline = quickDeadlineTouched
-          ? quickDeadline.date + (quickDeadline.time ? 'T' + quickDeadline.time : '') : '';
+        // No default deadline: only an explicit text date or calendar selection.
+        const deadline = quickDeadlineValue();
         setLastApply(null);
         const task = newTask({ title, deadline, projectId: activeProject || '' });
         addTaskToState(task);
-        setQuickText('');
+        setQuickText(''); quickDateBindingRef.current = { key: '', auto: false }; quickDateBaseRef.current = null;
         setQuickDeadline({ date: todayDate(), time: '' });
         setQuickDeadlineTouched(false);
         setCalOpen(false);
@@ -6851,23 +6953,38 @@ window.__ModuleLoader__.load({
         if (!text || sendingRef.current || pendingActions) return;
         if (!hostSyncStatus.canEdit) { showToast('请先恢复主存连接，输入内容已保留。', 'danger'); return; }
         if (text.length > 4000) { showToast('单次记录请控制在 4000 字符内，当前输入已保留，请分段整理。', 'danger'); return; }
-        const deadline = quickDeadlineTouched ? quickDeadline.date + (quickDeadline.time ? 'T' + quickDeadline.time : '') : '';
+        const deadline = quickDeadlineValue();
         sendChat(text, { deadline });
-        setQuickText(''); setQuickDeadlineTouched(false); setCalOpen(false);
+        setQuickText(''); quickDateBindingRef.current = { key: '', auto: false }; quickDateBaseRef.current = null;
+        setQuickDeadlineTouched(false); setQuickDeadline({ date: todayDate(), time: '' }); setCalOpen(false);
       };
+      const quickDateMatch = recognizeQuickDate(quickText, quickDateBaseRef.current || new Date());
       const quickLabel = quickDeadlineTouched ? formatQuickLabel(quickDeadline.date, quickDeadline.time) : '截止时间';
       const quickPast = quickDeadlineTouched && quickDeadline.date < todayDate();
       const quickAdd = h('div', { className: 'wp-card wp-quick' },
         h('div', { className: 'wp-quick-box', ref: calRef },
-          h('input', {
-            ref: quickInputRef, className: 'wp-quick-input', type: 'text', value: quickText,
-            placeholder: '输入待办，按 Enter 直接添加；也可选择 AI 整理…',
-            title: 'Enter 或 Alt+Enter：直接添加待办；AI 记录按钮：整理工作记录',
-            onChange: (e) => setQuickText(e.target.value),
-            onKeyDown: (e) => { if (e.key === 'Enter' && !e.isComposing) {
-              e.preventDefault(); addQuick();
-            } },
-          }),
+          h('div', { className: 'wp-quick-input-wrap' },
+            h('div', { className: 'wp-quick-highlight', 'aria-hidden': true, ref: quickHighlightRef },
+              quickDateMatch ? [quickText.slice(0, quickDateMatch.start),
+                h('mark', { className: 'wp-quick-date-mark', key: 'date' }, quickDateMatch.text),
+                quickText.slice(quickDateMatch.end)] : quickText),
+            h('input', {
+              ref: quickInputRef, className: 'wp-quick-input', type: 'text', value: quickText,
+              placeholder: '输入待办，自动识别首个日期；Enter 添加…',
+              'aria-label': '任务内容', 'aria-describedby': 'wp-quick-date-hint',
+              title: 'Enter 或 Alt+Enter：直接添加待办；AI 记录按钮：整理工作记录',
+              onChange: (e) => updateQuickText(e.target.value),
+              onCompositionStart: () => { quickComposingRef.current = true; },
+              onCompositionEnd: (e) => { quickComposingRef.current = false; updateQuickText(e.target.value); },
+              onScroll: (e) => { if (quickHighlightRef.current) quickHighlightRef.current.scrollLeft = e.target.scrollLeft; },
+              onKeyDown: (e) => { if (e.key === 'Enter' && !e.isComposing && !quickComposingRef.current) {
+                e.preventDefault(); addQuick();
+              } },
+            })),
+          h('span', { id: 'wp-quick-date-hint', className: 'wp-sr-only', role: 'status' }, quickDateMatch
+            ? '首个时间词：' + quickDateMatch.text + '，对应 ' + quickDateMatch.date
+              + (quickDateBindingRef.current.auto ? '，已自动设置截止日期。' : '，以手选日期为准。')
+            : '未识别到时间词，可手动选择日期。'),
           h('button', {
             className: 'wp-quick-cal' + (quickPast ? ' wp-past' : '') + (calOpen ? ' wp-active' : ''),
             type: 'button', title: '选择日期 / 时间', 'aria-label': '选择日期 / 时间',
@@ -6892,12 +7009,12 @@ window.__ModuleLoader__.load({
             date: quickDeadline.date,
             time: quickDeadline.time,
             selected: quickDeadlineTouched,
-            onPickDate: (dateStr) => { setQuickDeadlineTouched(true); setQuickDeadline((v) => ({ ...v, date: dateStr })); },
-            onPickTime: (time) => { setQuickDeadline((v) => ({ ...v,
+            onPickDate: (dateStr) => { quickDateBindingRef.current.auto = false; setQuickDeadlineTouched(true); setQuickDeadline((v) => ({ ...v, date: dateStr })); },
+            onPickTime: (time) => { quickDateBindingRef.current.auto = false; setQuickDeadline((v) => ({ ...v,
               date: quickDeadlineTouched ? v.date : todayDate(), time })); setQuickDeadlineTouched(quickDeadlineTouched || !!time); },
             onClose: () => setCalOpen(false),
-            onToday: () => { setQuickDeadlineTouched(true); setQuickDeadline({ date: todayDate(), time: '' }); const d = new Date(); setCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
-            onClear: () => { setQuickDeadlineTouched(false); setQuickDeadline({ date: todayDate(), time: '' }); setCalOpen(false); },
+            onToday: () => { quickDateBindingRef.current.auto = false; setQuickDeadlineTouched(true); setQuickDeadline({ date: todayDate(), time: '' }); const d = new Date(); setCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
+            onClear: () => { quickDateBindingRef.current.auto = false; setQuickDeadlineTouched(false); setQuickDeadline({ date: todayDate(), time: '' }); setCalOpen(false); },
           }) : null));
 
       const issuesRadarPayload = (issue) => ({
