@@ -3558,15 +3558,12 @@ window.__ModuleLoader__.load({
         box-sizing: border-box; width: 100%; height: 32px; margin: 0; border: none;
         font: inherit; font-size: 14px; line-height: 24px; letter-spacing: normal; padding: 4px 0;
       }
-      .wp-quick-input { position: relative; display: block; background: transparent; outline: none; color: var(--wp-text); }
+      .wp-quick-input { position: relative; display: block; background: transparent; outline: none; color: transparent; caret-color: var(--wp-text); }
       .wp-quick-highlight {
-        position: absolute; inset: 0; overflow: hidden; white-space: pre; color: transparent;
+        position: absolute; inset: 0; overflow: hidden; white-space: pre; color: var(--wp-text);
         pointer-events: none; user-select: none;
       }
-      .wp-quick-date-mark {
-        color: transparent; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent);
-        border-radius: 3px;
-      }
+      .wp-quick-date-mark { color: var(--wp-primary); background: transparent; }
       .wp-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
       .wp-quick-input::placeholder { color: var(--wp-text-quaternary); }
       .wp-quick-cal {
