@@ -4,8 +4,9 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "build:client": "node build-client.mjs",
-    "test": "node build-client.mjs --check && node test-all.mjs"
+    "build:client": "node scripts/build-client.mjs",
+    "test": "node scripts/build-client.mjs --check && node scripts/test-all.mjs",
+    "prepack": "npm run build:client"
   },
   "exports": {
     ".": "./index.js",
@@ -16,15 +17,15 @@
   },
   "files": [
     "index.js",
-    "inbox-store.js",
-    "workspace-store.js",
-    "report-preferences.js",
+    "src/host/*.js",
+    "src/shared/report-preferences.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "README.md",
-    "ROADMAP.md",
+    "docs/ROADMAP.md",
+    "docs/DEVELOPMENT.md",
     "LICENSE"
   ],
   "dsh": {

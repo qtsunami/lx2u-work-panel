@@ -5,7 +5,7 @@ A personal workbench panel for DeepSeek Harness (DSH): a three-column layout wit
 ## Product direction
 
 A personal AI outcomes workbench: fast capture → execution → reliable receipts → review → reusable evidence and reports.
-The next milestones are tracked in [ROADMAP.md](./ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
+The next milestones are tracked in [ROADMAP.md](./docs/ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
 
 ## On-demand task work assistant (v1.7.0)
 
@@ -45,7 +45,7 @@ Workspace HTTP contract: `GET /api/work-panel/workspace`; `POST` accepts `{actio
 The synchronization class has canonical, independently tested source and is embedded into the single shipped client script. After changing that source, build it before testing:
 
 ```bash
-node build-client.mjs  # workspace-sync.js → generated region in client.js
+npm run build:client  # src/client/main.js + src/shared/* → root client.js
 npm test              # checks build parity before running all suites
 ```
 
@@ -67,7 +67,7 @@ Host restart and real DSH navigation/visual acceptance are still required before
 - **Manual run**: the explicit button targets the current period in the configured time zone, not a report selected elsewhere. It is not gated by the timetable, but requires automation to be enabled, the local Host workspace to be editable, a valid zone and evidence. The panel explains why a request cannot run.
 - **P0 safety fixes**: quick entry adds no due date until explicitly selected (including after reuse, clearing a selection, or a midnight rollover). Dropped tasks are closed but not completed, excluded from overdue/radar action signals and project completion-rate denominators; the detail has a visible abandon/restore action. `全部忽略` asks for a count-specific confirmation and rejects changes to the receipt set before confirmation. An in-flight automatic model result cannot overwrite human edits, a replaced workspace, changed settings or a paused request. Draft, edit buffer and success marker are written in one rollback-protected transaction, with numeric millisecond run timestamps. Failure after four retries stops unattended attempts until a manual retry; failed settings changes are not queued for later surprise activation.
 
-The rules live in two independently tested, browser-safe modules embedded into the single shipped client: `radar.js` and `auto-report.js`, with interactive regression coverage. Period semantics match the existing weekly/monthly report definition (Monday-start week, calendar month, `start_end` keys). Period semantics match the existing weekly/monthly report definition (Monday-start week, calendar month, `start_end` keys).
+The rules live in two independently tested, browser-safe modules embedded into the single shipped client: [radar.js](./src/shared/radar.js) and [auto-report.js](./src/shared/auto-report.js), with interactive regression coverage. Period semantics match the existing weekly/monthly report definition (Monday-start week, calendar month, `start_end` keys).
 
 ## Stabilization (v1.3.2)
 
@@ -214,37 +214,44 @@ Change these to a provider/model that exists in your profile. Without a working 
 
 ## Development
 
-| File | Purpose |
-| --- | --- |
-| `index.js` | Host half: authenticated assistant/report/inbox routes and report-back tool, model prompts and response validation. |
-| `inbox-store.js` | Durable, serialized inbox over the Host KV storage contract with bounded idempotency. |
-| `workspace-store.js` | Canonical personal workspace, migration snapshot, identity/revision CAS and bounded agent context. |
-| `client.js` | Client half: registers the sidebar entry and the main panel. |
-| `cordis.patch.yml` | Bundle patch that inserts the plugin row. |
-| `locale/*.json` | Display metadata (title/description). |
-| `icon.svg` | Panel icon. |
-| `test-*.cjs` / `test-host.mjs` | Unit and render-smoke tests (not part of the published files). |
+See [DEVELOPMENT.md](./docs/DEVELOPMENT.md) for source ownership, test layers and packaging checks. This layout change does not change product behavior or introduce a framework.
 
-Run all 15 suites with `npm test` (build parity plus all suites); `node test-all.mjs` runs the suites directly. Individual checks:
+```text
+work-panel/
+├── index.js                 # compatible Host entry re-export
+├── client.js                # generated client; committed to Git
+├── src/
+│   ├── host/                # Host entry, inbox store, workspace store
+│   ├── shared/              # independently tested browser-safe logic
+│   └── client/main.js       # hand-written loader/UI template
+├── scripts/
+│   ├── build-client.mjs     # embeds shared logic into the template
+│   └── test-all.mjs         # runs all test suites
+├── tests/
+│   ├── unit/
+│   ├── host/
+│   ├── ui/
+│   ├── integration/
+│   └── helpers/
+├── docs/                    # development guide and product roadmap
+├── locale/                  # display metadata
+├── icon.svg
+├── cordis.patch.yml
+└── package.json
+```
+
+Run from the package root:
 
 ```bash
-node --check index.js && node --check client.js
-node test-parse.cjs        # parsing, data model, action protocol
-node test-host.mjs         # routing, sanitization, durable tool/route parity
-node test-inbox-store.mjs  # restart, idempotency, I/O failure and capacity
-node test-stability.cjs    # real state/effect interactions and browser-storage faults
-node test-workspace-store.mjs # canonical migration, revisions, identities and I/O faults
-node test-workspace-sync.mjs  # deterministic client transport/outbox failure matrix
-node test-product-140.cjs     # AI capture/context/handoff/provenance and durable adoption
-node test-render.cjs       # empty panel smoke
-node test-detail-render.cjs
-node test-actions-render.cjs
-node test-report-render.cjs
-node test-trash-render.cjs
-node test-project-render.cjs
-node test-inbox-render.cjs
-node test-data-render.cjs
+npm run build:client                   # regenerate the committed root client.js
+npm test                               # build parity check, then all suites
+node scripts/test-all.mjs              # suites only; no build parity check
+node scripts/build-client.mjs --check  # fail if generated output is stale
+npm pack --dry-run                      # prepack builds; inspect package contents
+npm pack                                # prepack builds; create installable tarball
 ```
+
+Edit [src/client/main.js](./src/client/main.js) and [src/shared](./src/shared/), not the generated [client.js](./client.js). The root [index.js](./index.js) remains the compatible Host entry; implementation lives in [src/host](./src/host/). The patch, locale, icon and package manifest stay at the package root.
 
 ## Data model (v1.x)
 
