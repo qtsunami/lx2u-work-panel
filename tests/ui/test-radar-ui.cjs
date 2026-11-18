@@ -809,7 +809,9 @@ test('detail cross restores a dropped task rather than falsely completing it', a
     const check = ui.byClass('wp-detail-check');
     assert.ok(has(check, 'wp-check-dropped') && check.props['aria-checked'] === 'mixed', 'detail shows a cross');
     assert.ok(check.children.some(n => n && n.type && n.type.name === 'CrossIcon'), 'cross icon is rendered');
-    assert.ok(ui.text().includes('恢复为待办'), 'detail has a discoverable recovery action');
+    ui.fire(ui.byClass('wp-detail-more-btn'), 'onClick');
+    assert.ok(ui.text().includes('恢复为待办'), 'detail exposes recovery behind the more menu');
+    ui.fire(ui.byClass('wp-detail-more-btn'), 'onClick');
     ui.fire(check, 'onClick'); await ui.settle();
     const stored = ui.storage.json('@local/work-panel:tasks:v1')[0];
     assert.equal(stored.status, 'todo'); assert.equal(stored.droppedAt, null); assert.equal(stored.completedAt, null);

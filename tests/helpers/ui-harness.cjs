@@ -116,6 +116,8 @@ function createRuntime() {
         if (ref && typeof ref === 'object') {
           if (!refs.has(ref)) refs.set(ref, {
             focus() {}, click() {}, contains: () => false, scrollTop: 0, scrollHeight: 0,
+            selectionStart: 0, selectionEnd: 0,
+            setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
             // Deterministic geometry so layout-dependent UI (the context submenu
             // anchor) can be asserted without a layout engine. The class-based
             // value lets one element be distinguished from another.

@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.7.1';
+    const PANEL_VERSION = '1.8.0';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -1954,6 +1954,207 @@ window.__ModuleLoader__.load({
       return null;
     }
     // @generated quick-date end
+    // @generated markdown begin
+    // Generated from src/shared/markdown.js by scripts/build-client.mjs; do not edit this region.
+    // Browser-safe Markdown subset for task descriptions. No imports, clock or DOM.
+    // The renderer produces React elements, never HTML, so untrusted text cannot
+    // inject markup. Block lines keep their source line number for checkbox writes.
+    const HEADING_RE = /^(#{1,3})\s+(.*)$/;
+    const LIST_RE = /^([ \t]*)([-*+]|\d+[.)])\s+(.*)$/;
+    const QUOTE_RE = /^>\s?(.*)$/;
+    const CHECK_RE = /^\[( |x|X)\]\s+(.*)$/;
+    const INLINE_RE = /\[\[task:([A-Za-z0-9_-]+)\]\]|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+
+    function listItem(content, line, depth) {
+      const checked = CHECK_RE.exec(content);
+      if (checked) return { text: checked[2], checked: checked[1].toLowerCase() === 'x', line, depth };
+      return { text: content, checked: null, line, depth };
+    }
+
+    /** Parse block structure; blank lines separate blocks and are not kept. */
+    function parseMarkdown(text) {
+      const lines = String(text == null ? '' : text).split('\n');
+      const blocks = [];
+      let paragraph = null;
+      for (let i = 0; i < lines.length; i += 1) {
+        const raw = lines[i].replace(/\s+$/, '');
+        if (!raw.trim()) { paragraph = null; continue; }
+        const heading = HEADING_RE.exec(raw);
+        if (heading) {
+          blocks.push({ type: 'heading', level: heading[1].length, text: heading[2].trim(), line: i });
+          paragraph = null;
+          continue;
+        }
+        const quote = QUOTE_RE.exec(raw);
+        if (quote) {
+          const last = blocks[blocks.length - 1];
+          if (last && last.type === 'quote' && last.endLine === i - 1) {
+            last.text += '\n' + quote[1];
+            last.endLine = i;
+          } else {
+            blocks.push({ type: 'quote', text: quote[1], line: i, endLine: i });
+          }
+          paragraph = null;
+          continue;
+        }
+        const item = LIST_RE.exec(raw);
+        if (item) {
+          const ordered = /\d/.test(item[2]);
+          const indent = item[1].replace(/\t/g, '  ').length;
+          const entry = listItem(item[3], i, Math.min(2, Math.floor(indent / 2)));
+          const last = blocks[blocks.length - 1];
+          if (last && last.type === 'list' && last.ordered === ordered && last.endLine === i - 1) {
+            last.items.push(entry);
+            last.endLine = i;
+          } else {
+            blocks.push({ type: 'list', ordered, items: [entry], line: i, endLine: i });
+          }
+          paragraph = null;
+          continue;
+        }
+        if (paragraph) {
+          paragraph.text += '\n' + raw.trim();
+          paragraph.endLine = i;
+        } else {
+          paragraph = { type: 'paragraph', text: raw.trim(), line: i, endLine: i };
+          blocks.push(paragraph);
+        }
+      }
+      return blocks;
+    }
+
+    /** Split one block's text into plain and marked inline tokens. */
+    function parseInline(text) {
+      const source = String(text == null ? '' : text);
+      const out = [];
+      let last = 0;
+      INLINE_RE.lastIndex = 0;
+      let match = INLINE_RE.exec(source);
+      while (match !== null) {
+        if (match.index > last) out.push({ type: 'text', text: source.slice(last, match.index) });
+        if (match[1]) out.push({ type: 'task', id: match[1] });
+        else if (match[2] !== undefined) out.push({ type: 'code', text: match[2] });
+        else if (match[3] !== undefined) out.push({ type: 'strong', text: match[3] });
+        else if (match[4] !== undefined) out.push({ type: 'em', text: match[4] });
+        else out.push({ type: 'link', text: match[5], href: match[6] });
+        last = match.index + match[0].length;
+        match = INLINE_RE.exec(source);
+      }
+      if (last < source.length) out.push({ type: 'text', text: source.slice(last) });
+      return out;
+    }
+
+    /** Flip one task-list checkbox line; returns null when that line is not one. */
+    function toggleCheckboxAtLine(text, line) {
+      const lines = String(text == null ? '' : text).split('\n');
+      if (!Number.isInteger(line) || line < 0 || line >= lines.length) return null;
+      const match = /^([ \t]*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]/.exec(lines[line]);
+      if (!match) return null;
+      lines[line] = match[1] + '[' + (match[2] === ' ' ? 'x' : ' ') + ']' + lines[line].slice(match[0].length);
+      return lines.join('\n');
+    }
+
+    /** Single-line plain summary for list rows, with block and inline markers removed. */
+    function markdownToPlainText(text) {
+      const source = String(text == null ? '' : text);
+      const flat = parseMarkdown(source).map((block) => {
+        if (block.type === 'heading') return block.text;
+        if (block.type === 'quote') return block.text;
+        if (block.type === 'list') return block.items.map((item) => item.text).join(' ');
+        return block.text;
+      }).join(' ');
+      return parseInline(flat).map((token) => {
+        if (token.type === 'task') return '';
+        if (token.type === 'link') return token.text;
+        return token.text != null ? token.text : '';
+      }).join('').replace(/\s+/g, ' ').trim();
+    }
+
+    /**
+     * Toggle a block prefix on every line the caret/selection touches. Returns the
+     * new text and selection so the caller can restore the caret after rendering.
+     */
+    function applyBlockPrefix(text, start, end, prefix) {
+      const source = String(text == null ? '' : text);
+      const from = Math.max(0, Math.min(Number(start) || 0, source.length));
+      const to = Math.max(from, Math.min(Number(end) || 0, source.length));
+      const lineStart = source.lastIndexOf('\n', Math.max(0, from - 1)) + 1;
+      const lineEndIndex = source.indexOf('\n', to);
+      const lineEnd = lineEndIndex < 0 ? source.length : lineEndIndex;
+      const lines = source.slice(lineStart, lineEnd).split('\n');
+      const remove = lines.every((line) => line.startsWith(prefix));
+      const caretLine = (source.slice(lineStart, from).match(/\n/g) || []).length;
+      const next = lines.map((line) => {
+        // Toggling a bullet off a checkbox item must remove the checkbox marker too.
+        if (remove) return line.slice(prefix.length).replace(/^\[[ xX]\]\s+/, '');
+        if (line.startsWith(prefix)) return line;
+        // Replace an existing heading/list marker instead of stacking a new one, and
+        // keep the original indentation so nested items keep their level.
+        const indent = (/^[ \t]*/.exec(line) || [''])[0];
+        const rest = line.slice(indent.length)
+          .replace(/^(?:#{1,3}\s+|(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)/, '');
+        return indent + prefix + rest;
+      });
+      const caretLineText = lines[caretLine] || '';
+      const caretIndent = (/^[ \t]*/.exec(caretLineText) || [''])[0].length;
+      const caretMarker = (caretLineText.slice(caretIndent)
+        .match(/^(?:#{1,3}\s+|(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?)/) || [''])[0].length;
+      const nextLineText = next[caretLine] || '';
+      const nextIndent = (/^[ \t]*/.exec(nextLineText) || [''])[0].length;
+      const offsetInLine = from - lineStart;
+      // Editing the marker itself should land the caret after the new marker, not
+      // one character into it.
+      const caretAfter = remove
+        ? (offsetInLine <= caretIndent + caretMarker ? lineStart + nextIndent : Math.max(lineStart, from - (caretLineText.length - nextLineText.length)))
+        : (offsetInLine <= caretIndent + caretMarker ? lineStart + nextIndent + prefix.length
+          : Math.max(lineStart, from + (nextLineText.length - caretLineText.length)));
+      const endAfter = to === from ? caretAfter : Math.max(caretAfter, to + (next[caretLine].length - caretLineText.length));
+      return {
+        text: source.slice(0, lineStart) + next.join('\n') + source.slice(lineEnd),
+        selectionStart: caretAfter,
+        selectionEnd: endAfter,
+      };
+    }
+
+    /**
+     * Detect a style trigger at the caret: `、` or `/` on an empty-line start or
+     * right after a space/tab. Returns the trigger index and where to start removing.
+     */
+    function styleTriggerAt(value, caret) {
+      const text = String(value == null ? '' : value);
+      const pos = Number.isInteger(caret) ? caret : text.length;
+      if (pos < 1 || pos > text.length) return null;
+      const trigger = text[pos - 1];
+      if (trigger !== '、' && trigger !== '/') return null;
+      const before = text[pos - 2];
+      const lineStart = pos - 1 === 0 || before === '\n';
+      const spaced = before === ' ' || before === '\t';
+      if (!lineStart && !spaced) return null;
+      return { index: pos - 1, trigger, removeStart: spaced ? pos - 2 : pos - 1 };
+    }
+
+    /** Remove the trigger character and one preceding space, if present. */
+    function removeStyleTrigger(value, index) {
+      const text = String(value == null ? '' : value);
+      if (!Number.isInteger(index) || index < 0 || index >= text.length) return text;
+      const before = text[index - 1];
+      const from = before === ' ' || before === '\t' ? index - 1 : index;
+      return text.slice(0, from) + text.slice(index + 1);
+    }
+
+    /** Replace the selection with a task marker and place the caret after it. */
+    function insertTaskRef(text, start, end, id) {
+      const source = String(text == null ? '' : text);
+      const marker = '[[task:' + String(id || '') + ']]';
+      const from = Math.max(0, Math.min(Number(start) || 0, source.length));
+      const to = Math.max(from, Math.min(Number(end) || 0, source.length));
+      return {
+        text: source.slice(0, from) + marker + source.slice(to),
+        selectionStart: from + marker.length,
+        selectionEnd: from + marker.length,
+      };
+    }
+    // @generated markdown end
 
     function notifyWorkspaceWrite(keys) {
       const relevant = [STORAGE_KEY, PROJECTS_KEY, LOGS_KEY, ARTIFACTS_KEY, REPORTS_KEY, INBOX_ACK_KEY, REPORT_EDITS_KEY, WORKSPACE_EXTRAS_KEY];
@@ -3915,11 +4116,28 @@ window.__ModuleLoader__.load({
       .wp-row-log-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .wp-detail {
-        width: 400px; flex-shrink: 0; display: flex; flex-direction: column;
+        width: 600px; flex-shrink: 0; display: flex; flex-direction: column;
         background: var(--wp-bg-container); border-left: 1px solid var(--wp-border-secondary);
       }
-      .wp-detail-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
-      .wp-detail-meta { position: relative; display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+      .wp-detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 16px; }
+      .wp-detail-head { flex: 0 0 auto; }
+      .wp-detail-desc { position: relative; flex: 1 1 70%; min-height: 200px; display: flex; flex-direction: column; min-width: 0; }
+      .wp-detail-desc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 2px; }
+      .wp-detail-desc-label { font-size: 12px; color: var(--wp-text-tertiary); }
+      .wp-detail-lower { flex: 1 1 30%; min-height: 180px; display: flex; flex-direction: column; min-width: 0; border-top: 1px solid var(--wp-border-secondary); margin-top: 10px; padding-top: 6px; }
+      .wp-detail-tabs { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+      .wp-detail-tabs::-webkit-scrollbar { display: none; }
+      .wp-detail-tab {
+        display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+        padding: 4px 10px; border: none; border-radius: 6px; background: transparent;
+        font: inherit; font-size: 12.5px; color: var(--wp-text-secondary); cursor: pointer;
+      }
+      .wp-detail-tab:hover { background: var(--wp-fill); color: var(--wp-text); }
+      .wp-detail-tab.wp-active { background: rgba(22, 119, 255, 0.1); color: var(--wp-primary); font-weight: 500; }
+      .wp-detail-tab-count { font-size: 11px; color: var(--wp-text-tertiary); }
+      .wp-detail-tab.wp-active .wp-detail-tab-count { color: var(--wp-primary); }
+      .wp-detail-pane { flex: 1; min-height: 0; overflow: auto; padding-top: 8px; }
+      .wp-detail-meta { position: relative; display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
       .wp-detail-check {
         --wp-check-color: var(--wp-text-tertiary);
         flex-shrink: 0; width: 20px; height: 20px; padding: 0;
@@ -3974,10 +4192,8 @@ window.__ModuleLoader__.load({
       .wp-prio-dot-none { background: var(--wp-text-tertiary); }
       .wp-detail-task-title { margin: 0 0 8px; font-size: 18px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
       .wp-detail-task-title.wp-done { color: var(--wp-text-tertiary); text-decoration: line-through; }
-      .wp-detail-desc { margin: 0 0 16px; font-size: 14px; color: var(--wp-text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
-      .wp-detail-desc.wp-empty { color: var(--wp-text-quaternary); }
       .wp-detail-rows { display: flex; flex-direction: column; }
-      .wp-detail-times { margin-top: 28px; }
+      .wp-detail-times { margin-top: 12px; }
       .wp-detail-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--wp-border-secondary); }
       .wp-detail-row:last-child { border-bottom: none; }
       .wp-detail-label { width: 64px; flex-shrink: 0; font-size: 13px; color: var(--wp-text-secondary); }
@@ -3991,13 +4207,86 @@ window.__ModuleLoader__.load({
       .wp-detail-input::placeholder { color: var(--wp-text-quaternary); }
       .wp-detail-title-input {
         font-size: 18px; font-weight: 600; line-height: 1.4;
-        margin: 0 0 8px;
+        margin: 0 0 6px;
       }
       .wp-detail-desc-input {
-        font-size: 14px; line-height: 1.6; min-height: 96px;
-        margin: 0 0 16px; color: var(--wp-text-secondary);
+        flex: 1; min-height: 0; resize: none;
+        font-size: 14px; line-height: 1.6;
+        margin: 0; color: var(--wp-text-secondary);
       }
-      .wp-detail-field { margin: 0 0 14px; }
+      .wp-detail-desc-mode { flex-shrink: 0; }
+      .wp-md-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; flex-wrap: wrap; margin: 0 0 6px; }
+      .wp-md-tool {
+        min-width: 26px; height: 26px; padding: 0 6px; border: none; border-radius: 6px;
+        background: transparent; color: var(--wp-text-secondary); font: inherit; font-size: 12.5px; cursor: pointer;
+      }
+      .wp-md-tool:hover { background: var(--wp-fill); color: var(--wp-text); }
+      .wp-md-tool-link { margin-left: auto; color: var(--wp-primary); }
+      .wp-md-picker {
+        position: absolute; z-index: 210; top: 4px; right: 8px; width: 232px; padding: 8px;
+        background: var(--wp-bg-container); border: 1px solid var(--wp-border-secondary);
+        border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+        display: flex; flex-direction: column; gap: 4px;
+      }
+      .wp-md-picker-item {
+        display: block; width: 100%; padding: 6px 8px; border: none; border-radius: 6px;
+        background: transparent; color: var(--wp-text); font: inherit; font-size: 12.5px;
+        text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .wp-md-picker-item:hover { background: var(--wp-fill); }
+      .wp-detail-desc-editor { position: relative; flex: 1; min-height: 0; display: flex; }
+      .wp-detail-desc-preview { flex: 1; min-height: 0; overflow: auto; padding-right: 2px; }
+      .wp-md-mirror {
+        position: absolute; inset: 0; visibility: hidden; pointer-events: none; overflow: hidden;
+        width: 100%; padding: 4px 0; box-sizing: border-box;
+        font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere;
+      }
+      .wp-md-style-menu {
+        position: absolute; z-index: 220; top: 28px; left: 0; width: 188px; padding: 6px;
+        display: flex; flex-direction: column; gap: 2px;
+        background: var(--wp-bg-container); border: 1px solid var(--wp-border-secondary);
+        border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+      }
+      .wp-md-style-item {
+        display: flex; align-items: center; justify-content: space-between; gap: 8px;
+        padding: 6px 8px; border: none; border-radius: 6px; background: transparent;
+        color: var(--wp-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+      }
+      .wp-md-style-item:hover, .wp-md-style-item.wp-active { background: var(--wp-fill); }
+      .wp-md-style-key { color: var(--wp-text-tertiary); font-size: 11px; }
+      .wp-md-p { margin: 0 0 8px; font-size: 14px; line-height: 1.65; color: var(--wp-text); overflow-wrap: anywhere; }
+      .wp-md-p:last-child { margin-bottom: 0; }
+      .wp-md-h { margin: 4px 0 6px; font-weight: 600; line-height: 1.4; color: var(--wp-text); }
+      .wp-md-h1 { font-size: 18px; }
+      .wp-md-h2 { font-size: 16px; }
+      .wp-md-h3 { font-size: 14.5px; }
+      .wp-md-list { margin: 0 0 8px; padding-left: 18px; font-size: 14px; line-height: 1.65; color: var(--wp-text); }
+      .wp-md-li { margin: 2px 0; overflow-wrap: anywhere; }
+      .wp-md-li-check { list-style: none; display: flex; align-items: flex-start; gap: 6px; margin-left: -18px; }
+      .wp-md-check {
+        flex-shrink: 0; width: 16px; height: 16px; margin-top: 2px; padding: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        border: 1.5px solid var(--wp-text-tertiary); border-radius: 4px;
+        background: transparent; color: #fff; cursor: pointer;
+      }
+      .wp-md-check.wp-checked { background: var(--wp-primary); border-color: var(--wp-primary); }
+      .wp-md-item-text.wp-done { color: var(--wp-text-tertiary); text-decoration: line-through; }
+      .wp-md-quote {
+        margin: 0 0 8px; padding: 2px 0 2px 10px; border-left: 3px solid var(--wp-border);
+        color: var(--wp-text-secondary); font-size: 14px; line-height: 1.65;
+      }
+      .wp-md-code { padding: 1px 4px; border-radius: 4px; background: var(--wp-fill); font-size: 12.5px; }
+      .wp-md-link { color: var(--wp-primary); text-decoration: none; }
+      .wp-md-link:hover { text-decoration: underline; }
+      .wp-md-link-broken { color: var(--wp-text-tertiary); }
+      .wp-md-ref {
+        display: inline; padding: 0 4px; border: none; border-radius: 4px;
+        background: rgba(22, 119, 255, 0.12); color: var(--wp-primary);
+        font: inherit; font-size: inherit; cursor: pointer;
+      }
+      .wp-md-ref:hover { background: rgba(22, 119, 255, 0.22); }
+      .wp-md-ref-broken { background: var(--wp-fill); color: var(--wp-text-tertiary); cursor: help; }
+      .wp-detail-field { margin: 0 0 10px; }
       .wp-detail-project { height: 30px; padding: 2px 0; }
       .wp-nav-group { margin: 0 0 10px; }
       .wp-nav-group-body { display: flex; flex-direction: column; gap: 2px; }
@@ -4132,7 +4421,25 @@ window.__ModuleLoader__.load({
       .wp-batch-text { flex: 1; min-width: 160px; }
       .wp-detail-field-label { display: block; margin-bottom: 2px; font-size: 12px; color: var(--wp-text-tertiary); }
       .wp-detail-small { font-size: 13px; line-height: 1.55; min-height: 38px; color: var(--wp-text); }
-      .wp-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 14px; }
+      .wp-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+      .wp-detail-more { position: relative; }
+      .wp-detail-more-btn {
+        width: 28px; height: 28px; padding: 0; border: none; border-radius: 6px;
+        background: transparent; color: var(--wp-text-tertiary); font: inherit; font-size: 16px;
+        line-height: 1; cursor: pointer;
+      }
+      .wp-detail-more-btn:hover { background: var(--wp-fill); color: var(--wp-text); }
+      .wp-detail-more-menu {
+        position: absolute; z-index: 200; top: 32px; right: 0; min-width: 132px; padding: 6px;
+        background: var(--wp-bg-container); border: 1px solid var(--wp-border-secondary);
+        border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+      }
+      .wp-detail-more-item {
+        display: block; width: 100%; padding: 7px 8px; border: none; border-radius: 6px;
+        background: transparent; color: var(--wp-text); font: inherit; font-size: 13px;
+        text-align: left; cursor: pointer;
+      }
+      .wp-detail-more-item:hover { background: var(--wp-fill); }
       .wp-delegation { display: flex; flex-direction: column; gap: 8px; padding: 12px; margin-bottom: 14px; border: 1px solid var(--wp-border); border-radius: 8px; }
       .wp-delegation-prompt { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--wp-border); border-radius: 6px; background: var(--wp-bg-container); color: var(--wp-text); font: inherit; font-size: 12px; resize: vertical; }
       .wp-source-session { padding: 1px 4px; border: none; background: transparent; color: var(--wp-primary); font: inherit; font-size: 11px; cursor: pointer; }
@@ -4455,12 +4762,16 @@ window.__ModuleLoader__.load({
       }
       .wp-status-seg-item[data-active='true'] { background: var(--wp-bg-container); color: var(--wp-primary); font-weight: 500; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
 
-      @media (max-width: 1200px) { .wp-detail { width: 360px; } .wp-evidence { width: 340px; } }
+      /* Wider detail column: keep the middle list usable by stepping down early. */
+      @media (max-width: 1440px) { .wp-detail { width: 520px; } }
+      @media (max-width: 1200px) { .wp-detail { width: 440px; } .wp-evidence { width: 340px; } }
       @media (max-width: 980px) {
         .wp-detail, .wp-evidence {
           position: absolute; top: 0; right: 0; bottom: 0; z-index: 120;
-          width: min(400px, calc(100% - 40px)); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
+          box-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
         }
+        .wp-detail { width: min(600px, calc(100% - 40px)); }
+        .wp-evidence { width: min(400px, calc(100% - 40px)); }
       }
       @media (max-width: 760px) {
         .wp-sidenav { display: none; }
@@ -4468,6 +4779,8 @@ window.__ModuleLoader__.load({
         .wp-mid-body { padding: 12px 14px 20px; }
         .wp-search-input { width: 120px; }
         .wp-detail, .wp-evidence { width: 100%; }
+        .wp-detail-desc { min-height: 160px; }
+        .wp-detail-lower { min-height: 140px; }
       }
 
       @media (max-width: 760px) {
@@ -4927,8 +5240,36 @@ window.__ModuleLoader__.load({
         setLogComposerOpen(false); setLogText(''); setLogKind('progress');
         setArtifactComposerOpen(false); setArtifactSummary(''); setArtifactLinks('');
         setAiPanelOpen(false); setAiResult(null); setAiAdopted({});
+        setDetailMoreOpen(false); setDetailDescMode('edit'); setDescPicker(null); setStyleMenu(null);
+        descComposingRef.current = false; descSelectionRef.current = null; pendingCaretRef.current = null; descPrevValueRef.current = '';
         setTidyLoading(false); setTidyNote(''); setDelegation(null); tidySourceRef.current = null;
+        // Baseline for 'only newly typed characters open the style menu'.
+        descPrevValueRef.current = (tasks.find((t) => t.id === selectedId) || {}).description || '';
       }, [selectedId]);
+      // Restore the caret after a toolbar command rewrites the description.
+      useEffect(() => {
+        if (descPicker) { pendingCaretRef.current = null; return; }
+        const pending = pendingCaretRef.current;
+        const el = detailDescRef.current;
+        if (!pending || !el) return;
+        pendingCaretRef.current = null;
+        el.focus();
+        if (typeof el.setSelectionRange === 'function') el.setSelectionRange(pending.start, pending.end);
+      });
+      // Anchor the style menu under the caret. Layout is unavailable in the VM
+      // harness, so a guarded fallback keeps it docked inside the editor there.
+      useEffect(() => {
+        if (!styleMenu || styleMenu.pos) return;
+        const mirror = styleMenuMirrorRef.current;
+        if (!mirror || typeof mirror.querySelector !== 'function') return;
+        const caret = mirror.querySelector('.wp-md-mirror-caret');
+        if (!caret) return;
+        const el = detailDescRef.current;
+        const top = Number(caret.offsetTop) - (el && Number(el.scrollTop) || 0);
+        const left = Number(caret.offsetLeft) - (el && Number(el.scrollLeft) || 0);
+        if (!Number.isFinite(top) || !Number.isFinite(left)) return;
+        setStyleMenu((prev) => (prev && !prev.pos ? { ...prev, pos: { top: Math.max(0, top + 24), left: Math.max(0, left - 8) } } : prev));
+      });
       useEffect(() => {
         if (!calOpen) return undefined;
         const onDown = (e) => {
@@ -5036,9 +5377,13 @@ window.__ModuleLoader__.load({
         commit(tasks.map((t) => (t.id === task.id ? { ...t, ...reopenedState(), completedAt: null, droppedAt: null, updatedAt: iso } : t)));
       };
       const toggleDone = (task) => { if (task.status === 'done') reopenTask(task); else applyStatus(task, 'done'); };
+      // Read through the ref so a just-flushed draft cannot be overwritten by a
+      // stale render closure (for example preview checkbox writes).
       const updateTask = (id, patch) => {
         setLastApply(null);
-        commit(tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
+        const next = tasksRef.current.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t));
+        tasksRef.current = next;
+        commit(next);
       };
 
       // Free-text fields update the visible value immediately but write to storage
@@ -5061,6 +5406,40 @@ window.__ModuleLoader__.load({
       const [assistantLoading, setAssistantLoading] = useState(false);
       const [assistantConfirm, setAssistantConfirm] = useState(null);
       const [assistantInboxFresh, setAssistantInboxFresh] = useState(false);
+      const [detailTab, setDetailTab] = useState('exec');
+      const [detailMoreOpen, setDetailMoreOpen] = useState(false);
+      const [detailDescMode, setDetailDescMode] = useState('edit');
+      const [descPicker, setDescPicker] = useState(null);
+      const [styleMenu, setStyleMenu] = useState(null);
+      const pendingCaretRef = useRef(null);
+      const detailDescRef = useRef(null);
+      const descSelectionRef = useRef(null);
+      const descAreaRef = useRef(null);
+      const detailMoreRef = useRef(null);
+      const descComposingRef = useRef(false);
+      const descPrevValueRef = useRef('');
+      const styleMenuMirrorRef = useRef(null);
+      // Popovers close on an outside press or Escape, and never survive a tab switch.
+      useEffect(() => {
+        if (!styleMenu && !descPicker && !detailMoreOpen) return undefined;
+        const onDown = (event) => {
+          const target = event && event.target;
+          const desc = descAreaRef.current, more = detailMoreRef.current;
+          const inDesc = !!(desc && typeof desc.contains === 'function' && desc.contains(target));
+          const inMore = !!(more && typeof more.contains === 'function' && more.contains(target));
+          if (!inDesc) { if (styleMenu) setStyleMenu(null); if (descPicker) setDescPicker(null); }
+          if (!inMore) setDetailMoreOpen(false);
+        };
+        const onKey = (event) => {
+          if (event.key !== 'Escape') return;
+          setStyleMenu(null); setDescPicker(null); setDetailMoreOpen(false);
+        };
+        document.addEventListener('mousedown', onDown);
+        document.addEventListener('keydown', onKey);
+        return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+      }, [styleMenu, descPicker, detailMoreOpen]);
+      useEffect(() => { setStyleMenu(null); setDescPicker(null); }, [detailTab]);
+
       const assistantInboxFreshRef = useRef(assistantInboxFresh); assistantInboxFreshRef.current = assistantInboxFresh;
       const assistantSequenceRef = useRef(0);
       const assistantConfirmBusyRef = useRef(false);
@@ -5134,8 +5513,10 @@ window.__ModuleLoader__.load({
           delete draftValues.current[key];
           if (!pending) return;
           setLastApply(null);
-          commit(tasksRef.current.map((t) => (t.id === pending.id
-            ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t)));
+          const nextTasks = tasksRef.current.map((t) => (t.id === pending.id
+            ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t));
+          tasksRef.current = nextTasks;
+          commit(nextTasks);
           setDraftText((prev) => {
             const next = { ...prev };
             delete next[id + ':' + (pending.patch.title !== undefined ? 'title' : 'description')];
@@ -5154,6 +5535,7 @@ window.__ModuleLoader__.load({
           if (pending) next = next.map((t) => (t.id === pending.id
             ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t));
         }
+        tasksRef.current = next;
         commit(next);
         if (keys.length) setDraftText((prev) => {
           const nextEcho = { ...prev };
@@ -5296,6 +5678,7 @@ window.__ModuleLoader__.load({
           }
           tasksRef.current = next; workspaceRef.current = { ...workspaceRef.current, tasks: next };
           setTasks(next); setLastApply(null); setAssistantConfirm(null); setAssistantResult(null);
+          setDetailTab('exec');
           showToast('下一步已写入本页缓存，主存同步中；任务和回执状态未改变。');
           if (hostSyncRef.current) hostSyncRef.current.flush().then((result) => {
             if (result && result.phase !== 'ready') showToast('下一步已写入本页缓存，主存尚未确认；请留意同步状态。', 'danger');
@@ -5936,7 +6319,7 @@ window.__ModuleLoader__.load({
           }, dropped ? h(CrossIcon) : (done ? h(CheckIcon) : null)),
           h('div', { className: 'wp-row-main' },
             h('div', { className: 'wp-row-title' + (done ? ' wp-done' : '') }, task.title),
-            task.description ? h('div', { className: 'wp-row-desc' }, task.description) : null,
+            (() => { const summary = task.description ? markdownToPlainText(task.description) : ''; return summary ? h('div', { className: 'wp-row-desc' }, summary) : null; })(),
             recent ? h('div', { className: 'wp-row-log' },
               h('span', { className: 'wp-row-log-kind' }, LOG_KINDS[recent.kind] || '记录'),
               h('span', { className: 'wp-row-log-text' }, recent.text)) : null),
@@ -8060,227 +8443,505 @@ window.__ModuleLoader__.load({
           h('summary', null, assistantEvidenceLabel(ref) + ' · ' + ref.id + (item.at ? ' · ' + formatDateTime(item.at) : '')),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, content || '暂无文字内容'));
       };
+      // ---- description Markdown editor -----------------------------------
+      const descriptionText = () => {
+        if (!selectedTask) return '';
+        const key = selectedTask.id + ':description';
+        return draftText[key] !== undefined ? draftText[key] : (selectedTask.description || '');
+      };
+      const commitDescription = (text, selectionStart, selectionEnd) => {
+        if (!selectedTask) return;
+        setDraftText((prev) => ({ ...prev, [selectedTask.id + ':description']: text }));
+        updateTaskDebounced(selectedTask.id, { description: text });
+        pendingCaretRef.current = { start: selectionStart, end: selectionEnd };
+      };
+      const applyDescPrefix = (prefix) => {
+        if (!selectedTask) return;
+        setStyleMenu(null); setDescPicker(null);
+        const el = detailDescRef.current;
+        const value = descriptionText();
+        const start = el && typeof el.selectionStart === 'number' ? el.selectionStart : value.length;
+        const end = el && typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+        const result = applyBlockPrefix(value, start, end, prefix);
+        commitDescription(result.text, result.selectionStart, result.selectionEnd);
+      };
+      const insertDescTaskRef = (id) => {
+        if (!selectedTask) return;
+        const value = descriptionText();
+        const selection = descSelectionRef.current || { start: value.length, end: value.length };
+        const result = insertTaskRef(value, selection.start, selection.end, id);
+        commitDescription(result.text, result.selectionStart, result.selectionEnd);
+        setDescPicker(null);
+      };
+      const toggleDescCheckbox = (line) => {
+        if (!selectedTask) return;
+        flushDraftsRef.current();
+        const next = toggleCheckboxAtLine(descriptionText(), line);
+        if (next == null) return;
+        updateTask(selectedTask.id, { description: next });
+        setDraftText((prev) => {
+          const copy = { ...prev };
+          delete copy[selectedTask.id + ':description'];
+          return copy;
+        });
+      };
+      const inlineNodes = (text) => parseInline(text).flatMap((token, index) => {
+        if (token.type === 'task') {
+          const linked = tasks.find((item) => item.id === token.id && !item.deletedAt);
+          return [linked
+            ? h('button', {
+                className: 'wp-md-ref', key: 'md' + index, type: 'button', title: '关联任务：' + linked.title,
+                onClick: () => { setActiveView('all'); setSelectedId(linked.id); },
+              }, linked.title)
+            : h('span', { className: 'wp-md-ref wp-md-ref-broken', key: 'md' + index, title: '关联任务不可用' }, '任务已失效')];
+        }
+        if (token.type === 'strong') return [h('strong', { key: 'md' + index }, token.text)];
+        if (token.type === 'em') return [h('em', { key: 'md' + index }, token.text)];
+        if (token.type === 'code') return [h('code', { className: 'wp-md-code', key: 'md' + index }, token.text)];
+        if (token.type === 'link') {
+          const href = safeHref(token.href);
+          return [href
+            ? h('a', { className: 'wp-md-link', key: 'md' + index, href, target: '_blank', rel: 'noreferrer noopener' }, token.text)
+            : h('span', { className: 'wp-md-link-broken', key: 'md' + index }, token.text)];
+        }
+        return String(token.text == null ? '' : token.text).split('\n').flatMap((part, partIndex) =>
+          partIndex ? [h('br', { key: 'md' + index + '-' + partIndex }), part] : [part]);
+      });
+      const markdownBlocks = (text) => parseMarkdown(text).map((block, index) => {
+        if (block.type === 'heading') {
+          return h('div', { className: 'wp-md-h wp-md-h' + block.level, key: 'b' + index, role: 'heading', 'aria-level': block.level },
+            inlineNodes(block.text));
+        }
+        if (block.type === 'quote') return h('blockquote', { className: 'wp-md-quote', key: 'b' + index }, inlineNodes(block.text));
+        if (block.type === 'list') {
+          return h(block.ordered ? 'ol' : 'ul', { className: 'wp-md-list' + (block.ordered ? ' wp-md-ordered' : ''), key: 'b' + index },
+            block.items.map((item, itemIndex) => h('li', {
+              className: 'wp-md-li' + (item.checked === null ? '' : ' wp-md-li-check'), key: itemIndex,
+              style: item.depth ? { marginLeft: (item.depth * 14) + 'px' } : undefined,
+            }, item.checked === null ? h('span', { className: 'wp-md-item-text' }, inlineNodes(item.text))
+              : [h('button', {
+                  className: 'wp-md-check' + (item.checked ? ' wp-checked' : ''), key: 'check', type: 'button',
+                  role: 'checkbox', 'aria-checked': item.checked ? 'true' : 'false',
+                  'aria-label': markdownToPlainText(item.text).slice(0, 60),
+                  onClick: () => toggleDescCheckbox(item.line),
+                }, item.checked ? h(CheckIcon) : null),
+                h('span', { className: 'wp-md-item-text' + (item.checked ? ' wp-done' : ''), key: 'text' }, inlineNodes(item.text))])));
+        }
+        return h('p', { className: 'wp-md-p', key: 'b' + index }, inlineNodes(block.text));
+      });
+      const styleMenuItems = [
+        { key: 'h1', label: '一级标题', hint: 'H1', prefix: '# ' },
+        { key: 'h2', label: '二级标题', hint: 'H2', prefix: '## ' },
+        { key: 'h3', label: '三级标题', hint: 'H3', prefix: '### ' },
+        { key: 'ul', label: '无序列表', hint: '•', prefix: '- ' },
+        { key: 'ol', label: '有序列表', hint: '1.', prefix: '1. ' },
+        { key: 'task', label: '复选框', hint: '☑', prefix: '- [ ] ' },
+        { key: 'quote', label: '引用', hint: '❝', prefix: '> ' },
+        { key: 'ref', label: '关联任务', hint: '⟦⟧', prefix: null },
+      ];
+      const applyStyleMenu = (item) => {
+        if (!item || !selectedTask || !styleMenu) return;
+        const value = descriptionText();
+        // The menu may have been open while the text changed; never delete the
+        // wrong character. Require the trigger to still be exactly where it was.
+        if (value[styleMenu.index] !== styleMenu.trigger || styleMenu.removeStart < 0) { setStyleMenu(null); return; }
+        const cleaned = removeStyleTrigger(value, styleMenu.index);
+        const caret = Math.min(styleMenu.removeStart, cleaned.length);
+        if (!item.prefix) {
+          commitDescription(cleaned, caret, caret);
+          descSelectionRef.current = { start: caret, end: caret };
+          setStyleMenu(null);
+          setDescPicker({ query: '' });
+          return;
+        }
+        const result = applyBlockPrefix(cleaned, caret, caret, item.prefix);
+        commitDescription(result.text, result.selectionStart, result.selectionEnd);
+        setStyleMenu(null);
+      };
+      const onDescChange = (e) => {
+        if (!selectedTask) return;
+        const value = e.target.value;
+        updateTaskDebounced(selectedTask.id, { description: value });
+        const caret = typeof e.target.selectionStart === 'number' ? e.target.selectionStart : value.length;
+        const previousLength = descPrevValueRef.current.length;
+        const paste = !!(e.nativeEvent && e.nativeEvent.inputType === 'insertFromPaste');
+        descPrevValueRef.current = value;
+        const composing = descComposingRef.current || !!(e.nativeEvent && e.nativeEvent.isComposing);
+        // Deleting back to a trigger or pasting text ending with one must not pop
+        // the menu: only newly typed characters open it.
+        const hit = composing || paste || value.length < previousLength ? null : styleTriggerAt(value, caret);
+        if (!hit) { if (styleMenu) setStyleMenu(null); return; }
+        setStyleMenu({ index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0, pos: null });
+      };
+      const descPickerList = descPicker && selectedTask
+        ? tasks.filter((item) => !item.deletedAt && item.id !== selectedTask.id
+            && item.title.includes(descPicker.query.trim())).slice(0, 8)
+        : [];
+      const detailTabs = [
+        { key: 'exec', label: '执行' },
+        { key: 'logs', label: '记录', count: selectedLogs.length },
+        { key: 'artifacts', label: '成果', count: selectedArtifacts.length },
+        { key: 'assistant', label: '助手' },
+      ];
       const detailPanel = (selectedTask && !selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
-          h('div', { className: 'wp-detail-meta' },
-            h('button', {
-              className: 'wp-detail-check wp-check-' + selectedTask.urgency
-                + ((selectedTask.status === 'done' || selectedTask.status === 'dropped') ? ' wp-checked' : '')
-                + (selectedTask.status === 'dropped' ? ' wp-check-dropped' : ''),
-              type: 'button', role: 'checkbox',
-              'aria-checked': selectedTask.status === 'dropped' ? 'mixed' : (selectedTask.status === 'done' ? 'true' : 'false'),
-              title: selectedTask.status === 'dropped' ? '已废弃 · 点击恢复为待办'
-                : (selectedTask.status === 'done' ? '标记为未完成' : '标记为已完成'),
-              onClick: () => selectedTask.status === 'dropped' ? reopenTask(selectedTask) : toggleDone(selectedTask),
-            }, selectedTask.status === 'dropped' ? h(CrossIcon)
-              : selectedTask.status === 'done' ? h(CheckIcon) : null),
-            h('span', { className: 'wp-detail-sep' }, '|'),
-            h('button', {
-              className: 'wp-detail-date', type: 'button', title: '选择日期 / 时间',
-              onClick: () => {
-                if (!detailCalOpen) {
-                  const d = parseDeadline(selectedTask.deadline);
-                  const base = d ? d.date : new Date();
-                  setDetailCalMonth({ year: base.getFullYear(), month: base.getMonth() });
-                }
-                setDetailCalOpen((v) => !v);
-              },
-            }, formatTaskDate(selectedTask.deadline)),
-            h('button', {
-              className: 'wp-detail-flag wp-flag-' + selectedTask.urgency,
-              type: 'button', title: '选择优先级',
-              onClick: () => setFlagOpen((v) => !v),
-            }, h(FlagIcon)),
-            detailCalOpen ? calendarPopover({
-              month: detailCalMonth,
-              setMonth: setDetailCalMonth,
-              date: detailDate,
-              time: detailTime,
-              onPickDate: (dateStr) => setDetailDeadline(dateStr, detailTime),
-              onPickTime: (time) => setDetailDeadline(detailDate, time),
-              onClose: () => setDetailCalOpen(false),
-              onToday: () => { setDetailDeadline(todayDate(), ''); const d = new Date(); setDetailCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
-            }) : null,
-            flagOpen ? h('div', { className: 'wp-prio-menu' },
-              URGENCY_ORDER.map((u) => h('button', {
-                className: 'wp-prio-menu-item', key: u, type: 'button',
-                onClick: () => { updateTask(selectedTask.id, { urgency: u }); setFlagOpen(false); },
-              }, h('span', { className: 'wp-prio-dot wp-prio-dot-' + u }), URGENCY_FULL[u]))) : null,
-            h('button', {
-              className: 'wp-detail-del', type: 'button',
-              title: '移入回收站', 'aria-label': '移入回收站',
-              onClick: () => requestDelete(selectedTask),
-            }, h(TrashIcon))),
-          h('textarea', {
-            className: 'wp-detail-input wp-detail-title-input', rows: 2,
-            value: draftText[selectedTask.id + ':title'] !== undefined ? draftText[selectedTask.id + ':title'] : selectedTask.title,
-            placeholder: '任务标题', spellCheck: false,
-            onChange: (e) => updateTaskDebounced(selectedTask.id, { title: e.target.value }),
-          }),
-          h('textarea', {
-            className: 'wp-detail-input wp-detail-desc-input', rows: 4,
-            value: draftText[selectedTask.id + ':description'] !== undefined ? draftText[selectedTask.id + ':description'] : (selectedTask.description || ''),
-            placeholder: '添加任务描述',
-            onChange: (e) => updateTaskDebounced(selectedTask.id, { description: e.target.value }),
-          }),
-          h('div', { className: 'wp-detail-field' },
-            h('label', { className: 'wp-detail-field-label' }, '预期结果'),
+          h('div', { className: 'wp-detail-head' },
+            h('div', { className: 'wp-detail-meta' },
+              h('button', {
+                className: 'wp-detail-check wp-check-' + selectedTask.urgency
+                  + ((selectedTask.status === 'done' || selectedTask.status === 'dropped') ? ' wp-checked' : '')
+                  + (selectedTask.status === 'dropped' ? ' wp-check-dropped' : ''),
+                type: 'button', role: 'checkbox',
+                'aria-checked': selectedTask.status === 'dropped' ? 'mixed' : (selectedTask.status === 'done' ? 'true' : 'false'),
+                title: selectedTask.status === 'dropped' ? '已废弃 · 点击恢复为待办'
+                  : (selectedTask.status === 'done' ? '标记为未完成' : '标记为已完成'),
+                onClick: () => selectedTask.status === 'dropped' ? reopenTask(selectedTask) : toggleDone(selectedTask),
+              }, selectedTask.status === 'dropped' ? h(CrossIcon)
+                : selectedTask.status === 'done' ? h(CheckIcon) : null),
+              h('span', { className: 'wp-detail-sep' }, '|'),
+              h('button', {
+                className: 'wp-detail-date', type: 'button', title: '选择日期 / 时间',
+                onClick: () => {
+                  if (!detailCalOpen) {
+                    const d = parseDeadline(selectedTask.deadline);
+                    const base = d ? d.date : new Date();
+                    setDetailCalMonth({ year: base.getFullYear(), month: base.getMonth() });
+                  }
+                  setDetailCalOpen((v) => !v);
+                },
+              }, formatTaskDate(selectedTask.deadline)),
+              h('button', {
+                className: 'wp-detail-flag wp-flag-' + selectedTask.urgency,
+                type: 'button', title: '选择优先级',
+                onClick: () => setFlagOpen((v) => !v),
+              }, h(FlagIcon)),
+              detailCalOpen ? calendarPopover({
+                month: detailCalMonth,
+                setMonth: setDetailCalMonth,
+                date: detailDate,
+                time: detailTime,
+                onPickDate: (dateStr) => setDetailDeadline(dateStr, detailTime),
+                onPickTime: (time) => setDetailDeadline(detailDate, time),
+                onClose: () => setDetailCalOpen(false),
+                onToday: () => { setDetailDeadline(todayDate(), ''); const d = new Date(); setDetailCalMonth({ year: d.getFullYear(), month: d.getMonth() }); },
+              }) : null,
+              flagOpen ? h('div', { className: 'wp-prio-menu' },
+                URGENCY_ORDER.map((u) => h('button', {
+                  className: 'wp-prio-menu-item', key: u, type: 'button',
+                  onClick: () => { updateTask(selectedTask.id, { urgency: u }); setFlagOpen(false); },
+                }, h('span', { className: 'wp-prio-dot wp-prio-dot-' + u }), URGENCY_FULL[u]))) : null,
+              h('div', { className: 'wp-detail-more', ref: detailMoreRef },
+                h('button', {
+                  className: 'wp-detail-more-btn', type: 'button',
+                  'aria-haspopup': 'menu', 'aria-expanded': detailMoreOpen ? 'true' : 'false',
+                  title: '更多操作', 'aria-label': '更多操作',
+                  onClick: () => setDetailMoreOpen((v) => !v),
+                }, '⋯'),
+                detailMoreOpen ? h('div', { className: 'wp-detail-more-menu', role: 'menu' },
+                  h('button', {
+                    className: 'wp-detail-more-item', type: 'button', role: 'menuitem',
+                    onClick: () => {
+                      setDetailMoreOpen(false);
+                      if (selectedTask.status === 'dropped') reopenTask(selectedTask); else dropTask(selectedTask);
+                    },
+                  }, selectedTask.status === 'dropped' ? '恢复为待办' : '标记为废弃')) : null),
+              h('button', {
+                className: 'wp-detail-del', type: 'button',
+                title: '移入回收站', 'aria-label': '移入回收站',
+                onClick: () => requestDelete(selectedTask),
+              }, h(TrashIcon))),
             h('textarea', {
-              className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.expected,
-              placeholder: '希望交付什么、怎样判断完成（可选）',
-              onChange: (e) => updateTask(selectedTask.id, { expected: e.target.value }),
+              className: 'wp-detail-input wp-detail-title-input', rows: 2,
+              value: draftText[selectedTask.id + ':title'] !== undefined ? draftText[selectedTask.id + ':title'] : selectedTask.title,
+              placeholder: '任务标题', spellCheck: false,
+              onChange: (e) => updateTaskDebounced(selectedTask.id, { title: e.target.value }),
             })),
-          h('div', { className: 'wp-detail-field' },
-            h('label', { className: 'wp-detail-field-label' }, '下一步'),
-            h('textarea', {
-              className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.nextStep,
-              placeholder: '当前准备采取的具体动作（可选）',
-              onChange: (e) => updateTask(selectedTask.id, { nextStep: e.target.value }),
-            })),
-          selectedTask.status === 'todo' ? h('div', { className: 'wp-detail-field' },
-            h('label', { className: 'wp-detail-field-label' }, '阻塞原因'),
-            h('textarea', {
-              className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.blockedReason,
-              placeholder: '有阻塞时补充原因（可选）',
-              onChange: (e) => updateTask(selectedTask.id, { blockedReason: e.target.value }),
-            })) : null,
-          h('div', { className: 'wp-detail-actions' },
-            h('button', {
-              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
-              'aria-expanded': logComposerOpen ? 'true' : 'false',
-              onClick: () => { setLogComposerOpen((v) => !v); setArtifactComposerOpen(false); },
-            }, '记录进展'),
-            h('button', {
-              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
-              'aria-expanded': artifactComposerOpen ? 'true' : 'false',
-              onClick: () => { setArtifactComposerOpen((v) => !v); setLogComposerOpen(false); },
-            }, '关联成果'),
-            h('button', {
-              className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
-              'aria-expanded': aiPanelOpen ? 'true' : 'false',
-              disabled: aiLoading ? 'true' : undefined,
-              onClick: () => {
-                if (aiLoading) return;
-                if (aiPanelOpen) { setAiPanelOpen(false); return; }
-                analyzeTask(selectedTask);
-              },
-            }, aiLoading ? '分析中…' : 'AI 建议'),
-            h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
-              'aria-expanded': assistantExpanded ? 'true' : 'false',
-              onClick: () => { if (assistantExpanded) { assistantSequenceRef.current += 1; setAssistantLoading(false); setAssistantResult(null); setAssistantConfirm(null); }
-                setAssistantExpanded(!assistantExpanded); } }, '工作助手'),
-            h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
-              onClick: () => prepareDelegation(selectedTask), disabled: delegation && delegation.loading ? 'true' : undefined,
-            }, '交给 AI'),
-            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
-              onClick: () => selectedTask.status === 'dropped' ? reopenTask(selectedTask) : dropTask(selectedTask),
-            }, selectedTask.status === 'dropped' ? '恢复为待办' : '标记为废弃')),
-          delegation && delegation.taskId === selectedTask.id ? h('div', { className: 'wp-delegation' },
-            h('div', { className: 'wp-data-section-title' }, '执行指令 · 尚未发送'),
-            delegation.loading ? h('p', { className: 'wp-data-hint' }, '正在读取最新任务上下文…') : null,
-            delegation.error ? h('p', { className: 'wp-report-notice wp-report-notice-err' }, delegation.error) : null,
-            delegation.prompt ? h('textarea', { className: 'wp-delegation-prompt', rows: 8, value: delegation.prompt,
-              onChange: (event) => setDelegation((prev) => ({ ...prev, prompt: event.target.value })),
-            }) : null,
-            delegation.prompt ? h('div', { className: 'wp-data-actions' },
-              h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: openDelegationDraft }, '打开执行草稿'),
-              h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => copyText(delegation.prompt) }, '复制指令')) : null) : null,
-          detailLogComposer,
-          detailArtifactComposer,
-          detailAiPanel,
-          assistantExpanded && assistantContext ? h('section', { className: 'wp-detail-section', 'aria-label': '工作助手' },
-            h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '工作助手 · 按需整理')),
-            h('p', { className: 'wp-detail-empty' }, '点击生成后，将当前任务的标题、描述、预期、下一步、阻塞、状态、优先级和期限，以及最近最多 10 条记录、5 条相关成果摘要和 5 条匹配的待验收回执发送给已配置模型。每个字段最多取 1000 字；不发送独立文件/链接字段，但正文里包含的路径和网址仍会发送。'),
-            h('p', { className: 'wp-detail-empty' }, '本次可用：' + assistantContext.logs.length + ' 条记录、' + assistantContext.relatedArtifacts.length
-              + ' 条相关成果、' + assistantContext.receipts.length + ' 条待验收回执（截至最近一次读取）。相似成果按本地项目和词语匹配，仅供参考。'),
-            assistantContext.inboxUnavailable ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '回执连接异常，列表可能不完整；请先检查回传收件箱。') : null,
-            assistantContext.relatedArtifacts.length ? h('div', { className: 'wp-ai-sug' },
-              h('span', { className: 'wp-ai-sug-label' }, '相关历史成果 · 本地匹配'),
-              assistantContext.relatedArtifacts.map((item) => h('button', { key: item.id,
-                className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
-                style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
-                onClick: () => { setActiveView('all'); setSelectedId(item.taskId); } },
-                (item.summary || '未命名成果') + ' · ' + item.taskTitle + '（' + item.reason + '）')))
-              : h('p', { className: 'wp-detail-empty' }, '未找到可推荐的历史成果；不代表不存在相关资料。'),
-            h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button', disabled: assistantLoading || undefined,
-              onClick: () => runTaskAssistant(selectedTask) }, assistantLoading ? '正在整理…' : '生成工作建议'),
-            assistantResult && assistantResult.error ? h('p', { className: 'wp-report-notice wp-report-notice-err', role: 'status' }, assistantResult.error) : null,
-            assistantResult && assistantResult.signature ? h('div', { className: 'wp-ai-body' },
-              h('p', { className: 'wp-ai-hint' }, '以下是 AI 整理和建议，不代表事实核实、回执验收或任务完成。可展开引用查看原文；切换任务或前往收件箱会清除本次结果。'),
-              assistantIsStale ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '任务或依据已变化，建议可能过期，请重新生成。') : null,
-              assistantResult.reply ? h('p', { className: 'wp-ai-reply' }, assistantResult.reply) : null,
-              assistantResult.receiptSummary.length ? h('div', { className: 'wp-ai-sug' },
-                h('span', { className: 'wp-ai-sug-label' }, '待验收回执整理'),
-                assistantResult.receiptSummary.map((item) => h('div', { key: item.id },
-                  h('p', { className: 'wp-ai-sug-text' }, item.summary),
-                  h('p', { className: 'wp-data-hint' }, '模型引用（尚未经核实）：' + assistantEvidenceLabel({ type: 'receipt', id: item.id })),
-                  assistantEvidenceDetail({ type: 'receipt', id: item.id }, 0),
-                  h('p', { className: 'wp-data-hint' }, '不确定性：' + item.uncertainty))),
-                h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
-                  onClick: () => { setActiveView('inbox'); setSelectedId(null); } }, '前往回传收件箱')) : null,
-              assistantResult.options.length ? h('div', { className: 'wp-ai-sug' },
-                h('span', { className: 'wp-ai-sug-label' }, '可选下一步'),
-                assistantResult.options.map((option, index) => h('div', { key: index, className: 'wp-ai-sug' },
-                  h('p', { className: 'wp-ai-sug-text' }, option.text),
-                  h('p', { className: 'wp-data-hint' }, '模型引用（尚未经核实）：' + (option.evidence.length
-                    ? option.evidence.map(assistantEvidenceLabel).join('；') : '无可核对引用')),
-                  option.evidence.map(assistantEvidenceDetail),
-                  h('p', { className: 'wp-data-hint' }, '不确定性：' + option.uncertainty),
-                  h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
-                    onClick: () => setAssistantConfirm(index) }, '选择作为下一步'),
-                  assistantConfirm === index ? h('div', { className: 'wp-inline-confirm' },
-                    h('p', null, '当前下一步：' + (assistantContext.task.nextStep || '（未填写）')),
-                    h('p', null, '替换为：' + option.text),
-                    h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
-                      onClick: () => confirmAssistantStep(option) }, '确认写入下一步'),
-                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setAssistantConfirm(null) }, '取消')) : null)))
-                : h('p', { className: 'wp-detail-empty' }, '暂无可用下一步建议；可以补充记录后重试。')) : null) : null,
-          h('div', { className: 'wp-detail-section' },
-            h('div', { className: 'wp-detail-section-head' },
-              h('span', { className: 'wp-detail-section-title' }, '工作记录'),
-              selectedLogs.length ? h('span', { className: 'wp-detail-section-count' }, String(selectedLogs.length)) : null),
-            selectedLogs.length
-              ? h('div', { className: 'wp-log-list' }, selectedLogs.slice().reverse().map((entry) =>
-                  h('div', { className: 'wp-log-item', key: entry.id },
-                    h('div', { className: 'wp-log-meta' },
-                      h('span', { className: 'wp-log-kind wp-log-kind-' + entry.kind }, LOG_KINDS[entry.kind] || '记录'),
-                      entry.source === 'ai' ? h('span', { className: 'wp-log-ai-tag' }, 'AI')
-                        : entry.source === 'execution' ? h('span', { className: 'wp-log-ai-tag wp-log-exec-tag' }, '回传') : null,
-                      h('span', { className: 'wp-log-time' }, formatDateTime(entry.at)), sourceSessionLink(entry.sourceSessionId)),
-                    h('div', { className: 'wp-log-text' }, entry.text),
-                    entry.originalText && entry.originalText !== entry.text ? h('details', { className: 'wp-record-original' },
-                      h('summary', null, '查看原始记录'), h('p', null, entry.originalText)) : null)))
-              : h('p', { className: 'wp-detail-empty' }, '还没有记录。点「记录进展」写下这一次推进。')),
-          h('div', { className: 'wp-detail-section' },
-            h('div', { className: 'wp-detail-section-head' },
-              h('span', { className: 'wp-detail-section-title' }, '实际成果'),
-              selectedArtifacts.length ? h('span', { className: 'wp-detail-section-count' }, String(selectedArtifacts.length)) : null),
-            selectedArtifacts.length
-              ? h('div', { className: 'wp-artifact-list' }, selectedArtifacts.slice().reverse().map((item) =>
-                  h('div', { className: 'wp-artifact', key: item.id },
-                    item.summary ? h('div', { className: 'wp-artifact-summary' }, item.summary) : null,
-                    item.originalText ? h('details', { className: 'wp-record-original' }, h('summary', null, '查看原始记录'), h('p', null, item.originalText)) : null,
-                    (item.links || []).length ? h('div', { className: 'wp-artifact-links' }, (item.links || []).map((url, i) => {
-                      const href = safeHref(url);
-                      return href
-                        ? h('a', { className: 'wp-artifact-link', key: i, href, target: '_blank', rel: 'noreferrer noopener' }, url)
-                        : h('span', { className: 'wp-artifact-url', key: i }, url);
-                    })) : null,
-                    renderLocalFiles(item.files),
-                    h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at), sourceSessionLink(item.sourceSessionId)))))
-              : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
-          relatedArtifacts.length && !assistantExpanded ? h('div', { className: 'wp-detail-section' },
-            h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '相关历史成果')),
-            h('p', { className: 'wp-detail-empty' }, '按项目和内容相似词推荐，仅供参考。'),
-            relatedArtifacts.map(({ artifact, task, reason }) => h('button', {
-              className: 'wp-btn wp-btn-text wp-act-btn', key: artifact.id, type: 'button',
-              style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
-              onClick: () => { setActiveView('all'); setSelectedId(task.id); },
-            }, (artifact.summary || '未命名成果') + ' · ' + task.title + '（' + reason + '）'))) : null,
-          h('div', { className: 'wp-detail-rows wp-detail-times' },
-            detailRow('创建时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.createdAt))),
-            detailRow('更新时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.updatedAt)))))) : null;
-
+          h('div', { className: 'wp-detail-desc', ref: descAreaRef },
+            h('div', { className: 'wp-detail-desc-head' },
+              h('span', { className: 'wp-detail-desc-label' }, '描述'),
+              h('div', { className: 'wp-kind-seg wp-detail-desc-mode' },
+                h('button', {
+                  className: 'wp-status-seg-item', type: 'button',
+                  'data-active': detailDescMode === 'edit' ? 'true' : 'false',
+                  onClick: () => { flushDraftsRef.current(); setDetailDescMode('edit'); },
+                }, '编辑'),
+                h('button', {
+                  className: 'wp-status-seg-item', type: 'button',
+                  'data-active': detailDescMode === 'preview' ? 'true' : 'false',
+                  onClick: () => { flushDraftsRef.current(); setDetailDescMode('preview'); setDescPicker(null); setStyleMenu(null); },
+                }, '预览'))),
+            detailDescMode === 'edit' ? h('div', { className: 'wp-md-toolbar' },
+              [['H1', '# ', '一级标题'], ['H2', '## ', '二级标题'], ['H3', '### ', '三级标题']].map(([label, prefix, name]) => h('button', {
+                className: 'wp-md-tool', key: label, type: 'button', title: name, 'aria-label': name,
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+                onClick: () => applyDescPrefix(prefix),
+              }, label)),
+              h('button', { className: 'wp-md-tool', key: 'ul', type: 'button', title: '无序列表', 'aria-label': '无序列表',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('- ') }, '•'),
+              h('button', { className: 'wp-md-tool', key: 'ol', type: 'button', title: '有序列表', 'aria-label': '有序列表',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('1. ') }, '1.'),
+              h('button', { className: 'wp-md-tool', key: 'task', type: 'button', title: '复选框', 'aria-label': '复选框',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('- [ ] ') }, '☐'),
+              h('button', { className: 'wp-md-tool', key: 'quote', type: 'button', title: '引用', 'aria-label': '引用',
+                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyDescPrefix('> ') }, '❝'),
+              h('button', {
+                className: 'wp-md-tool wp-md-tool-link', key: 'ref', type: 'button', title: '关联任务', 'aria-label': '关联任务',
+                onMouseDown: (e) => {
+                  if (e && e.preventDefault) e.preventDefault();
+                  const el = detailDescRef.current;
+                  if (el && typeof el.selectionStart === 'number') descSelectionRef.current = { start: el.selectionStart, end: el.selectionEnd };
+                },
+                onClick: () => setDescPicker((prev) => (prev ? null : { query: '' })),
+              }, '关联任务')) : null,
+            detailDescMode === 'edit'
+              ? h('div', { className: 'wp-detail-desc-editor' },
+                  h('textarea', {
+                    ref: detailDescRef,
+                    className: 'wp-detail-input wp-detail-desc-input',
+                    value: descriptionText(),
+                    placeholder: '添加任务描述，可用 Markdown；行首或空格后输入 / 或 、 选择样式',
+                    onChange: onDescChange,
+                    onScroll: (e) => {
+                      const mirror = styleMenuMirrorRef.current;
+                      if (mirror) { mirror.scrollTop = e.target.scrollTop; mirror.scrollLeft = e.target.scrollLeft; }
+                    },
+                    onSelect: (e) => { descSelectionRef.current = { start: e.target.selectionStart, end: e.target.selectionEnd }; },
+                    onCompositionStart: () => { descComposingRef.current = true; },
+                    onCompositionEnd: (e) => {
+                      descComposingRef.current = false;
+                      // Some IMEs commit the punctuation without a later input event.
+                      const value = e.target.value;
+                      const caret = typeof e.target.selectionStart === 'number' ? e.target.selectionStart : value.length;
+                      const hit = styleTriggerAt(value, caret);
+                      if (hit) setStyleMenu({ index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0, pos: null });
+                    },
+                    onKeyDown: (e) => {
+                      if (!styleMenu || e.isComposing) return;
+                      if (e.key === 'Escape') { e.preventDefault(); setStyleMenu(null); return; }
+                      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        const step = e.key === 'ArrowDown' ? 1 : styleMenuItems.length - 1;
+                        setStyleMenu((prev) => (prev ? { ...prev, active: (prev.active + step) % styleMenuItems.length } : prev));
+                        return;
+                      }
+                      if (e.key === 'Enter') { e.preventDefault(); applyStyleMenu(styleMenuItems[styleMenu.active]); }
+                    },
+                  }),
+                  descPicker ? h('div', { className: 'wp-md-picker' },
+                    h('input', {
+                      className: 'wp-detail-input wp-detail-small', type: 'search', autoFocus: true,
+                      placeholder: '搜索任务标题…', value: descPicker.query,
+                      onChange: (e) => setDescPicker({ query: e.target.value }),
+                      onKeyDown: (e) => {
+                        if (e.key === 'Escape') { setDescPicker(null); return; }
+                        if (e.key === 'Enter' && descPickerList.length) { e.preventDefault(); insertDescTaskRef(descPickerList[0].id); }
+                      },
+                    }),
+                    descPickerList.length
+                      ? descPickerList.map((item) => h('button', {
+                          className: 'wp-md-picker-item', key: item.id, type: 'button',
+                          onClick: () => insertDescTaskRef(item.id),
+                        }, item.title))
+                      : h('p', { className: 'wp-detail-empty' }, '没有匹配的任务。'),
+                    h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setDescPicker(null) }, '取消')) : null,
+                  styleMenu ? h('div', {
+                    className: 'wp-md-mirror', ref: styleMenuMirrorRef, 'aria-hidden': true,
+                  }, [descriptionText().slice(0, styleMenu.index),
+                      h('span', { className: 'wp-md-mirror-caret', key: 'caret' }, '\u200b')]) : null,
+                  styleMenu ? h('div', {
+                    className: 'wp-md-style-menu', role: 'listbox', 'aria-label': '插入样式',
+                    style: styleMenu.pos ? { top: styleMenu.pos.top + 'px', left: styleMenu.pos.left + 'px' } : undefined,
+                    onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
+                  }, styleMenuItems.map((item, index) => h('button', {
+                    className: 'wp-md-style-item' + (styleMenu.active === index ? ' wp-active' : ''),
+                    key: item.key, type: 'button', role: 'option',
+                    'aria-selected': styleMenu.active === index ? 'true' : 'false',
+                    onMouseEnter: () => setStyleMenu((prev) => (prev ? { ...prev, active: index } : prev)),
+                    onClick: () => applyStyleMenu(item),
+                  }, h('span', null, item.label), h('span', { className: 'wp-md-style-key' }, item.hint)))) : null)
+              : h('div', { className: 'wp-detail-desc-preview' },
+                  descriptionText().trim()
+                    ? markdownBlocks(descriptionText())
+                    : h('p', { className: 'wp-detail-empty' }, '还没有描述。切换到「编辑」写点内容。'))),
+          h('div', { className: 'wp-detail-lower' },
+            h('div', { className: 'wp-detail-tabs', role: 'tablist', 'aria-label': '任务详情',
+              onKeyDown: (e) => {
+                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                e.preventDefault();
+                const index = detailTabs.findIndex((tab) => tab.key === detailTab);
+                const step = e.key === 'ArrowRight' ? 1 : detailTabs.length - 1;
+                setDetailTab(detailTabs[(index + step) % detailTabs.length].key);
+              } },
+              detailTabs.map((tab) => h('button', {
+                className: 'wp-detail-tab' + (detailTab === tab.key ? ' wp-active' : ''),
+                key: tab.key, type: 'button', role: 'tab', id: 'wp-detail-tab-' + tab.key,
+                'aria-controls': 'wp-detail-pane-' + tab.key,
+                'aria-selected': detailTab === tab.key ? 'true' : 'false',
+                tabIndex: detailTab === tab.key ? 0 : -1,
+                onClick: () => setDetailTab(tab.key),
+              }, tab.label,
+              tab.count ? h('span', { className: 'wp-detail-tab-count' }, String(tab.count)) : null))),
+            h('div', { className: 'wp-detail-pane', role: 'tabpanel', id: 'wp-detail-pane-' + detailTab, 'aria-labelledby': 'wp-detail-tab-' + detailTab },
+              detailTab === 'exec' ? h('div', { className: 'wp-detail-exec' },
+                h('div', { className: 'wp-detail-field' },
+                  h('label', { className: 'wp-detail-field-label' }, '预期结果'),
+                  h('textarea', {
+                    className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.expected,
+                    placeholder: '希望交付什么、怎样判断完成（可选）',
+                    onChange: (e) => updateTask(selectedTask.id, { expected: e.target.value }),
+                  })),
+                h('div', { className: 'wp-detail-field' },
+                  h('label', { className: 'wp-detail-field-label' }, '下一步'),
+                  h('textarea', {
+                    className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.nextStep,
+                    placeholder: '当前准备采取的具体动作（可选）',
+                    onChange: (e) => updateTask(selectedTask.id, { nextStep: e.target.value }),
+                  })),
+                selectedTask.status === 'todo' ? h('div', { className: 'wp-detail-field' },
+                  h('label', { className: 'wp-detail-field-label' }, '阻塞原因'),
+                  h('textarea', {
+                    className: 'wp-detail-input wp-detail-small', rows: 2, value: selectedTask.blockedReason,
+                    placeholder: '有阻塞时补充原因（可选）',
+                    onChange: (e) => updateTask(selectedTask.id, { blockedReason: e.target.value }),
+                  })) : null,
+                h('div', { className: 'wp-detail-rows wp-detail-times' },
+                  detailRow('创建时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.createdAt))),
+                  detailRow('更新时间', h('span', { className: 'wp-muted' }, formatDateTime(selectedTask.updatedAt)))))
+                : detailTab === 'logs' ? h('div', { className: 'wp-detail-logs' },
+                  h('div', { className: 'wp-detail-actions' },
+                    h('button', {
+                      className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                      'aria-expanded': logComposerOpen ? 'true' : 'false',
+                      onClick: () => { setLogComposerOpen((v) => !v); setArtifactComposerOpen(false); },
+                    }, '记录进展')),
+                  detailLogComposer,
+                  h('div', { className: 'wp-detail-section' },
+                    h('div', { className: 'wp-detail-section-head' },
+                      h('span', { className: 'wp-detail-section-title' }, '工作记录'),
+                      selectedLogs.length ? h('span', { className: 'wp-detail-section-count' }, String(selectedLogs.length)) : null),
+                    selectedLogs.length
+                      ? h('div', { className: 'wp-log-list' }, selectedLogs.slice().reverse().map((entry) =>
+                          h('div', { className: 'wp-log-item', key: entry.id },
+                            h('div', { className: 'wp-log-meta' },
+                              h('span', { className: 'wp-log-kind wp-log-kind-' + entry.kind }, LOG_KINDS[entry.kind] || '记录'),
+                              entry.source === 'ai' ? h('span', { className: 'wp-log-ai-tag' }, 'AI')
+                                : entry.source === 'execution' ? h('span', { className: 'wp-log-ai-tag wp-log-exec-tag' }, '回传') : null,
+                              h('span', { className: 'wp-log-time' }, formatDateTime(entry.at)), sourceSessionLink(entry.sourceSessionId)),
+                            h('div', { className: 'wp-log-text' }, entry.text),
+                            entry.originalText && entry.originalText !== entry.text ? h('details', { className: 'wp-record-original' },
+                              h('summary', null, '查看原始记录'), h('p', null, entry.originalText)) : null)))
+                      : h('p', { className: 'wp-detail-empty' }, '还没有记录。点「记录进展」写下这一次推进。')))
+                : detailTab === 'artifacts' ? h('div', { className: 'wp-detail-artifacts' },
+                  h('div', { className: 'wp-detail-actions' },
+                    h('button', {
+                      className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                      'aria-expanded': artifactComposerOpen ? 'true' : 'false',
+                      onClick: () => { setArtifactComposerOpen((v) => !v); setLogComposerOpen(false); },
+                    }, '关联成果')),
+                  detailArtifactComposer,
+                  h('div', { className: 'wp-detail-section' },
+                    h('div', { className: 'wp-detail-section-head' },
+                      h('span', { className: 'wp-detail-section-title' }, '实际成果'),
+                      selectedArtifacts.length ? h('span', { className: 'wp-detail-section-count' }, String(selectedArtifacts.length)) : null),
+                    selectedArtifacts.length
+                      ? h('div', { className: 'wp-artifact-list' }, selectedArtifacts.slice().reverse().map((item) =>
+                          h('div', { className: 'wp-artifact', key: item.id },
+                            item.summary ? h('div', { className: 'wp-artifact-summary' }, item.summary) : null,
+                            item.originalText ? h('details', { className: 'wp-record-original' }, h('summary', null, '查看原始记录'), h('p', null, item.originalText)) : null,
+                            (item.links || []).length ? h('div', { className: 'wp-artifact-links' }, (item.links || []).map((url, i) => {
+                              const href = safeHref(url);
+                              return href
+                                ? h('a', { className: 'wp-artifact-link', key: i, href, target: '_blank', rel: 'noreferrer noopener' }, url)
+                                : h('span', { className: 'wp-artifact-url', key: i }, url);
+                            })) : null,
+                            renderLocalFiles(item.files),
+                            h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at), sourceSessionLink(item.sourceSessionId)))))
+                      : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
+                  relatedArtifacts.length && !assistantExpanded ? h('div', { className: 'wp-detail-section' },
+                    h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '相关历史成果')),
+                    h('p', { className: 'wp-detail-empty' }, '按项目和内容相似词推荐，仅供参考。'),
+                    relatedArtifacts.map(({ artifact, task, reason }) => h('button', {
+                      className: 'wp-btn wp-btn-text wp-act-btn', key: artifact.id, type: 'button',
+                      style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
+                      onClick: () => { setActiveView('all'); setSelectedId(task.id); },
+                    }, (artifact.summary || '未命名成果') + ' · ' + task.title + '（' + reason + '）'))) : null)
+                : h('div', { className: 'wp-detail-assistant' },
+                  h('div', { className: 'wp-detail-actions' },
+                    h('button', {
+                      className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                      'aria-expanded': aiPanelOpen ? 'true' : 'false',
+                      disabled: aiLoading ? 'true' : undefined,
+                      onClick: () => {
+                        if (aiLoading) return;
+                        if (aiPanelOpen) { setAiPanelOpen(false); return; }
+                        analyzeTask(selectedTask);
+                      },
+                    }, aiLoading ? '分析中…' : 'AI 建议'),
+                    h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
+                      'aria-expanded': assistantExpanded ? 'true' : 'false',
+                      onClick: () => { if (assistantExpanded) { assistantSequenceRef.current += 1; setAssistantLoading(false); setAssistantResult(null); setAssistantConfirm(null); }
+                        setAssistantExpanded(!assistantExpanded); } }, '工作助手'),
+                    h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
+                      onClick: () => prepareDelegation(selectedTask), disabled: delegation && delegation.loading ? 'true' : undefined,
+                    }, '交给 AI')),
+                  delegation && delegation.taskId === selectedTask.id ? h('div', { className: 'wp-delegation' },
+                    h('div', { className: 'wp-data-section-title' }, '执行指令 · 尚未发送'),
+                    delegation.loading ? h('p', { className: 'wp-data-hint' }, '正在读取最新任务上下文…') : null,
+                    delegation.error ? h('p', { className: 'wp-report-notice wp-report-notice-err' }, delegation.error) : null,
+                    delegation.prompt ? h('textarea', { className: 'wp-delegation-prompt', rows: 8, value: delegation.prompt,
+                      onChange: (event) => setDelegation((prev) => ({ ...prev, prompt: event.target.value })),
+                    }) : null,
+                    delegation.prompt ? h('div', { className: 'wp-data-actions' },
+                      h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: openDelegationDraft }, '打开执行草稿'),
+                      h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => copyText(delegation.prompt) }, '复制指令')) : null) : null,
+                  detailAiPanel,
+                  assistantExpanded && assistantContext ? h('section', { className: 'wp-detail-section', 'aria-label': '工作助手' },
+                    h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '工作助手 · 按需整理')),
+                    h('p', { className: 'wp-detail-empty' }, '点击生成后，将当前任务的标题、描述、预期、下一步、阻塞、状态、优先级和期限，以及最近最多 10 条记录、5 条相关成果摘要和 5 条匹配的待验收回执发送给已配置模型。每个字段最多取 1000 字；不发送独立文件/链接字段，但正文里包含的路径和网址仍会发送。'),
+                    h('p', { className: 'wp-detail-empty' }, '本次可用：' + assistantContext.logs.length + ' 条记录、' + assistantContext.relatedArtifacts.length
+                      + ' 条相关成果、' + assistantContext.receipts.length + ' 条待验收回执（截至最近一次读取）。相似成果按本地项目和词语匹配，仅供参考。'),
+                    assistantContext.inboxUnavailable ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '回执连接异常，列表可能不完整；请先检查回传收件箱。') : null,
+                    assistantContext.relatedArtifacts.length ? h('div', { className: 'wp-ai-sug' },
+                      h('span', { className: 'wp-ai-sug-label' }, '相关历史成果 · 本地匹配'),
+                      assistantContext.relatedArtifacts.map((item) => h('button', { key: item.id,
+                        className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                        style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
+                        onClick: () => { setActiveView('all'); setSelectedId(item.taskId); } },
+                        (item.summary || '未命名成果') + ' · ' + item.taskTitle + '（' + item.reason + '）')))
+                      : h('p', { className: 'wp-detail-empty' }, '未找到可推荐的历史成果；不代表不存在相关资料。'),
+                    h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button', disabled: assistantLoading || undefined,
+                      onClick: () => runTaskAssistant(selectedTask) }, assistantLoading ? '正在整理…' : '生成工作建议'),
+                    assistantResult && assistantResult.error ? h('p', { className: 'wp-report-notice wp-report-notice-err', role: 'status' }, assistantResult.error) : null,
+                    assistantResult && assistantResult.signature ? h('div', { className: 'wp-ai-body' },
+                      h('p', { className: 'wp-ai-hint' }, '以下是 AI 整理和建议，不代表事实核实、回执验收或任务完成。可展开引用查看原文；切换任务或前往收件箱会清除本次结果。'),
+                      assistantIsStale ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '任务或依据已变化，建议可能过期，请重新生成。') : null,
+                      assistantResult.reply ? h('p', { className: 'wp-ai-reply' }, assistantResult.reply) : null,
+                      assistantResult.receiptSummary.length ? h('div', { className: 'wp-ai-sug' },
+                        h('span', { className: 'wp-ai-sug-label' }, '待验收回执整理'),
+                        assistantResult.receiptSummary.map((item) => h('div', { key: item.id },
+                          h('p', { className: 'wp-ai-sug-text' }, item.summary),
+                          h('p', { className: 'wp-data-hint' }, '模型引用（尚未经核实）：' + assistantEvidenceLabel({ type: 'receipt', id: item.id })),
+                          assistantEvidenceDetail({ type: 'receipt', id: item.id }, 0),
+                          h('p', { className: 'wp-data-hint' }, '不确定性：' + item.uncertainty))),
+                        h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button',
+                          onClick: () => { setActiveView('inbox'); setSelectedId(null); } }, '前往回传收件箱')) : null,
+                      assistantResult.options.length ? h('div', { className: 'wp-ai-sug' },
+                        h('span', { className: 'wp-ai-sug-label' }, '可选下一步'),
+                        assistantResult.options.map((option, index) => h('div', { key: index, className: 'wp-ai-sug' },
+                          h('p', { className: 'wp-ai-sug-text' }, option.text),
+                          h('p', { className: 'wp-data-hint' }, '模型引用（尚未经核实）：' + (option.evidence.length
+                            ? option.evidence.map(assistantEvidenceLabel).join('；') : '无可核对引用')),
+                          option.evidence.map(assistantEvidenceDetail),
+                          h('p', { className: 'wp-data-hint' }, '不确定性：' + option.uncertainty),
+                          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
+                            onClick: () => setAssistantConfirm(index) }, '选择作为下一步'),
+                          assistantConfirm === index ? h('div', { className: 'wp-inline-confirm' },
+                            h('p', null, '当前下一步：' + (assistantContext.task.nextStep || '（未填写）')),
+                            h('p', null, '替换为：' + option.text),
+                            h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
+                              onClick: () => confirmAssistantStep(option) }, '确认写入下一步'),
+                            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setAssistantConfirm(null) }, '取消')) : null)))
+                        : h('p', { className: 'wp-detail-empty' }, '暂无可用下一步建议；可以补充记录后重试。')) : null) : null))))) : null;
       const trashDetailPanel = (selectedTask && selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-trash' },

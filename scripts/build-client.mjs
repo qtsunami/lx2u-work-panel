@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = new URL('../', import.meta.url);
 const clientPath = fileURLToPath(new URL('client.js', root));
 const templatePath = new URL('src/client/main.js', root);
-const modules = ['workspace-sync.js', 'radar.js', 'auto-report.js', 'search.js', 'recommendations.js', 'report-preferences.js', 'quick-date.js'];
+const modules = ['workspace-sync.js', 'radar.js', 'auto-report.js', 'search.js', 'recommendations.js', 'report-preferences.js', 'quick-date.js', 'markdown.js'];
 
 function embed(current, file) {
   // Every listed module is required. A missing file fails instead of silently

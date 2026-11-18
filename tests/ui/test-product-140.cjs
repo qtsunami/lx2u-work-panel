@@ -17,6 +17,9 @@ function state(count = 1) {
 function select(ui, index = 0) {
   ui.fire(ui.one(node => has(node, 'wp-row') && text(node).includes('独立任务 ' + index), 'task row'), 'onClick');
 }
+function openTab(ui, label) {
+  ui.fire(ui.one(node => has(node, 'wp-detail-tab') && text(node).startsWith(label), label + ' tab'), 'onClick');
+}
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
 
@@ -36,6 +39,7 @@ test('AI quick capture prioritizes selected task beyond the first fifty and reta
     const entry = ui.storage.json(LOG_KEY)[0];
     assert.equal(entry.originalText, raw); assert.equal(entry.taskId, 't-54');
     assert.equal(ui.storage.json(TASK_KEY).find(task => task.id === 't-54').status, 'todo');
+    openTab(ui, '记录');
     assert.ok(ui.text().includes('查看原始记录'));
     ui.timers.advance(600); await ui.settle();
     assert.equal(ui.server.workspace.logs[0].originalText, raw);
@@ -90,6 +94,7 @@ test('handoff flushes latest work then opens an unsent append-only DSH draft', a
   try {
     select(ui);
     ui.fire(ui.one(node => node.type === 'textarea' && String(node.props.placeholder).includes('当前准备采取的具体动作')), 'onChange', { target: { value: '先运行回归测试' } });
+    openTab(ui, '助手');
     await ui.click('交给 AI'); await ui.settle();
     assert.deepEqual(prepared, [{ action: 'prepare', taskId: 't-0' }]);
     assert.ok(ui.byClass('wp-delegation-prompt').props.value.includes('先运行回归测试'));
@@ -105,7 +110,7 @@ test('offline handoff refuses to prepare from stale Host data', async () => {
   let reads = 0;
   const ui = harness(state(), undefined, { contextHook: () => { reads++; return { ok: true, prompt: 'must not use' }; } }); await ui.settle();
   try {
-    select(ui); ui.server.offline = true;
+    select(ui); openTab(ui, '助手'); ui.server.offline = true;
     for (const callback of ui.events.get('focus') || []) callback();
     await ui.settle();
     await ui.click('交给 AI'); await ui.settle();
@@ -119,9 +124,10 @@ test('execution provenance opens its source session while file paths stay inert'
   value.artifacts = [{ id: 'a-source', taskId: 't-0', at: NOW, summary: '文档', links: [], files: ['/workspace/交付说明.md'], sourceSessionId: 'source-session' }];
   const ui = harness(value, undefined, { services: { uiWorkspace: { openSession: id => opened.push(id) } }, navigator: { clipboard: { writeText: async value => copied.push(value) } } }); await ui.settle();
   try {
-    select(ui);
+    select(ui); openTab(ui, '记录');
     const link = ui.nodes().find(node => has(node, 'wp-source-session') && text(node) === '来源会话');
     ui.fire(link, 'onClick'); assert.deepEqual(opened, ['source-session']);
+    openTab(ui, '成果');
     assert.equal(ui.nodes().filter(node => node.type === 'a' && String(node.props.href).startsWith('file:')).length, 0);
     await ui.click('复制路径'); await ui.settle(); assert.deepEqual(copied, ['/workspace/交付说明.md']);
   } finally { ui.close(); }

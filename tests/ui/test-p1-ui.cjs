@@ -22,6 +22,7 @@ const { harness, workspace, task, KEY, NOW } = require('../helpers/ui-harness.cj
     ui.fire(ui.one(n => n.type === 'input' && n.props.id === 'wp-global-search'), 'onChange', { target: { value: '客户方案设计' } });
     const firstRow = ui.nodes().find(n => n.type === 'button' && (n.children || []).some(c => typeof c === 'string' && c.includes('客户方案设计')));
     assert.ok(firstRow); ui.fire(firstRow, 'onClick');
+    ui.fire(ui.one(n => String(n.props && n.props.className || '').includes('wp-detail-tab') && (n.children || []).some(c => typeof c === 'string' && c.startsWith('成果')), '成果 tab'), 'onClick');
     assert.ok(ui.text().includes('相关历史成果') && ui.text().includes('关键词成果') && ui.text().includes('同一项目'));
     ui.click('数据');
     const format = ui.one(n => n.type === 'select' && n.props.id === 'wp-pref-format');

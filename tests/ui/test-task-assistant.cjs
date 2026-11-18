@@ -12,10 +12,11 @@ const reply = { reply: '请人工核对', options: [{ text: '与客户核对范�
   receiptSummary: [{ id: 'receipt-a', summary: '测试待核对', uncertainty: '尚未验收' }] };
 const has = (n, c) => typeof n?.props?.className === 'string' && n.props.className.split(' ').includes(c);
 const text = n => typeof n === 'string' ? n : n && typeof n === 'object' ? (n.children || []).map(text).join('') : '';
+const openTab = (ui, label) => ui.fire(ui.one(n => has(n, 'wp-detail-tab') && text(n) === label, label + ' tab'), 'onClick');
 async function open(options = {}) {
   const ui = harness(state(), undefined, { inboxItems: receipts, ...options }); await ui.settle();
   const row = ui.one(n => has(n, 'wp-row') && text(n).includes('客户方案') && !text(n).includes('历史客户方案'));
-  ui.fire(row, 'onClick'); ui.click('工作助手'); return ui;
+  ui.fire(row, 'onClick'); openTab(ui, '助手'); ui.click('工作助手'); return ui;
 }
 (async () => {
   {
@@ -69,8 +70,10 @@ async function open(options = {}) {
     const ui = await open(); try {
       ui.click('生成工作建议'); await ui.settle(); const request = ui.nextRequest('task'); await ui.respond(request, reply);
       ui.click('选择作为下一步');
+      openTab(ui, '执行');
       const nextStep = ui.one(n => n.type === 'textarea' && n.props.value === '原下一步');
       ui.fire(nextStep, 'onChange', { target: { value: '用户新写的下一步' } }); await ui.settle();
+      openTab(ui, '助手');
       assert.equal(ui.button('确认写入下一步').props.disabled, true);
       assert.equal(ui.storage.json(KEY.tasks).find(t => t.id === 'a').nextStep, '用户新写的下一步');
       assert.ok(ui.text().includes('建议可能过期'));

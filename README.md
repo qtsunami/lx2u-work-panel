@@ -7,6 +7,16 @@ A personal workbench panel for DeepSeek Harness (DSH): a three-column layout wit
 A personal AI outcomes workbench: fast capture → execution → reliable receipts → review → reusable evidence and reports.
 The next milestones are tracked in [ROADMAP.md](./docs/ROADMAP.md): 1.3.x stabilization, 1.4.0 AI capture/context/delegation and Host-readable local data, 1.5.0 problem radar and opt-in automatic reports, 1.6.0 acceptance/search/reuse. Personal use only; no team collaboration scope.
 
+## Detail layout and Markdown description (v1.8.0)
+
+- The detail column is wider and stepped by viewport (600px above 1440px, 520px above 1200px, 440px above 980px, overlay below). The description takes about 70% of the content area with a 200px floor, so short windows give the room below priority.
+- Below the description, **执行 / 记录 / 成果 / 助手** tabs keep record, artifact and AI actions to the remaining space. Tab labels show counts; each pane scrolls on its own. “记录进展” and “关联成果” open their editor inside the matching tab, so the description is never pushed away. `标记为废弃 / 恢复为待办` moved into the `⋯` menu; delete stays in the meta row.
+- Descriptions support a Markdown subset: H1–H3, paragraphs, ordered/unordered lists, checkbox lists, quotes, and inline bold/italic/code/links. Use **编辑 / 预览** to switch; preview flushes pending edits first. Rendering builds React elements only — raw HTML in the text is shown literally, and unsafe link schemes stay plain text.
+- Checkboxes in preview are interactive and rewrite the matching source line (`- [ ]` ↔ `- [x]`); other lines are untouched.
+- Task references use `[[task:id]]`. Insert one with **关联任务**, which opens a searchable picker and excludes the current task. A reference renders as a clickable task name; if the target is deleted it shows “任务已失效” instead of disappearing. No backlinks are generated.
+- Style menu: typing `、` or `/` at a line start, or right after a space/tab, opens a style picker (headings, lists, checkbox, quote, task reference). Only newly typed characters trigger it: deleting text back to a trigger or pasting text ending with one does not. Choosing an item removes the trigger (and its leading space) and applies the prefix to the current line; an existing heading or list marker is replaced rather than stacked, and indentation is preserved. `↑`/`↓` choose, `Enter` applies, `Esc` closes without changing text; an outside press or a tab switch also closes it. Input-method composition never triggers it while composing, and a committed `、` is still detected afterwards; a `、` or `/` inside a word or date (for example `11/18`) is left alone.
+- The row summary strips Markdown markers so list rows stay one plain line. Descriptions are still stored as one string, so existing data, search, export and backup are unchanged; the AI context receives the raw text including markers.
+
 ## On-demand task work assistant (v1.7.0)
 
 - Open a task and select **工作助手** to see locally matched historical outcomes, then explicitly select **生成工作建议** to ask the configured model to organize matched pending receipts and suggest next steps. Merely opening the panel does not call the model. Related outcomes are a heuristic, not proof of relevance.

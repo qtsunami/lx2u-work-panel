@@ -26,6 +26,7 @@ const localStorage = {
 // 24 artifactComposerOpen, 25 artifactSummary, 26 artifactLinks, 27 pendingActions,
 // 28 lastApply, 29 aiPanelOpen, 30 aiLoading, 31 aiResult, 32 aiAdopted,
 // 33 tidyLoading, 34 tidyNote
+const DETAIL_TAB_STATE = (src.slice(0, src.indexOf('[detailTab')).match(/useState\(/g) || []).length + 1;
 const OVERRIDES = {
   7: 't-1',
   16: true,
@@ -42,6 +43,7 @@ const OVERRIDES = {
   28: { before: { tasks: [TASK], logs: [], artifacts: [] }, at: iso },
   48: [{ id: 'p-1', name: '工作台' }, { id: 'p-2', name: '客户' }],
   29: true,
+  [DETAIL_TAB_STATE]: 'assistant',
   31: {
     reply: '还缺验收标准',
     suggestion: {
