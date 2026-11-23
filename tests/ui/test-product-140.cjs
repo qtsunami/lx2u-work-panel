@@ -92,9 +92,8 @@ test('handoff flushes latest work then opens an unsent append-only DSH draft', a
     },
   }); await ui.settle();
   try {
-    select(ui);
+    select(ui); openTab(ui, '执行');
     ui.fire(ui.one(node => node.type === 'textarea' && String(node.props.placeholder).includes('当前准备采取的具体动作')), 'onChange', { target: { value: '先运行回归测试' } });
-    openTab(ui, '助手');
     await ui.click('交给 AI'); await ui.settle();
     assert.deepEqual(prepared, [{ action: 'prepare', taskId: 't-0' }]);
     assert.ok(ui.byClass('wp-delegation-prompt').props.value.includes('先运行回归测试'));
@@ -110,7 +109,7 @@ test('offline handoff refuses to prepare from stale Host data', async () => {
   let reads = 0;
   const ui = harness(state(), undefined, { contextHook: () => { reads++; return { ok: true, prompt: 'must not use' }; } }); await ui.settle();
   try {
-    select(ui); openTab(ui, '助手'); ui.server.offline = true;
+    select(ui); ui.server.offline = true;
     for (const callback of ui.events.get('focus') || []) callback();
     await ui.settle();
     await ui.click('交给 AI'); await ui.settle();
@@ -200,7 +199,7 @@ test('pre-migration rollback is explicit, undoable and keeps canonical revisions
     const initialRevision = ui.server.revision;
     ui.change('wp-quick-input', 'created after migration'); ui.fire(ui.byClass('wp-quick-input'), 'onKeyDown', { key: 'Enter', altKey: true });
     ui.timers.advance(600); await ui.settle(); assert.equal(ui.server.workspace.tasks.length, 2);
-    ui.click('数据'); ui.click('恢复迁移前副本'); assert.equal(ui.storage.json(TASK_KEY).length, 2);
+    ui.click('设置'); ui.click('数据管理'); ui.click('恢复迁移前副本'); assert.equal(ui.storage.json(TASK_KEY).length, 2);
     ui.click('确认恢复迁移副本'); ui.timers.advance(600); await ui.settle();
     assert.equal(ui.server.workspace.tasks.length, 1); assert.ok(ui.server.revision > initialRevision);
     ui.click('撤销上次导入/清空'); ui.timers.advance(600); await ui.settle();
@@ -211,7 +210,7 @@ test('pre-migration rollback is explicit, undoable and keeps canonical revisions
 test('data view explains every sync state and marks the current one', async () => {
   const ui = harness(state()); await ui.settle();
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('数据管理');
     ui.byClass('wp-sync-legend');
     const plainText = ui.text();
     for (const word of ['同步中', '已同步', '离线', '仅本页保存', '冲突', '异常']) assert.ok(plainText.includes(word), 'missing state ' + word);

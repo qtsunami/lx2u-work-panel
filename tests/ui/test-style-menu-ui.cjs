@@ -36,7 +36,9 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
       assert.equal(menuItems(ui).length, 8, 'all style choices are offered');
       assert.equal(menuItems(ui)[0].props['aria-selected'], 'true', 'the first item is active for keyboard use');
       chooseStyle(ui, '无序列表'); await ui.settle();
-      assert.equal(editor(ui).props.value, '- 标题', 'the trigger and its space are replaced by the list marker');
+      assert.equal(editor(ui).props.value, '标题', 'the trigger and its space disappear from the body-only textarea');
+      assert.equal(text(ui.byClass('wp-md-marker')), '•', 'the list marker renders beside the editor');
+      assert.equal(editor(ui).props.ref.current.selectionStart, 0, 'the source marker offset maps to body start');
       ui.timers.advance(600); await ui.settle();
       assert.equal(stored(ui), '- 标题');
     } finally { ui.close(); }
@@ -99,9 +101,12 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
     const ui = await open(); try {
       type(ui, '标题 /', 4);
       assert.ok(menuOpen(ui));
-      ui.click('H1'); await ui.settle();
-      assert.equal(menuOpen(ui), false, 'a toolbar command closes the stale menu');
-      assert.equal(editor(ui).props.value, '# 标题 /', 'the trigger text is preserved when the toolbar is used');
+      chooseStyle(ui, '一级标题'); await ui.settle();
+      assert.equal(menuOpen(ui), false, 'applying a heading dismisses the menu');
+      assert.equal(editor(ui).props.value, '# 标题', 'the heading command consumes the trigger rather than persisting it');
+      assert.ok(has(editor(ui), 'wp-md-size-h1'), 'the menu applies H1 typography in place');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '# 标题', 'the menu heading persists without punctuation');
     } finally { ui.close(); }
   }
   {
@@ -123,5 +128,70 @@ const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a'
       assert.equal(editor(ui).props.value, '关联[[task:b]]', 'the trigger is replaced by the chosen task reference');
     } finally { ui.close(); }
   }
-  console.log('STYLE MENU UI: 10 block-editor scenarios passed');
+  for (const source of ['- 甲乙', '3. 甲乙', '- [x] 甲乙', '> 甲乙', '  - [ ] 甲乙']) {
+    const ui = await open(source); try {
+      assert.equal(editor(ui).props.value, '甲乙', 'the focused item or quote begins body-only');
+      type(ui, '甲 /乙', 3);
+      assert.ok(menuOpen(ui), 'a body caret opens the menu at the corresponding source offset');
+      chooseStyle(ui, '三级标题');
+      const indent = source.startsWith('  ') ? '  ' : '';
+      assert.equal(editor(ui).props.value, indent + '### 甲乙', 'style conversion removes the body trigger, not a prefix character');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), indent + '### 甲乙', 'menu conversion does not stack structural markers');
+    } finally { ui.close(); }
+  }
+  for (const source of ['- 甲乙', '- [ ] 甲乙', '  - [x] 甲乙', '> 甲乙']) {
+    const ui = await open(source); try {
+      type(ui, '甲 /乙', 3);
+      chooseStyle(ui, '关联任务');
+      ui.fire(ui.one((node) => has(node, 'wp-md-picker-item') && text(node) === '历史任务', 'picker item'), 'onClick');
+      assert.equal(editor(ui).props.value, '甲[[task:b]]乙', 'menu reference replaces the trigger at the body caret');
+      assert.equal(editor(ui).props.ref.current.selectionStart, '甲[[task:b]]'.length, 'reference caret excludes hidden structural markers');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), source.slice(0, -2) + '甲[[task:b]]乙', 'menu reference retains the original structure and checked state');
+    } finally { ui.close(); }
+  }
+  for (const [label, prefix, marker] of [['无序列表', '- ', '•'], ['有序列表', '1. ', '1.'], ['复选框', '- [ ] ', null], ['引用', '> ', null]]) {
+    const ui = await open('正文'); try {
+      type(ui, '正文 /', 4);
+      chooseStyle(ui, label);
+      assert.equal(editor(ui).props.value, '正文', 'all non-heading menu styles expose only the body');
+      assert.equal(editor(ui).props.ref.current.selectionStart, 0, 'style application maps the caret to body start');
+      if (marker) assert.equal(text(ui.byClass('wp-md-marker')), marker);
+      if (label === '复选框') assert.equal(ui.byClass('wp-md-check').props['aria-checked'], 'false');
+      if (label === '引用') assert.ok(has(editor(ui), 'wp-md-size-quote'));
+      type(ui, '新正文', 3);
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), prefix + '新正文', 'editing after style application preserves exactly one prefix');
+    } finally { ui.close(); }
+  }
+  {
+    const ui = await open('- [ ] 正文'); try {
+      ui.fire(editor(ui), 'onCompositionStart');
+      type(ui, '正文 /', 4);
+      assert.equal(menuOpen(ui), false, 'body-only IME input suppresses the menu until committed');
+      ui.fire(editor(ui), 'onCompositionEnd', { target: { value: '正文 /', selectionStart: 4 } });
+      assert.ok(menuOpen(ui), 'composition commit maps the body caret to the task source');
+      chooseStyle(ui, '引用');
+      assert.equal(editor(ui).props.value, '正文');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '> 正文');
+    } finally { ui.close(); }
+  }
+  for (const prefix of ['- ', '- [ ] ', '1. ', '  - [x] ', '> ', '# ', '## ', '### ']) {
+    const ui = await open(prefix); try {
+      const heading = prefix.startsWith('#');
+      const value = heading ? prefix + '/' : '/';
+      type(ui, value, value.length);
+      assert.ok(menuOpen(ui), 'body-start slash opens a menu without exposing item markers');
+      chooseStyle(ui, '关联任务');
+      assert.equal(editor(ui).props.value, heading ? prefix : '', 'removing a body-start trigger preserves the structural separator');
+      ui.fire(ui.one((node) => has(node, 'wp-md-picker-item') && text(node) === '历史任务', 'picker item'), 'onClick');
+      assert.equal(editor(ui).props.value, (heading ? prefix : '') + '[[task:b]]', 'reference is inserted after the whole structural marker');
+      assert.equal(editor(ui).props.ref.current.selectionStart, (heading ? prefix.length : 0) + '[[task:b]]'.length);
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), prefix + '[[task:b]]', 'body-start reference retains the original Markdown structure: ' + prefix);
+    } finally { ui.close(); }
+  }
+  console.log('STYLE MENU UI: triggers, body-only conversions, item/quote caret mapping, references and IME scenarios passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

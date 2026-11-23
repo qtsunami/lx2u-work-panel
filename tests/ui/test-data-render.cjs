@@ -19,6 +19,11 @@ const localStorage = {
 
 // useState order: ... 55 inbox, 56 inboxAck, 57 inboxPicks,
 // 58 ignoreAllConfirmIds, 59 importMode, 60 preImportReady, 61 clearConfirm
+// Keep the appended settings-section state independent of unrelated hook additions.
+const settingsStateStart = src.indexOf('const [settingsSection,');
+if (settingsStateStart < 0) throw new Error('settings section state missing');
+const SETTINGS_STATE = (src.slice(0, settingsStateStart).match(/= useState\(/g) || []).length + 1;
+const dataSettings = { 4: 'settings', [SETTINGS_STATE]: 'data' };
 let overrides = {};
 let call = 0;
 const React = {
@@ -85,7 +90,7 @@ function assert(condition, message) {
 }
 
 // ---- 1. data view ----
-const dataView = render({ 4: 'data' });
+const dataView = render({ ...dataSettings });
 assert(dataView.has('wp-data'), 'data view should render');
 assert(dataView.has('wp-data-card'), 'data cards missing');
 assert(dataView.has('wp-data-row'), 'data rows missing');
@@ -97,18 +102,18 @@ assert(dataView.text.indexOf('v' + require('../../package.json').version) !== -1
 assert(!dataView.has('wp-detail'), 'data view should not show the task detail panel');
 
 // ---- 2. import mode copy switches ----
-const replaceMode = render({ 4: 'data', 59: 'replace' });
+const replaceMode = render({ ...dataSettings, 59: 'replace' });
 assert(replaceMode.text.indexOf('用备份文件替换当前全部数据') !== -1, 'replace mode explanation missing');
 assert(replaceMode.text.indexOf('不会删除你现有的数据') === -1, 'replace mode must not claim merge behaviour');
 
 // ---- 3. undo entry appears only when a pre-import snapshot exists ----
 assert(dataView.text.indexOf('撤销上次导入/清空') === -1, 'undo must stay hidden without a snapshot');
-const undoView = render({ 4: 'data', 60: true });
+const undoView = render({ ...dataSettings, 60: true });
 assert(undoView.text.indexOf('撤销上次导入/清空') !== -1, 'undo should appear once a snapshot exists');
 
 // ---- 4. destructive action asks first ----
 assert(dataView.text.indexOf('确定清空？') === -1, 'clear must not be pre-confirmed');
-const confirming = render({ 4: 'data', 61: true });
+const confirming = render({ ...dataSettings, 61: true });
 assert(confirming.text.indexOf('确定清空？') !== -1, 'clear confirmation string missing');
 assert(confirming.text.indexOf('确认清空') !== -1, 'clear confirmation button missing');
 

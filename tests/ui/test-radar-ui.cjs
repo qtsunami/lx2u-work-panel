@@ -492,7 +492,7 @@ test('automation is disabled by default and no scheduled generation is promised'
 test('automation controls stay off by default and enable only on an explicit click', async () => {
   const ui = harness(state([task('a')])); await ui.settle();
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('自动报告');
     assert.ok(ui.text().includes('自动生成工作报告'));
     assert.ok(ui.text().includes('未开启 · 点击开启'));
     assert.ok(ui.text().includes('当前未开启，不会产生任何自动生成'));
@@ -511,7 +511,7 @@ test('automation controls stay off by default and enable only on an explicit cli
 test('an unsupported time zone is reported instead of generating at a wrong time', async () => {
   const ui = harness(state([task('a')])); await ui.settle();
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('自动报告');
     const zone = ui.nodes().find(node => node.type === 'input' && node.props.type === 'text' && node.props.value === 'Asia/Shanghai');
     assert.ok(zone, 'time zone field exists');
     ui.fire(zone, 'onChange', { target: { value: 'Mars/Olympus' } }); await ui.settle();
@@ -529,7 +529,7 @@ test('manual generation creates a draft without touching tasks or the open edito
     { logs: [{ id: 'l1', taskId: 'a', at: NOW_ISO, kind: 'progress', text: '完成主体工作' }] });
   const ui = harness(carried); await ui.settle();
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('自动报告');
     ui.click('未开启 · 点击开启'); await ui.settle();
     ui.button('立即生成一次').props.onClick(); await ui.settle(); await ui.settle();
     const request = ui.nextRequest('report');
@@ -550,7 +550,7 @@ test('a user-edited draft is never overwritten by a later automatic run', async 
   const ui = harness(carried); await ui.settle();
   let next;
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('自动报告');
     ui.click('未开启 · 点击开启'); await ui.settle();
     ui.button('立即生成一次').props.onClick(); await ui.settle(); await ui.settle();
     await ui.respond(ui.nextRequest('report'), { report: { body: '自动版本' } });
@@ -561,7 +561,7 @@ test('a user-edited draft is never overwritten by a later automatic run', async 
       reports.map(r => r.id === autoId ? { ...r, body: '我手工改过的版本', auto: undefined } : r)));
     ui.close();
     next = harness(carried, ui.storage);
-    await next.settle(); next.click('数据');
+    await next.settle(); next.click('设置'); next.click('自动报告');
     next.button('立即生成一次').props.onClick(); await next.settle(); await next.settle();
     assert.equal(next.requests.filter(r => r.body.mode === 'report').length, 0, 'no model call that could overwrite');
     assert.ok(next.text().includes('已有你的手工草稿'));
@@ -572,7 +572,7 @@ test('a user-edited draft is never overwritten by a later automatic run', async 
 const autoFixture = () => state([task('a', { status: 'done', completedAt: NOW_ISO })],
   { logs: [{ id: 'l1', taskId: 'a', at: NOW_ISO, kind: 'progress', text: '完成主体工作' }] });
 const startAuto = async (ui) => {
-  ui.click('数据'); ui.click('未开启 · 点击开启'); await ui.settle();
+  ui.click('设置'); ui.click('自动报告'); ui.click('未开启 · 点击开启'); await ui.settle();
   ui.button('立即生成一次').props.onClick(); await ui.settle(); await ui.settle();
   return ui.nextRequest('report');
 };
@@ -636,7 +636,7 @@ test('auto draft and numeric run time persist together; a failed report write ca
 test('five-minute timer reads fresh success state and does not regenerate the same period', async () => {
   const ui = harness(autoFixture()); await ui.settle();
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('自动报告');
     const time = ui.nodes().find(n => n.type === 'input' && n.props.type === 'time' && n.props.value === '18:00');
     ui.fire(time, 'onChange', { target: { value: '12:00' } });
     const weekday = ui.nodes().find(n => n.type === 'select' && n.props.value === '5');
@@ -654,7 +654,7 @@ test('auto report response after workspace replacement cannot rewrite the replac
   const ui = harness(autoFixture()); await ui.settle();
   try {
     const request = await startAuto(ui);
-    ui.click('覆盖');
+    ui.click('设置'); ui.click('数据管理'); ui.click('覆盖');
     const replacement = state([task('replacement')]);
     const done = ui.import({ app: 'work-panel', schema: 1, version: '1.5.10', exportedAt: NOW_ISO, ...replacement });
     await done; await ui.settle();
@@ -677,7 +677,7 @@ test('auto report result after the panel closes is not saved', async () => {
 test('timer uses schedule edits made after activation, not an old render closure', async () => {
   const ui = harness(autoFixture()); await ui.settle();
   try {
-    ui.click('数据'); ui.click('未开启 · 点击开启'); await ui.settle();
+    ui.click('设置'); ui.click('自动报告'); ui.click('未开启 · 点击开启'); await ui.settle();
     assert.equal(ui.requests.filter(r => r.body.mode === 'report').length, 0, 'Thursday is not default Friday schedule');
     const time = ui.nodes().find(n => n.type === 'input' && n.props.type === 'time' && n.props.value === '18:00');
     ui.fire(time, 'onChange', { target: { value: '12:00' } });
@@ -736,14 +736,14 @@ test('automatic status write failure rolls back draft, marker and success togeth
 test('failed activation is not queued for a later retry or reloaded as enabled', async () => {
   const ui = harness(autoFixture()); await ui.settle();
   try {
-    ui.click('数据');
+    ui.click('设置'); ui.click('自动报告');
     ui.storage.fail('set', '@local/work-panel:workspace-extras:v1');
     ui.click('未开启 · 点击开启'); await ui.settle();
     assert.ok(ui.text().includes('未开启 · 点击开启'), 'UI did not accept failed switch');
     assert.equal(ui.storage.json('@local/work-panel:workspace-extras:v1', {}).autoSettings?.enabled, undefined);
     ui.close();
     const next = harness(autoFixture(), ui.storage); await next.settle();
-    try { next.click('数据'); assert.ok(next.text().includes('未开启 · 点击开启')); }
+    try { next.click('设置'); next.click('自动报告'); assert.ok(next.text().includes('未开启 · 点击开启')); }
     finally { next.close(); }
   } finally { ui.close(); }
 });

@@ -31,8 +31,8 @@ async function open(description = MARKDOWN) {
 const blocks = (ui) => ui.nodes().filter((node) => has(node, 'wp-md-block') || has(node, 'wp-md-block-editing'));
 const input = (ui) => ui.byClass('wp-md-block-input');
 function focusBlock(ui, index) { ui.fire(blocks(ui)[index], 'onClick'); }
-function type(ui, value, caret) {
-  ui.fire(input(ui), 'onChange', { target: { value, selectionStart: caret, selectionEnd: caret } });
+function type(ui, value, caret, extra = {}) {
+  ui.fire(input(ui), 'onChange', { target: { value, selectionStart: caret, selectionEnd: caret }, ...extra });
 }
 const stored = (ui) => ui.storage.json(KEY.tasks).find((item) => item.id === 'a').description;
 const menuOpen = (ui) => ui.nodes().some((node) => has(node, 'wp-md-style-menu'));
@@ -75,7 +75,7 @@ function chooseStyle(ui, label) {
       assert.equal(stored(ui), '普通文本', 'saving is still debounced');
       ui.timers.advance(600); await ui.settle();
       assert.equal(stored(ui), '## 新标题');
-      ui.fire(input(ui), 'onBlur', {}); await ui.settle();
+      ui.fire(ui.byClass('wp-md-block-editing'), 'onBlur', {}); await ui.settle();
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-block-heading2')), 'blur renders the heading');
       assert.ok(!text(ui.byClass('wp-md-blocks')).includes('##'), 'markers disappear after blur');
     } finally { ui.close(); }
@@ -97,9 +97,11 @@ function chooseStyle(ui, label) {
   {
     const ui = await open('待办'); try {
       focusBlock(ui, 0);
-      ui.click('复选框'); await ui.settle();
-      assert.equal(input(ui).props.value, '- [ ] 待办', 'the toolbar converts the focused block');
-      ui.fire(input(ui), 'onBlur', {}); await ui.settle();
+      type(ui, '待办 /', 4);
+      chooseStyle(ui, '复选框'); await ui.settle();
+      assert.equal(input(ui).props.value, '待办', 'the style menu keeps only the task body in the textarea');
+      assert.equal(ui.byClass('wp-md-check').props['aria-checked'], 'false', 'the active task has a live checkbox');
+      ui.fire(ui.byClass('wp-md-block-editing'), 'onBlur', {}); await ui.settle();
       ui.fire(ui.one((node) => has(node, 'wp-md-check'), 'checkbox'), 'onClick'); await ui.settle();
       ui.timers.advance(600); await ui.settle();
       assert.equal(stored(ui), '- [x] 待办', 'clicking the rendered checkbox rewrites the line');
@@ -112,7 +114,8 @@ function chooseStyle(ui, label) {
       assert.ok(menuOpen(ui), 'typing / after a space opens the style menu');
       assert.equal(menuItems(ui).length, 8);
       chooseStyle(ui, '无序列表'); await ui.settle();
-      assert.equal(input(ui).props.value, '- 标题', 'the trigger is replaced by the list marker');
+      assert.equal(input(ui).props.value, '标题', 'the trigger is removed and the list marker is outside the textarea');
+      assert.equal(text(ui.byClass('wp-md-marker')), '•');
       type(ui, '标题/内容', 4);
       assert.equal(menuOpen(ui), false, 'a slash inside a word never triggers');
     } finally { ui.close(); }
@@ -120,11 +123,12 @@ function chooseStyle(ui, label) {
   {
     const ui = await open('已有内容'); try {
       focusBlock(ui, 0);
-      ui.click('关联任务'); await ui.settle();
+      type(ui, '已有内容 /', 6);
+      chooseStyle(ui, '关联任务'); await ui.settle();
       ui.fire(ui.one((node) => node.type === 'input' && String(node.props.placeholder).includes('搜索任务标题'), 'picker input'), 'onChange', { target: { value: '历史' } });
       ui.fire(ui.one((node) => has(node, 'wp-md-picker-item') && text(node) === '历史任务', 'picker item'), 'onClick'); await ui.settle();
       assert.equal(input(ui).props.value, '已有内容[[task:b]]', 'the reference is inserted into the focused block');
-      ui.fire(input(ui), 'onBlur', {}); await ui.settle();
+      ui.fire(ui.byClass('wp-md-block-editing'), 'onBlur', {}); await ui.settle();
       assert.ok(ui.nodes().some((node) => has(node, 'wp-md-ref') && text(node) === '历史任务'));
     } finally { ui.close(); }
   }
@@ -180,12 +184,150 @@ function chooseStyle(ui, label) {
   {
     const ui = await open('甲乙丙'); try {
       ui.fire(ui.one((node) => has(node, 'wp-md-block')), 'onClick');
-      const input = ui.byClass('wp-md-block-input');
-      input.props.ref.current.selectionStart = 1; input.props.ref.current.selectionEnd = 1;
-      ui.click('关联任务'); await ui.settle();
+      type(ui, '甲 /乙丙', 3);
+      assert.ok(menuOpen(ui), 'a trigger inserted at the caret opens the style menu');
+      chooseStyle(ui, '关联任务'); await ui.settle();
       ui.fire(ui.one((node) => has(node, 'wp-md-picker-item') && text(node) === '历史任务', 'picker item'), 'onClick'); await ui.settle();
       assert.equal(ui.byClass('wp-md-block-input').props.value, '甲[[task:b]]乙丙', 'the reference is inserted at the caret');
     } finally { ui.close(); }
   }
-  console.log('MARKDOWN UI: 15 block-editor scenarios passed');
+  {
+    const ui = await open(''); try {
+      focusBlock(ui, 0);
+      type(ui, '-', 1);
+      assert.equal(input(ui).props.value, '-', 'a bare hyphen is still plain text');
+      assert.ok(has(input(ui), 'wp-md-size-paragraph'));
+      type(ui, '- ', 2);
+      assert.equal(input(ui).props.value, '', 'space converts the hyphen to a body-only bullet live');
+      assert.equal(text(ui.byClass('wp-md-marker')), '•');
+      assert.equal(input(ui).props.ref.current.selectionStart, 0, 'conversion restores the DOM caret at body start');
+      type(ui, '[ ]', 3);
+      assert.equal(input(ui).props.value, '[ ]', 'without a trailing space the checkbox syntax stays in the bullet body');
+      assert.equal(ui.nodes().filter((node) => has(node, 'wp-md-check')).length, 0);
+      type(ui, '[ ] ', 4);
+      assert.equal(input(ui).props.value, '', 'a trailing space converts the bullet to a live task');
+      assert.equal(ui.byClass('wp-md-check').props['aria-checked'], 'false');
+      assert.equal(input(ui).props.ref.current.selectionStart, 0);
+      type(ui, '执行任务', 4);
+      ui.fire(ui.byClass('wp-md-check'), 'onMouseDown');
+      ui.fire(ui.byClass('wp-md-check'), 'onClick');
+      assert.equal(input(ui).props.value, '执行任务', 'toggling the active checkbox preserves body and edit mode');
+      assert.equal(ui.byClass('wp-md-check').props['aria-checked'], 'true');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '- [x] 执行任务', 'typing and toggling persist exactly one Markdown prefix');
+      type(ui, '执行任务！', 5);
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '- [x] 执行任务！', 'subsequent body input preserves the checked state');
+      ui.fire(input(ui), 'onKeyDown', { key: 'Enter', target: { value: '执行任务！', selectionStart: 5, selectionEnd: 5 } });
+      assert.equal(input(ui).props.value, '', 'Enter focuses the next task body');
+      assert.equal(input(ui).props.ref.current.selectionStart, 0);
+      assert.deepEqual(ui.nodes().filter((node) => has(node, 'wp-md-check')).map((node) => node.props['aria-checked']), ['true', 'false'], 'continued tasks start unchecked');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '- [x] 执行任务！\n- [ ] ');
+      ui.fire(input(ui), 'onKeyDown', { key: 'Enter', target: { value: '', selectionStart: 0, selectionEnd: 0 } });
+      assert.ok(has(input(ui), 'wp-md-size-paragraph'), 'Enter in an empty task exits the structure');
+      assert.equal(ui.nodes().filter((node) => has(node, 'wp-md-check')).length, 1);
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '- [x] 执行任务！\n\n', 'exiting removes the empty task marker');
+    } finally { ui.close(); }
+  }
+  for (const source of ['- 甲乙丙', '2. 甲乙丙', '- [x] 甲乙丙', '> 甲乙丙']) {
+    const ui = await open(source); try {
+      focusBlock(ui, 0);
+      assert.equal(input(ui).props.value, '甲乙丙', 'items and quotes expose only their body: ' + source);
+      assert.equal(input(ui).props.ref.current.selectionStart, 3, 'focus maps source end to body end');
+      ui.fire(input(ui), 'onKeyDown', { key: 'Enter', target: { value: '甲乙丙', selectionStart: 1, selectionEnd: 2 } });
+      assert.equal(input(ui).props.value, '丙', 'Enter uses body selection offsets and removes the selected text');
+      assert.equal(input(ui).props.ref.current.selectionStart, 0, 'continued structure starts at body offset zero');
+      ui.fire(input(ui), 'onKeyDown', { key: 'Backspace', target: { value: '丙', selectionStart: 0, selectionEnd: 0 } });
+      assert.ok(has(input(ui), 'wp-md-size-paragraph'), 'Backspace at body start removes structure rather than merging');
+      assert.equal(blocks(ui).length, 2);
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), source.slice(0, -3) + '甲\n丙');
+    } finally { ui.close(); }
+  }
+  for (const level of [1, 2, 3]) {
+    const ui = await open(''); try {
+      focusBlock(ui, 0);
+      const prefix = '#'.repeat(level) + ' ';
+      type(ui, prefix + '标题', prefix.length + 2);
+      assert.equal(input(ui).props.value, prefix + '标题', 'focused headings retain their marks');
+      assert.ok(has(input(ui), 'wp-md-size-h' + level), 'heading typography applies immediately');
+      type(ui, prefix + '标题续', prefix.length + 3);
+      assert.equal(input(ui).props.value, prefix + '标题续', 'continued typing does not hide heading marks');
+      ui.fire(input(ui), 'onKeyDown', { key: 'Enter', target: { value: prefix + '标题续', selectionStart: prefix.length + 3, selectionEnd: prefix.length + 3 } });
+      assert.equal(input(ui).props.value, '', 'heading Enter focuses a plain paragraph');
+      assert.ok(has(input(ui), 'wp-md-size-paragraph'));
+      assert.equal(text(ui.byClass('wp-md-block-heading' + level)), '标题续', 'newline renders the previous heading without marks');
+      focusBlock(ui, 0);
+      assert.equal(input(ui).props.value, prefix + '标题续', 'refocusing restores the heading marks');
+      ui.fire(ui.byClass('wp-md-block-editing'), 'onBlur');
+      assert.equal(text(ui.byClass('wp-md-block-heading' + level)), '标题续', 'blur hides marks for every heading level');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), prefix + '标题续\n');
+    } finally { ui.close(); }
+  }
+  for (const source of ['- 甲乙丙', '- [ ] 甲乙丙', '  - [x] 甲乙丙', '> 甲乙丙']) {
+    const ui = await open(source); try {
+      focusBlock(ui, 0);
+      type(ui, '甲 、乙丙', 3);
+      assert.ok(menuOpen(ui), 'the 、 trigger works at a body caret inside structured blocks');
+      chooseStyle(ui, '关联任务');
+      ui.fire(ui.one((node) => has(node, 'wp-md-picker-item') && text(node) === '历史任务', 'picker item'), 'onClick');
+      assert.equal(input(ui).props.value, '甲[[task:b]]乙丙', 'task references use body caret coordinates');
+      assert.equal(input(ui).props.ref.current.selectionStart, '甲[[task:b]]'.length, 'inserted reference maps source caret back to body');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), source.slice(0, -3) + '甲[[task:b]]乙丙', 'reference insertion preserves prefix and indentation');
+    } finally { ui.close(); }
+  }
+  {
+    const ui = await open('  - [ ] 原文'); try {
+      focusBlock(ui, 0);
+      assert.equal(ui.byClass('wp-md-edit-row').props.style.paddingLeft, '14px', 'indentation is rendered outside the textarea');
+      const pasted = '甲\n- [x] 乙\n> 丙';
+      type(ui, pasted, pasted.length, { nativeEvent: { inputType: 'insertFromPaste' } });
+      assert.equal(input(ui).props.value, '丙', 'multiline paste focuses the final body-only quote');
+      assert.ok(has(input(ui), 'wp-md-size-quote'));
+      assert.equal(input(ui).props.ref.current.selectionStart, 1, 'pasted final marker is excluded from the DOM caret');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '  - [ ] 甲\n- [x] 乙\n> 丙', 'paste preserves original indentation and adds its prefix only to the first line');
+    } finally { ui.close(); }
+  }
+  {
+    const ui = await open('- [ ] 甲乙\n尾段'); try {
+      focusBlock(ui, 0);
+      const container = ui.byClass('wp-md-blocks');
+      const target = { value: '甲乙', selectionStart: 1, selectionEnd: 1 };
+      ui.fire(input(ui), 'onKeyDown', { key: 'Enter', target });
+      assert.equal(input(ui).props.value, '乙');
+      ui.fire(container, 'onKeyDown', { key: 'Enter', target, currentTarget: container });
+      assert.equal(input(ui).props.value, '乙', 'bubbled textarea Enter must not move focus to the final block');
+      assert.equal(input(ui).props.ref.current.selectionStart, 0);
+      ui.fire(ui.byClass('wp-md-blocks'), 'onKeyDown', { key: 'Enter', target: container, currentTarget: container });
+      assert.equal(input(ui).props.value, '尾段', 'direct container Enter still activates the final block');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '- [ ] 甲\n- [ ] 乙\n尾段', 'bubbling does not split or rewrite any extra block');
+    } finally { ui.close(); }
+  }
+  {
+    const ui = await open('- [ ] 正文'); try {
+      focusBlock(ui, 0);
+      const checkbox = ui.byClass('wp-md-check');
+      ui.fire(ui.byClass('wp-md-block-editing'), 'onBlur', {
+        relatedTarget: checkbox, currentTarget: { contains: (target) => target === checkbox },
+      });
+      assert.equal(input(ui).props.value, '正文', 'moving focus to the active checkbox keeps the editing wrapper mounted');
+      ui.fire(ui.byClass('wp-md-check'), 'onClick');
+      assert.equal(input(ui).props.value, '正文', 'keyboard checkbox activation preserves body-only editing');
+      assert.equal(ui.byClass('wp-md-check').props['aria-checked'], 'true');
+      ui.fire(ui.byClass('wp-md-block-editing'), 'onBlur', {
+        relatedTarget: {}, currentTarget: { contains: () => false },
+      });
+      assert.equal(ui.nodes().filter((node) => has(node, 'wp-md-block-input')).length, 0, 'focus leaving the whole wrapper exits editing');
+      assert.equal(text(ui.byClass('wp-md-item-text')), '正文');
+      ui.timers.advance(600); await ui.settle();
+      assert.equal(stored(ui), '- [x] 正文');
+    } finally { ui.close(); }
+  }
+  console.log('MARKDOWN UI: render, body-only input, progressive task, heading lifecycle, caret/ref, paste, Enter bubbling and wrapper focus scenarios passed');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     const BACKUP_SCHEMA = 1;
     // Kept in sync with package.json by a unit test, so the panel can always
     // tell the user exactly which build they are looking at.
-    const PANEL_VERSION = '1.9.0';
+    const PANEL_VERSION = '1.11.1';
     const TRANSACTION_KEY = '@local/work-panel:transaction:v1';
     const REPORT_EDITS_KEY = '@local/work-panel:report-edits:v1';
     const WORKSPACE_ENDPOINT = '/api/work-panel/workspace';
@@ -4162,6 +4162,18 @@ window.__ModuleLoader__.load({
       .wp-nav-count { font-size: 12px; color: var(--wp-text-tertiary); }
       .wp-nav-item.wp-active .wp-nav-count { color: var(--wp-primary); }
       .wp-sidenav-spacer { flex: 1; }
+      .wp-nav-divider { flex-shrink: 0; border-top: 1px solid var(--wp-border-secondary); margin: 2px 10px 10px; }
+      .wp-nav-archive { margin-bottom: 12px; }
+      .wp-sidenav-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 0; }
+      .wp-settings-button.wp-active { background: var(--wp-fill); color: var(--wp-primary); }
+      .wp-settings-button:focus-visible, .wp-settings-nav button:focus-visible { outline: 2px solid var(--wp-primary); outline-offset: 2px; }
+      .wp-settings-layout { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 20px; align-items: start; }
+      .wp-settings-nav { display: flex; flex-direction: column; gap: 4px; padding-right: 12px; border-right: 1px solid var(--wp-border-secondary); }
+      .wp-settings-content { min-width: 0; }
+      .wp-settings-guard { border: 0; padding: 0; margin: 0; min-width: 0; }
+      .wp-settings-content .wp-data-row { flex-wrap: wrap; }
+      @media (max-width: 980px) { .wp-settings-layout { grid-template-columns: 120px minmax(0, 1fr); gap: 12px; } }
+
 
       .wp-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--wp-bg-container); }
       .wp-mid-head {
@@ -4243,15 +4255,28 @@ window.__ModuleLoader__.load({
       .wp-row-log-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
       .wp-detail {
-        width: 600px; flex-shrink: 0; display: flex; flex-direction: column; container-type: inline-size;
+        position: relative; min-height: 0; width: 600px; flex-shrink: 0; display: flex; flex-direction: column; container-type: inline-size;
         background: var(--wp-bg-container); border-left: 1px solid var(--wp-border-secondary);
       }
-      .wp-detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 16px; }
+      .wp-detail-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 16px 16px 0; }
       .wp-detail-head { flex: 0 0 auto; }
-      .wp-detail-desc { position: relative; flex: 1 1 70%; min-height: 200px; display: flex; flex-direction: column; min-width: 0; }
+      .wp-detail-desc { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; min-width: 0; }
       .wp-detail-desc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 2px; }
       .wp-detail-desc-label { font-size: 12px; color: var(--wp-text-tertiary); }
-      .wp-detail-lower { flex: 1 1 30%; min-height: 180px; display: flex; flex-direction: column; min-width: 0; border-top: 1px solid var(--wp-border-secondary); margin-top: 10px; padding-top: 6px; }
+      .wp-detail-workbar { box-sizing: border-box; height: 48px; flex: 0 0 48px; display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--wp-border-secondary); background: var(--wp-bg-container); }
+      .wp-detail-work-actions { margin-left: auto; flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
+      .wp-detail-work-actions > .wp-act-btn { padding: 0 6px; white-space: nowrap; }
+      .wp-detail-project-picker { position: relative; flex: 1; min-width: 56px; max-width: calc(200px * 2 / 3); color: var(--wp-text-secondary); }
+      .wp-detail-project-icon { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); display: flex; pointer-events: none; }
+      .wp-detail-project-picker > .wp-detail-project-select { appearance: none; -webkit-appearance: none; background-image: none; box-sizing: border-box; display: block; width: 100%; min-width: 0; border: none; border-radius: 4px; padding: 4px 2px 4px 22px; background-color: transparent; color: inherit; font: inherit; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+      .wp-detail-project-select:focus-visible { outline: 2px solid var(--wp-primary); outline-offset: 2px; }
+      .wp-detail-project-select option { background: var(--wp-bg-container); color: var(--wp-text); }
+      .wp-detail-sheet { position: absolute; z-index: 30; bottom: 48px; left: 8px; right: 8px; max-height: calc(100% - 66px); display: flex; flex-direction: column; border: 1px solid var(--wp-border); border-radius: 12px 12px 6px 6px; background: var(--wp-bg-container); box-shadow: 0 -8px 24px var(--wp-fill); }
+      .wp-detail-sheet:focus { outline: 2px solid var(--wp-primary); outline-offset: -2px; }
+      .wp-detail-sheet-head { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--wp-border-secondary); }
+      .wp-detail-sheet-head h3 { flex: 1; margin: 0; font-size: 14px; color: var(--wp-text); }
+      .wp-detail-sheet-body { min-height: 0; overflow: auto; padding: 12px 16px; }
+      .wp-detail-sheet-body > .wp-detail-section { margin-top: 0; }
       .wp-detail-tabs { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; }
       .wp-detail-tabs::-webkit-scrollbar { display: none; }
       .wp-detail-tab {
@@ -4263,7 +4288,8 @@ window.__ModuleLoader__.load({
       .wp-detail-tab.wp-active { background: rgba(22, 119, 255, 0.1); color: var(--wp-primary); font-weight: 500; }
       .wp-detail-tab-count { font-size: 11px; color: var(--wp-text-tertiary); }
       .wp-detail-tab.wp-active .wp-detail-tab-count { color: var(--wp-primary); }
-      .wp-detail-pane { flex: 1; min-height: 0; overflow: auto; padding-top: 8px; }
+      .wp-detail-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; padding: 8px 0 12px; }
+      .wp-detail-pane > :not(.wp-detail-desc) { flex-shrink: 0; }
       .wp-detail-meta { position: relative; display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
       .wp-detail-check {
         --wp-check-color: var(--wp-text-tertiary);
@@ -4365,6 +4391,9 @@ window.__ModuleLoader__.load({
         overflow-wrap: anywhere; line-height: 1.6; font-size: 14px; color: var(--wp-text);
       }
       .wp-md-block:hover { background: var(--wp-fill); }
+      .wp-md-edit-row { display: flex; align-items: flex-start; gap: 8px; }
+      .wp-md-edit-row > .wp-md-block-input { flex: 1; min-width: 0; }
+      .wp-md-edit-row > .wp-md-check { margin-top: 4px; flex-shrink: 0; }
       .wp-md-block-editing { display: flex; flex-direction: column; padding: 0; }
       .wp-md-block-editing.wp-md-edit-quote { border-left: 3px solid var(--wp-border); padding-left: 10px; }
       .wp-md-block-input {
@@ -4920,8 +4949,7 @@ window.__ModuleLoader__.load({
         .wp-mid-body { padding: 12px 14px 20px; }
         .wp-search-input { width: 120px; }
         .wp-detail, .wp-evidence { width: 100%; }
-        .wp-detail-desc { min-height: 160px; }
-        .wp-detail-lower { min-height: 140px; }
+        .wp-detail-workbar { gap: 6px; }
       }
 
       @media (max-width: 760px) {
@@ -4978,6 +5006,16 @@ window.__ModuleLoader__.load({
       return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', 'aria-hidden': true },
         h('path', { fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round',
           d: 'M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-4 3.5V6Z' }));
+    }
+    function SettingsIcon() {
+      return h('svg', { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, 'aria-hidden': true },
+        h('path', { d: 'M9.5 3h5l.6 2.5 2 1.2 2.5-.7 2.5 4.3-1.9 1.8v2.3l1.9 1.8-2.5 4.3-2.5-.7-2 1.2-.6 2.5h-5L8.9 21l-2-1.2-2.5.7-2.5-4.3 1.9-1.8v-2.3l-1.9-1.8L4.4 6l2.5.7 2-1.2z', transform: 'translate(0 -1)' }),
+        h('circle', { cx: 12, cy: 12, r: 3 }));
+    }
+    function ProjectIcon() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', 'aria-hidden': true },
+        h('path', { fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round',
+          d: 'M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z' }));
     }
     function SendIcon() {
       return h('svg', { width: 15, height: 15, viewBox: '0 0 24 24', 'aria-hidden': true },
@@ -5401,7 +5439,10 @@ window.__ModuleLoader__.load({
         if (!pending) return;
         pendingCaretRef.current = null;
         el.focus();
-        if (typeof el.setSelectionRange === 'function') el.setSelectionRange(pending.start, pending.end);
+        if (typeof el.setSelectionRange === 'function') {
+          const hiddenLength = editingPrefix(blockSource(descFocus)).length;
+          el.setSelectionRange(Math.max(0, pending.start - hiddenLength), Math.max(0, pending.end - hiddenLength));
+        }
       });
       useEffect(() => {
         if (!calOpen) return undefined;
@@ -5539,7 +5580,7 @@ window.__ModuleLoader__.load({
       const [assistantLoading, setAssistantLoading] = useState(false);
       const [assistantConfirm, setAssistantConfirm] = useState(null);
       const [assistantInboxFresh, setAssistantInboxFresh] = useState(false);
-      const [detailTab, setDetailTab] = useState('exec');
+      const [detailTab, setDetailTab] = useState('desc');
       const [detailMoreOpen, setDetailMoreOpen] = useState(false);
       const [descPicker, setDescPicker] = useState(null);
       const [styleMenu, setStyleMenu] = useState(null);
@@ -5550,6 +5591,34 @@ window.__ModuleLoader__.load({
       const descAreaRef = useRef(null);
       const detailMoreRef = useRef(null);
       const descComposingRef = useRef(false);
+      const [workSheet, setWorkSheet] = useState(null);
+      const [settingsSection, setSettingsSection] = useState('preferences');
+      const workSheetRef = useRef(null);
+      const workbarRef = useRef(null);
+      const workOpenerRef = useRef(null);
+      const assistantConfirmationRef = useRef(0);
+      const adviceSequenceRef = useRef(0);
+      const closeWorkSheet = (restoreFocus = true) => {
+        assistantConfirmationRef.current += 1;
+        setAssistantConfirm(null); setWorkSheet(null); setAssistantExpanded(false);
+        if (restoreFocus && workOpenerRef.current && typeof workOpenerRef.current.focus === 'function') workOpenerRef.current.focus();
+      };
+      useEffect(() => {
+        if (!workSheet) return undefined;
+        const sheet = workSheetRef.current;
+        if (sheet && typeof sheet.focus === 'function') sheet.focus();
+        const onDown = (event) => {
+          if (workSheetRef.current && workSheetRef.current.contains(event.target)) return;
+          if (workbarRef.current && workbarRef.current.contains(event.target)) return;
+          closeWorkSheet(false);
+        };
+        const onKey = (event) => {
+          if (event.key === 'Escape') { event.preventDefault(); closeWorkSheet(); }
+        };
+        document.addEventListener('mousedown', onDown); document.addEventListener('focusin', onDown); document.addEventListener('keydown', onKey);
+        return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('focusin', onDown); document.removeEventListener('keydown', onKey); };
+      }, [workSheet]);
+      useEffect(() => { closeWorkSheet(false); }, [detailTab]);
       // Popovers close on an outside press or Escape, and never survive a tab switch.
       useEffect(() => {
         if (!styleMenu && !descPicker && !detailMoreOpen) return undefined;
@@ -5578,9 +5647,11 @@ window.__ModuleLoader__.load({
       const assistantIssueRef = useRef(inboxIssue); assistantIssueRef.current = inboxIssue;
       useEffect(() => {
         assistantSequenceRef.current += 1;
+        assistantConfirmationRef.current += 1; adviceSequenceRef.current += 1;
+        setWorkSheet(null); setDetailTab('desc'); setAiLoading(false);
         setAssistantExpanded(false); setAssistantResult(null); setAssistantLoading(false); setAssistantConfirm(null);
       }, [selectedId, workspaceEpoch]);
-      useEffect(() => () => { assistantSequenceRef.current += 1; }, []);
+      useEffect(() => () => { assistantSequenceRef.current += 1; adviceSequenceRef.current += 1; assistantConfirmationRef.current += 1; }, []);
       const changeReportPreferences = (next) => {
         const normalized = normalizeReportPreferences(next);
         if (!saveExtras({ reportPreferences: normalized })) return;
@@ -5667,6 +5738,7 @@ window.__ModuleLoader__.load({
             ? { ...t, ...pending.patch, updatedAt: new Date().toISOString() } : t));
         }
         tasksRef.current = next;
+        workspaceRef.current = { ...workspaceRef.current, tasks: next };
         commit(next);
         if (keys.length) setDraftText((prev) => {
           const nextEcho = { ...prev };
@@ -5748,6 +5820,7 @@ window.__ModuleLoader__.load({
       };
       const runTaskAssistant = async (task) => {
         if (!task || assistantLoading) return;
+        flushDrafts();
         const snapshot = assistantSnapshot(task.id);
         if (!snapshot) return;
         if (snapshot.inboxUnavailable) { setAssistantResult({ error: '回执连接不可用，无法确认待验收内容；请先恢复连接。' }); return; }
@@ -5784,6 +5857,7 @@ window.__ModuleLoader__.load({
         assistantConfirmBusyRef.current = true;
         const sourceResult = assistantResult;
         const sequence = assistantSequenceRef.current;
+        const confirmation = assistantConfirmationRef.current;
         const epoch = epochRef.current;
         try {
           let current = assistantSnapshot(sourceResult.taskId);
@@ -5791,7 +5865,7 @@ window.__ModuleLoader__.load({
             setAssistantConfirm(null); setAssistantResult({ error: '任务或依据已变化，请重新整理后再确认。' }); return;
           }
           const inboxCurrent = await verifyAssistantInbox(current);
-          if (sequence !== assistantSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== sourceResult.taskId) return;
+          if (confirmation !== assistantConfirmationRef.current || sequence !== assistantSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== sourceResult.taskId) return;
           current = assistantSnapshot(sourceResult.taskId);
           if (!inboxCurrent || !current || JSON.stringify(current) !== sourceResult.signature) {
             setAssistantConfirm(null); setAssistantResult({ error: '回执或任务已变化，或回执暂不可用；请重新整理。' }); return;
@@ -5830,9 +5904,10 @@ window.__ModuleLoader__.load({
             h('code', { className: 'wp-local-file-path' }, path),
             h('button', { className: 'wp-source-session', type: 'button', onClick: () => copyText(path) }, '复制路径')))) : null;
       const prepareDelegation = async (task) => {
-        if (!task || delegation && delegation.loading) return;
+        if (!task || delegation && (delegation.loading || delegation.taskId === task.id && delegation.prompt)) return;
+        flushDrafts();
         const epoch = epochRef.current;
-        setDelegation({ taskId: task.id, prompt: '', loading: true, error: '' });
+        setDelegation((prev) => ({ ...(prev && prev.taskId === task.id ? prev : {}), taskId: task.id, prompt: prev && prev.taskId === task.id ? prev.prompt : '', loading: true, error: '' }));
         try {
           if (!hostSyncRef.current) throw new Error('host-not-ready');
           const status = await hostSyncRef.current.flush();
@@ -5844,10 +5919,10 @@ window.__ModuleLoader__.load({
           const result = await response.json();
           if (!response.ok || !result || result.error || typeof result.prompt !== 'string') throw new Error('prepare-failed');
           if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
-          setDelegation({ taskId: task.id, prompt: result.prompt, loading: false, error: '' });
+          setDelegation((prev) => ({ taskId: task.id, prompt: prev && prev.taskId === task.id && prev.prompt ? prev.prompt : result.prompt, loading: false, error: '' }));
         } catch {
           if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
-          setDelegation({ taskId: task.id, prompt: '', loading: false, error: '请先同步本机主存，再准备执行指令。' });
+          setDelegation((prev) => ({ taskId: task.id, prompt: prev && prev.taskId === task.id ? prev.prompt : '', loading: false, error: '请先同步本机主存，再准备执行指令。' }));
         }
       };
       const openDelegationDraft = () => {
@@ -6050,8 +6125,30 @@ window.__ModuleLoader__.load({
       };
 
       // ---- in-task AI: advice and record tidying -------------------------
+      // Compare exactly the task fields and bounded evidence sent for advice.
+      // Read refs and pending edits so an immediate click cannot adopt over a
+      // newer title/description draft before React has rendered it.
+      const adviceSnapshot = (id) => {
+        let task = tasksRef.current.find((item) => item.id === id && !item.deletedAt);
+        if (!task) return null;
+        for (const pending of Object.values(draftValues.current || {}))
+          if (pending && pending.id === id) task = { ...task, ...pending.patch };
+        const source = workspaceRef.current;
+        return {
+          task: { id: task.id, title: task.title, description: task.description,
+            expected: task.expected, nextStep: task.nextStep, blockedReason: task.blockedReason,
+            status: task.status, urgency: task.urgency, deadline: task.deadline },
+          logs: logsOf(source.logs || [], id).slice(-10).map((entry) => ({ at: entry.at, kind: entry.kind, text: entry.text })),
+          artifacts: artifactsOf(source.artifacts || [], id).slice(-5).map((item) => ({ summary: item.summary, links: item.links })),
+        };
+      };
       const analyzeTask = async (task) => {
         if (!task || aiLoading) return;
+        flushDrafts();
+        const snapshot = adviceSnapshot(task.id);
+        if (!snapshot) return;
+        const signature = JSON.stringify(snapshot);
+        const sequence = ++adviceSequenceRef.current;
         const epoch = epochRef.current;
         setAiPanelOpen(true);
         setAiLoading(true);
@@ -6064,28 +6161,23 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({
               mode: 'task',
               intent: 'analyze',
-              task: {
-                id: task.id, title: task.title, description: task.description,
-                expected: task.expected, nextStep: task.nextStep, blockedReason: task.blockedReason,
-                status: task.status, urgency: task.urgency, deadline: task.deadline,
-              },
-              logs: logsOf(logs, task.id).slice(-10).map((l) => ({ at: l.at, kind: l.kind, text: l.text })),
-              artifacts: artifactsOf(artifacts, task.id).slice(-5).map((a) => ({ summary: a.summary, links: a.links })),
+              ...snapshot,
             }),
           });
           if (!res.ok) throw new Error('http-' + res.status);
           const data = await res.json();
           if (!data || data.error) throw new Error((data && data.error) || 'model-error');
-          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
+          if (sequence !== adviceSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
           setAiResult({
+            taskId: task.id, signature,
             reply: typeof data.reply === 'string' ? data.reply : '',
             suggestion: data.suggestion || null,
           });
         } catch {
-          if (epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
+          if (sequence !== adviceSequenceRef.current || epoch !== epochRef.current || selectedTaskRef.current !== task.id) return;
           setAiResult({ reply: 'AI 暂时不可用，稍后再试。', suggestion: null, error: true });
         } finally {
-          setAiLoading(false);
+          if (sequence === adviceSequenceRef.current) setAiLoading(false);
         }
       };
 
@@ -6095,7 +6187,13 @@ window.__ModuleLoader__.load({
        */
       const adoptSuggestion = (task, field, value) => {
         if (!task || !value) return;
+        if (!aiResult || aiResult.taskId !== task.id || !aiResult.signature
+          || selectedTaskRef.current !== task.id || JSON.stringify(adviceSnapshot(task.id)) !== aiResult.signature) {
+          showToast('任务或依据已变化，请重新分析后再采纳。', 'danger'); return;
+        }
         updateTask(task.id, { [field]: value });
+        const adoptedSignature = JSON.stringify(adviceSnapshot(task.id));
+        setAiResult((prev) => prev ? { ...prev, signature: adoptedSignature } : prev);
         setAiAdopted((prev) => ({ ...prev, [field]: true }));
       };
 
@@ -6381,20 +6479,20 @@ window.__ModuleLoader__.load({
       const selectedTask = tasks.find((t) => t.id === selectedId) || null;
       const viewTitle = activeProjectEntity
         ? activeProjectEntity.name
-        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成/废弃', reports: '周报/月报', trash: '回收站', inbox: '执行回传', data: '本地数据', radar: '需要注意', globalSearch: '统一检索' }[activeView] || '全部任务');
+        : ({ all: '全部任务', today: '今天到期', overdue: '已逾期', done: '已完成/废弃', reports: '周报/月报', trash: '回收站', inbox: '执行回传', settings: '设置', radar: '需要注意', globalSearch: '统一检索' }[activeView] || '全部任务');
       const statsText = stats.total + ' 项任务 · 已完成 ' + stats.byStatus.done + ' 项'
         + (stats.byStatus.dropped ? ' · 已废弃 ' + stats.byStatus.dropped + ' 项' : '');
       const isReportsView = activeView === 'reports';
       const isTrashView = activeView === 'trash';
       const isInboxView = activeView === 'inbox';
-      const isDataView = activeView === 'data';
+      const isSettingsView = activeView === 'settings';
       const isRadarView = activeView === 'radar';
       const isGlobalSearchView = activeView === 'globalSearch';
       const midTitle = isReportsView ? (reportKind === 'month' ? '月报' : '周报') : viewTitle;
       const midStats = isReportsView
         ? periodLabelFor(reportKind, reportPeriod) + ' · 依据 ' + reportEvidence.length + ' 条'
-        : isDataView
-          ? formatBytes(storageUsage) + ' · 本地备份与恢复'
+        : isSettingsView
+          ? (settingsSection === 'data' ? formatBytes(storageUsage) + ' · 本地备份与恢复' : '报告偏好与自动化')
           : isInboxView
           ? inbox.length + ' 条待确认 · 采纳后写入任务记录'
           : isTrashView
@@ -7868,7 +7966,7 @@ window.__ModuleLoader__.load({
                 }, batch.running ? '生成中 ' + batch.done + '/' + batch.total : '按项目生成')
               : null),
           h('div', { className: 'wp-report-actions' },
-            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setActiveView('data') }, '报告偏好'),
+            h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => { setSettingsSection('preferences'); setActiveView('settings'); setSelectedId(null); } }, '报告偏好'),
             h('button', {
               className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
               disabled: reportGenerating ? 'true' : undefined,
@@ -7975,7 +8073,7 @@ window.__ModuleLoader__.load({
         ['detail', '详略', [['concise', '简洁'], ['standard', '适中'], ['detailed', '详细']]],
         ['tone', '语气', [['neutral', '中性'], ['formal', '正式'], ['conversational', '自然']]],
       ];
-      const dataPanel = h('div', { className: 'wp-data' },
+      const preferencesPanel =
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-section-title' }, '报告表达偏好'),
           h('p', { className: 'wp-data-hint' }, '仅在你主动选择后应用于新生成的报告；不更改已有草稿，也不改变证据和引用要求。'),
@@ -7984,8 +8082,8 @@ window.__ModuleLoader__.load({
             h('select', { id: 'wp-pref-' + key, className: 'wp-sort-select', value: reportPreferences ? reportPreferences[key] : '',
               onChange: (e) => { if (e.target.value) changeReportPreferences({ ...DEFAULT_REPORT_PREFERENCES, ...(reportPreferences || {}), [key]: e.target.value }); } },
               h('option', { value: '' }, '未设置'), options.map(([value, name]) => h('option', { key: value, value }, name))))),
-          reportPreferences ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => changeReportPreferences(null) }, '清除报告偏好') : null),
-        autoPanel,
+          reportPreferences ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => changeReportPreferences(null) }, '清除报告偏好') : null);
+      const dataPanel = h('div', { className: 'wp-data' },
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-row' },
             h('span', { className: 'wp-data-label' }, '版本'),
@@ -8002,7 +8100,7 @@ window.__ModuleLoader__.load({
               stats.total + ' 任务 · ' + logs.length + ' 记录 · ' + artifacts.length + ' 成果 · ' + reports.length + ' 报告'))),
         h('div', { className: 'wp-card wp-data-card' },
           h('div', { className: 'wp-data-section-title' }, '同步状态'),
-          h('p', { className: 'wp-data-hint' }, '数据先写本机缓存，再同步到 Host 主存。下面四种状态的含义与处理方式：'),
+          h('p', { className: 'wp-data-hint' }, '数据先写本机缓存，再同步到 Host 主存。下面六种状态的含义与处理方式：'),
           h('dl', { className: 'wp-sync-legend' },
             h('div', { className: 'wp-sync-legend-row' + (hostSyncStatus.phase === 'syncing' ? ' wp-sync-legend-current' : '') },
               h('dt', null, '同步中'),
@@ -8100,6 +8198,18 @@ window.__ModuleLoader__.load({
                   className: 'wp-btn wp-btn-text wp-act-btn wp-danger-text', type: 'button',
                   onClick: () => setClearConfirm(true),
                 }, '清空本地数据'))));
+
+      const settingsPanel = h('div', { className: 'wp-settings-layout' },
+        h('nav', { className: 'wp-settings-nav', 'aria-label': '设置分类' },
+          [['preferences', '报告表达偏好'], ['automation', '自动报告'], ['data', '数据管理']].map(([key, label]) =>
+            h('button', { key, type: 'button',
+              className: 'wp-nav-item' + (settingsSection === key ? ' wp-active' : ''),
+              'aria-current': settingsSection === key ? 'page' : undefined,
+              onClick: () => setSettingsSection(key),
+            }, label))),
+        h('section', { className: 'wp-settings-content', 'aria-label': settingsSection === 'data' ? '数据管理设置' : settingsSection === 'automation' ? '自动报告设置' : '报告表达偏好设置' },
+          h('fieldset', { className: 'wp-settings-guard', disabled: settingsSection !== 'data' && !hostSyncStatus.canEdit },
+            settingsSection === 'data' ? dataPanel : settingsSection === 'automation' ? autoPanel : preferencesPanel)));
 
       // ---------- execution report-back inbox ----------
       const inboxList = inbox.length === 0
@@ -8201,7 +8311,7 @@ window.__ModuleLoader__.load({
             className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', title: '项目设置',
             onClick: () => { if (projectSettingsOpen) setProjectSettingsOpen(false); else openProjectSettings(); },
           }, '项目设置') : null,
-          isReportsView ? null : h('div', { className: 'wp-search' },
+          (isReportsView || isSettingsView) ? null : h('div', { className: 'wp-search' },
             h('span', { className: 'wp-search-icon' }, h(SearchIcon)),
             h('input', {
               className: 'wp-search-input', type: 'text', placeholder: '搜索任务', value: search,
@@ -8342,8 +8452,8 @@ window.__ModuleLoader__.load({
         ? h('div', { className: 'wp-mid-body wp-mid-body-report' }, reportPanel)
         : isRadarView
           ? h('div', { className: 'wp-mid-body' }, radarPanel)
-          : isDataView
-          ? h('div', { className: 'wp-mid-body' }, dataPanel)
+          : isSettingsView
+          ? h('div', { className: 'wp-mid-body' }, settingsPanel)
           : isInboxView
           ? h('div', { className: 'wp-mid-body' }, inboxList)
           : isTrashView
@@ -8354,15 +8464,18 @@ window.__ModuleLoader__.load({
         { key: 'all', label: '全部任务', count: stats.total },
         { key: 'today', label: '今天到期', count: stats.todayCount },
         { key: 'overdue', label: '已逾期', count: stats.overdue },
-        { key: 'done', label: '已完成/废弃', count: stats.byStatus.done + stats.byStatus.dropped },
       ];
-      const reportNav = [{ key: 'reports', label: '周报/月报', count: reports.length }];
-      const manageNav = [
-        { key: 'globalSearch', label: '统一检索', count: 0 },
+      const reportNav = [
+        { key: 'reports', label: '周报/月报', count: reports.length },
         { key: 'radar', label: '需要注意', count: (radarScan.items || []).length },
         { key: 'inbox', label: '执行回传', count: inbox.length },
+      ];
+      const archiveNav = [
         { key: 'trash', label: '回收站', count: stats.deletedCount },
-        { key: 'data', label: '数据', count: 0 },
+        { key: 'done', label: '已完成/废弃', count: stats.byStatus.done + stats.byStatus.dropped },
+      ];
+      const manageNav = [
+        { key: 'globalSearch', label: '统一检索', count: 0 },
       ];
       const navButton = (it, extraClass) => h('button', {
         className: 'wp-nav-item' + (extraClass ? ' ' + extraClass : '') + (activeView === it.key ? ' wp-active' : ''),
@@ -8382,7 +8495,7 @@ window.__ModuleLoader__.load({
       const newProjectRow = newProject.mode === 'sidebar' ? h('div', { className: 'wp-nav-new' },
         h('input', {
           className: 'wp-nav-new-input', type: 'text', value: newProject.name,
-          placeholder: '新项目名，回车创建',
+          placeholder: '新清单名，回车创建',
           onChange: (e) => setNewProject({ mode: 'sidebar', name: e.target.value }),
           onKeyDown: (e) => {
             if (e.key === 'Enter') {
@@ -8409,17 +8522,25 @@ window.__ModuleLoader__.load({
       const sidenav = h('aside', { className: 'wp-sidenav' },
         h('div', { className: 'wp-sidenav-title' }, '工作面板'),
         navGroup('任务', taskNav.map((it) => navButton(it))),
-        navGroup('项目', [
+        navGroup('清单', [
           newProjectRow,
           projectNav.map((it) => navButton(it, it.archived ? 'wp-nav-item-archived' : '')),
         ], h('button', {
-          className: 'wp-nav-section-add', type: 'button', title: '新建项目',
+          className: 'wp-nav-section-add', type: 'button', title: '新建清单', 'aria-label': '新建清单',
           onClick: () => setNewProject({ mode: 'sidebar', name: '' }),
         }, '+')),
         navGroup('报告', reportNav.map((it) => navButton(it))),
+        h('div', { className: 'wp-nav-divider', role: 'separator' }),
+        h('nav', { className: 'wp-nav-archive wp-nav-group-body', 'aria-label': '归档与回收' }, archiveNav.map((it) => navButton(it))),
         navGroup('管理', manageNav.map((it) => navButton(it))),
         h('div', { className: 'wp-sidenav-spacer' }),
-        h('div', { className: 'wp-sidenav-foot', title: '当前插件版本' }, 'v' + PANEL_VERSION));
+        h('div', { className: 'wp-sidenav-bottom' },
+          h('button', { className: 'wp-icon-btn wp-settings-button' + (isSettingsView ? ' wp-active' : ''),
+            type: 'button', title: '设置', 'aria-label': '设置', 'aria-pressed': isSettingsView,
+            onClick: () => { setActiveView('settings'); setSelectedId(null); setIgnoreAllConfirmIds(null); },
+          }, h(SettingsIcon)),
+          h('div', { className: 'wp-sidenav-foot', title: '当前插件版本' }, 'v' + PANEL_VERSION)));
+
 
       const detailRow = (label, value) => h('div', { className: 'wp-detail-row' },
         h('span', { className: 'wp-detail-label' }, label),
@@ -8501,17 +8622,20 @@ window.__ModuleLoader__.load({
             },
           }, '保存'))) : null;
 
+      const adviceIsStale = !!(aiResult && aiResult.signature && (!selectedTask || aiResult.taskId !== selectedTask.id
+        || JSON.stringify(adviceSnapshot(selectedTask.id)) !== aiResult.signature));
       const detailAiPanel = (selectedTask && aiPanelOpen) ? h('div', { className: 'wp-ai-panel' },
         h('div', { className: 'wp-ai-head' },
           h('span', { className: 'wp-ai-title' }, 'AI 建议'),
           h('span', { className: 'wp-ai-tag' }, '未确认'),
           h('button', {
             className: 'wp-ai-close', type: 'button', 'aria-label': '收起',
-            onClick: () => setAiPanelOpen(false),
+            onClick: () => closeWorkSheet(),
           }, '×')),
         aiLoading
           ? h('p', { className: 'wp-ai-loading' }, '正在结合这条任务的记录分析…')
           : h('div', { className: 'wp-ai-body' },
+              adviceIsStale ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, '任务或依据已变化，建议可能过期，请重新分析后再采纳。') : null,
               aiResult && aiResult.reply ? h('p', { className: 'wp-ai-reply' }, aiResult.reply) : null,
               aiResult && aiResult.suggestion ? h('div', { className: 'wp-ai-sugs' },
                 aiResult.suggestion.summary ? h('div', { className: 'wp-ai-sug' },
@@ -8522,7 +8646,7 @@ window.__ModuleLoader__.load({
                   h('p', { className: 'wp-ai-sug-text' }, aiResult.suggestion.nextStep),
                   h('button', {
                     className: 'wp-ai-adopt', type: 'button',
-                    disabled: aiAdopted.nextStep ? 'true' : undefined,
+                    disabled: adviceIsStale || aiAdopted.nextStep ? 'true' : undefined,
                     onClick: () => adoptSuggestion(selectedTask, 'nextStep', aiResult.suggestion.nextStep),
                   }, aiAdopted.nextStep ? '已采纳' : '采纳为下一步')) : null,
                 aiResult.suggestion.blockedReason ? h('div', { className: 'wp-ai-sug' },
@@ -8530,7 +8654,7 @@ window.__ModuleLoader__.load({
                   h('p', { className: 'wp-ai-sug-text' }, aiResult.suggestion.blockedReason),
                   h('button', {
                     className: 'wp-ai-adopt', type: 'button',
-                    disabled: aiAdopted.blockedReason ? 'true' : undefined,
+                    disabled: adviceIsStale || aiAdopted.blockedReason ? 'true' : undefined,
                     onClick: () => adoptSuggestion(selectedTask, 'blockedReason', aiResult.suggestion.blockedReason),
                   }, aiAdopted.blockedReason ? '已采纳' : '采纳为阻塞原因')) : null,
                 Array.isArray(aiResult.suggestion.risks) && aiResult.suggestion.risks.length
@@ -8588,6 +8712,13 @@ window.__ModuleLoader__.load({
       const descBlocks = useMemo(() => parseBlocks(descriptionText()),
         [descriptionText(), selectedTask && selectedTask.id]);
       const blockSource = (index) => (descBlocks[index] ? descBlocks[index].source : '');
+      // Headings retain their markers while focused; other structural markers
+      // become a visible affordance beside a body-only textarea. Carets elsewhere
+      // in the editor remain source offsets and are mapped only at the DOM edge.
+      const editingPrefix = (source) => {
+        const style = blockStyle(source);
+        return style.type === 'item' || style.type === 'quote' ? source.slice(0, markerLength(source)) : '';
+      };
       const focusBlock = (index, caret) => {
         if (index < 0 || index >= descBlocks.length) return;
         setStyleMenu(null); setDescPicker(null);
@@ -8602,6 +8733,11 @@ window.__ModuleLoader__.load({
       };
       const changeBlock = (index, value, caret, eventComposing, eventPaste) => {
         const previous = blockSource(index);
+        const prefix = editingPrefix(previous);
+        value = prefix + value;
+        if (caret != null) caret += prefix.length;
+        const nextPrefix = editingPrefix(value);
+        if (nextPrefix !== prefix && caret != null) pendingCaretRef.current = { start: caret, end: caret };
         const parts = value.split('\n');
         const next = descBlocks.slice(0, index)
           .concat(parts.map((source) => ({ source })), descBlocks.slice(index + 1));
@@ -8632,7 +8768,7 @@ window.__ModuleLoader__.load({
         commitBlocks(next, index - 1, previous.length);
       };
       const blockKeyDown = (e, index) => {
-        if (e.isComposing) return;
+        if (e.isComposing || descComposingRef.current) return;
         if (styleMenu && styleMenu.blockIndex === index) {
           if (e.key === 'Escape') { e.preventDefault(); setStyleMenu(null); return; }
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -8644,9 +8780,13 @@ window.__ModuleLoader__.load({
           if (e.key === 'Enter') { e.preventDefault(); applyStyleItem(styleMenuItems[styleMenu.active]); return; }
         }
         const el = e.target || {};
-        const start = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
-        const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
-        const value = typeof el.value === 'string' ? el.value : blockSource(index);
+        const source = blockSource(index);
+        const prefix = editingPrefix(source);
+        const inputStart = typeof el.selectionStart === 'number' ? el.selectionStart : 0;
+        const inputEnd = typeof el.selectionEnd === 'number' ? el.selectionEnd : inputStart;
+        const start = inputStart + prefix.length;
+        const end = inputEnd + prefix.length;
+        const value = typeof el.value === 'string' ? prefix + el.value : source;
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           const cleaned = value.slice(0, start) + value.slice(end);
@@ -8656,13 +8796,20 @@ window.__ModuleLoader__.load({
           commitBlocks(next, index + 1, markerLength(split.right));
           return;
         }
+        if (e.key === 'Backspace' && inputStart === 0 && inputEnd === 0 && prefix) {
+          e.preventDefault();
+          const next = descBlocks.slice();
+          next[index] = { source: stripMarker(source) };
+          commitBlocks(next, index, 0);
+          return;
+        }
         if (e.key === 'Backspace' && start === 0 && end === 0) {
           if (index === 0) return;
           e.preventDefault();
           mergeWithPrevious(index);
           return;
         }
-        if (e.key === 'ArrowUp' && start === 0 && index > 0) { e.preventDefault(); focusBlock(index - 1, blockSource(index - 1).length); return; }
+        if (e.key === 'ArrowUp' && inputStart === 0 && index > 0) { e.preventDefault(); focusBlock(index - 1, blockSource(index - 1).length); return; }
         if (e.key === 'ArrowDown' && start === value.length && index < descBlocks.length - 1) { e.preventDefault(); focusBlock(index + 1, 0); }
       };
       const applyBlockType = (type, level) => {
@@ -8680,13 +8827,16 @@ window.__ModuleLoader__.load({
         const source = blockSource(index);
         // Never delete the wrong character if the text changed meanwhile.
         if (source[styleMenu.index] !== styleMenu.trigger) { setStyleMenu(null); return; }
-        const cleaned = removeStyleTrigger(source, styleMenu.index);
+        // The space before a body-start trigger belongs to the Markdown marker,
+        // not to the trigger. Preserve it (also for heading-start references).
+        const boundary = Math.min(styleMenu.index, markerLength(source));
+        const cleaned = source.slice(0, boundary) + removeStyleTrigger(source.slice(boundary), styleMenu.index - boundary);
         if (item.type === 'ref') {
           const next = descBlocks.slice();
           next[index] = { source: cleaned };
           commitDescription(serializeBlocks(next));
           setStyleMenu(null);
-          setDescPicker({ blockIndex: index, caret: Math.min(styleMenu.removeStart, cleaned.length), query: '' });
+          setDescPicker({ blockIndex: index, caret: Math.min(Math.max(boundary, styleMenu.removeStart), cleaned.length), query: '' });
           setDescFocus(index);
           return;
         }
@@ -8700,7 +8850,7 @@ window.__ModuleLoader__.load({
         if (!selectedTask) return;
         const index = descFocus != null ? descFocus : Math.max(0, descBlocks.length - 1);
         const el = descFocus === index ? descBlockInputRef.current : null;
-        const caret = el && typeof el.selectionStart === 'number' ? el.selectionStart : blockSource(index).length;
+        const caret = el && typeof el.selectionStart === 'number' ? el.selectionStart + editingPrefix(blockSource(index)).length : blockSource(index).length;
         setStyleMenu(null);
         setDescPicker((prev) => (prev ? null : { blockIndex: index, caret, query: '' }));
         setDescFocus(index);
@@ -8860,10 +9010,10 @@ window.__ModuleLoader__.load({
       };
 
       const detailTabs = [
+        { key: 'desc', label: '描述' },
         { key: 'exec', label: '执行' },
         { key: 'logs', label: '记录', count: selectedLogs.length },
         { key: 'artifacts', label: '成果', count: selectedArtifacts.length },
-        { key: 'assistant', label: '助手' },
       ];
       const detailPanel = (selectedTask && !selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
@@ -8938,92 +9088,16 @@ window.__ModuleLoader__.load({
               placeholder: '任务标题', spellCheck: false,
               onChange: (e) => updateTaskDebounced(selectedTask.id, { title: e.target.value }),
             })),
-          h('div', { className: 'wp-detail-desc', ref: descAreaRef },
-            h('div', { className: 'wp-detail-desc-head' },
-              h('span', { className: 'wp-detail-desc-label' }, '描述'),
-              h('span', { className: 'wp-detail-desc-hint' }, 'Markdown · 就地渲染')),
-            h('div', { className: 'wp-md-toolbar' },
-              [['H1', 1, '一级标题'], ['H2', 2, '二级标题'], ['H3', 3, '三级标题']].map(([label, level, name]) => h('button', {
-                className: 'wp-md-tool', key: label, type: 'button', title: name, 'aria-label': name,
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
-                onClick: () => applyBlockType('heading', level),
-              }, label)),
-              h('button', {
-                className: 'wp-md-tool', key: 'ul', type: 'button', title: '无序列表', 'aria-label': '无序列表',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('bullet'),
-              }, '•'),
-              h('button', {
-                className: 'wp-md-tool', key: 'ol', type: 'button', title: '有序列表', 'aria-label': '有序列表',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('ordered'),
-              }, '1.'),
-              h('button', {
-                className: 'wp-md-tool', key: 'task', type: 'button', title: '复选框', 'aria-label': '复选框',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('task'),
-              }, '☐'),
-              h('button', {
-                className: 'wp-md-tool', key: 'quote', type: 'button', title: '引用', 'aria-label': '引用',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); }, onClick: () => applyBlockType('quote'),
-              }, '❝'),
-              h('button', {
-                className: 'wp-md-tool wp-md-tool-link', key: 'ref', type: 'button', title: '关联任务', 'aria-label': '关联任务',
-                onMouseDown: (e) => { if (e && e.preventDefault) e.preventDefault(); },
-                onClick: openRefPicker,
-              }, '关联任务')),
-            h('div', {
-              className: 'wp-md-blocks', role: 'group', 'aria-label': '描述（Markdown 就地编辑）', tabIndex: 0,
-              onClick: (e) => {
-                if (e.target !== e.currentTarget) return;
-                const last = descBlocks.length - 1;
-                focusBlock(last, blockSource(last).length);
-              },
+          h('div', { className: 'wp-detail-tabs', role: 'tablist', 'aria-label': '任务详情',
               onKeyDown: (e) => {
-                if (e.key !== 'Enter') return;
-                e.preventDefault();
-                const last = descBlocks.length - 1;
-                focusBlock(last, blockSource(last).length);
-              },
-            }, descBlocks.map((block, index) => (descFocus === index
-              ? h('div', {
-                  className: 'wp-md-block wp-md-block-editing' + (blockStyle(block.source).type === 'quote' ? ' wp-md-edit-quote' : ''),
-                  key: 'b' + index,
-                },
-                  h('textarea', {
-                    ref: descBlockInputRef,
-                    className: 'wp-md-block-input ' + blockInputClass(block.source),
-                    rows: 1,
-                    value: block.source,
-                    'aria-label': '描述第 ' + (index + 1) + ' 段（Markdown）',
-                    onChange: (e) => changeBlock(index, e.target.value, e.target.selectionStart,
-                      !!(e.nativeEvent && e.nativeEvent.isComposing),
-                      !!(e.nativeEvent && e.nativeEvent.inputType === 'insertFromPaste')),
-                    onKeyDown: (e) => blockKeyDown(e, index),
-                    onBlur: () => {
-                      const ownsMenu = styleMenu && styleMenu.blockIndex === index;
-                      const ownsPicker = descPicker && descPicker.blockIndex === index;
-                      if (!ownsMenu && !ownsPicker) setDescFocus(null);
-                    },
-                    onCompositionStart: () => { descComposingRef.current = true; },
-                    onCompositionEnd: (e) => {
-                      descComposingRef.current = false;
-                      const value = e.target.value;
-                      const caret = typeof e.target.selectionStart === 'number' ? e.target.selectionStart : value.length;
-                      const hit = styleTriggerAt(value, caret);
-                      if (hit) setStyleMenu({ blockIndex: index, index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0 });
-                    },
-                  }),
-                  styleMenu && styleMenu.blockIndex === index ? styleMenuNode(index) : null,
-                  descPicker && descPicker.blockIndex === index ? descPickerNode(index) : null)
-              : renderedBlock(block, index)))),
-            styleMenu || descPicker ? null : h('p', { className: 'wp-md-empty wp-md-editor-hint' },
-              '点击任一行开始编辑：## 变标题、- 变列表、- [ ] 变复选框；行首或空格后输入 / 或 、 选择样式。')),
-          h('div', { className: 'wp-detail-lower' },
-            h('div', { className: 'wp-detail-tabs', role: 'tablist', 'aria-label': '任务详情',
-              onKeyDown: (e) => {
-                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
                 e.preventDefault();
                 const index = detailTabs.findIndex((tab) => tab.key === detailTab);
                 const step = e.key === 'ArrowRight' ? 1 : detailTabs.length - 1;
-                setDetailTab(detailTabs[(index + step) % detailTabs.length].key);
+                const next = e.key === 'Home' ? 0 : e.key === 'End' ? detailTabs.length - 1 : (index + step) % detailTabs.length;
+                setDetailTab(detailTabs[next].key);
+                const buttons = e.currentTarget.querySelectorAll('[role=tab]');
+                if (buttons[next]) buttons[next].focus();
               } },
               detailTabs.map((tab) => h('button', {
                 className: 'wp-detail-tab' + (detailTab === tab.key ? ' wp-active' : ''),
@@ -9035,7 +9109,65 @@ window.__ModuleLoader__.load({
               }, tab.label,
               tab.count ? h('span', { className: 'wp-detail-tab-count' }, String(tab.count)) : null))),
             h('div', { className: 'wp-detail-pane', role: 'tabpanel', id: 'wp-detail-pane-' + detailTab, 'aria-labelledby': 'wp-detail-tab-' + detailTab },
-              detailTab === 'exec' ? h('div', { className: 'wp-detail-exec' },
+              detailTab === 'desc' ? h('div', { className: 'wp-detail-desc', ref: descAreaRef },
+            h('div', {
+              className: 'wp-md-blocks', role: 'group', 'aria-label': '描述（Markdown 就地编辑）', tabIndex: 0,
+              onClick: (e) => {
+                if (e.target !== e.currentTarget) return;
+                const last = descBlocks.length - 1;
+                focusBlock(last, blockSource(last).length);
+              },
+              onKeyDown: (e) => {
+                if (e.target !== e.currentTarget || e.key !== 'Enter') return;
+                e.preventDefault();
+                const last = descBlocks.length - 1;
+                focusBlock(last, blockSource(last).length);
+              },
+            }, descBlocks.map((block, index) => (descFocus === index
+              ? h('div', {
+                  className: 'wp-md-block wp-md-block-editing' + (blockStyle(block.source).type === 'quote' ? ' wp-md-edit-quote' : ''),
+                  key: 'b' + index,
+                  onBlur: (e) => {
+                    if (e.relatedTarget && e.currentTarget && e.currentTarget.contains(e.relatedTarget)) return;
+                    const ownsMenu = styleMenu && styleMenu.blockIndex === index;
+                    const ownsPicker = descPicker && descPicker.blockIndex === index;
+                    if (!ownsMenu && !ownsPicker) setDescFocus(null);
+                  },
+                },
+                  h('div', { className: 'wp-md-edit-row', style: blockStyle(block.source).type === 'item' ? { paddingLeft: ((/^[ \t]*/.exec(block.source) || [''])[0].length * 7) + 'px' } : undefined },
+                    blockStyle(block.source).type === 'item'
+                      ? (blockStyle(block.source).checked !== null
+                        ? h('button', {
+                            className: 'wp-md-check' + (block.checked ? ' wp-checked' : ''), type: 'button',
+                            role: 'checkbox', 'aria-checked': block.checked ? 'true' : 'false', 'aria-label': '切换任务框',
+                            onMouseDown: (e) => e.preventDefault(), onClick: () => toggleBlockTask(index),
+                          }, block.checked ? h(CheckIcon) : null)
+                        : h('span', { className: 'wp-md-marker', 'aria-hidden': 'true' }, block.ordered ? orderedNumber(descBlocks, index) + '.' : '•'))
+                      : null,
+                  h('textarea', {
+                    ref: descBlockInputRef,
+                    className: 'wp-md-block-input ' + blockInputClass(block.source),
+                    rows: 1,
+                    value: block.source.slice(editingPrefix(block.source).length),
+                    'aria-label': '描述第 ' + (index + 1) + ' 段（Markdown）',
+                    onChange: (e) => changeBlock(index, e.target.value, e.target.selectionStart,
+                      !!(e.nativeEvent && e.nativeEvent.isComposing),
+                      !!(e.nativeEvent && e.nativeEvent.inputType === 'insertFromPaste')),
+                    onKeyDown: (e) => blockKeyDown(e, index),
+                    onCompositionStart: () => { descComposingRef.current = true; },
+                    onCompositionEnd: (e) => {
+                      descComposingRef.current = false;
+                      const prefix = editingPrefix(blockSource(index));
+                      const value = prefix + e.target.value;
+                      const caret = typeof e.target.selectionStart === 'number' ? prefix.length + e.target.selectionStart : value.length;
+                      const hit = styleTriggerAt(value, caret);
+                      if (hit) setStyleMenu({ blockIndex: index, index: hit.index, removeStart: hit.removeStart, trigger: hit.trigger, active: 0 });
+                    },
+                  })),
+                  styleMenu && styleMenu.blockIndex === index ? styleMenuNode(index) : null,
+                  descPicker && descPicker.blockIndex === index ? descPickerNode(index) : null)
+              : renderedBlock(block, index)))))
+                : detailTab === 'exec' ? h('div', { className: 'wp-detail-exec' },
                 h('div', { className: 'wp-detail-field' },
                   h('label', { className: 'wp-detail-field-label' }, '预期结果'),
                   h('textarea', {
@@ -9110,7 +9242,7 @@ window.__ModuleLoader__.load({
                             renderLocalFiles(item.files),
                             h('div', { className: 'wp-artifact-time' }, formatDateTime(item.at), sourceSessionLink(item.sourceSessionId)))))
                       : h('p', { className: 'wp-detail-empty' }, '还没有关联成果。点「关联成果」补充结果摘要或链接。')),
-                  relatedArtifacts.length && !assistantExpanded ? h('div', { className: 'wp-detail-section' },
+                  relatedArtifacts.length ? h('div', { className: 'wp-detail-section' },
                     h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '相关历史成果')),
                     h('p', { className: 'wp-detail-empty' }, '按项目和内容相似词推荐，仅供参考。'),
                     relatedArtifacts.map(({ artifact, task, reason }) => h('button', {
@@ -9118,27 +9250,48 @@ window.__ModuleLoader__.load({
                       style: { display: 'block', textAlign: 'left', whiteSpace: 'normal', width: '100%' },
                       onClick: () => { setActiveView('all'); setSelectedId(task.id); },
                     }, (artifact.summary || '未命名成果') + ' · ' + task.title + '（' + reason + '）'))) : null)
-                : h('div', { className: 'wp-detail-assistant' },
-                  h('div', { className: 'wp-detail-actions' },
-                    h('button', {
-                      className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
-                      'aria-expanded': aiPanelOpen ? 'true' : 'false',
-                      disabled: aiLoading ? 'true' : undefined,
-                      onClick: () => {
-                        if (aiLoading) return;
-                        if (aiPanelOpen) { setAiPanelOpen(false); return; }
-                        analyzeTask(selectedTask);
-                      },
-                    }, aiLoading ? '分析中…' : 'AI 建议'),
-                    h('button', { className: 'wp-btn wp-btn-default wp-act-btn', type: 'button',
-                      'aria-expanded': assistantExpanded ? 'true' : 'false',
-                      onClick: () => { if (assistantExpanded) { assistantSequenceRef.current += 1; setAssistantLoading(false); setAssistantResult(null); setAssistantConfirm(null); }
-                        setAssistantExpanded(!assistantExpanded); } }, '工作助手'),
-                    h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button',
-                      onClick: () => prepareDelegation(selectedTask), disabled: delegation && delegation.loading ? 'true' : undefined,
-                    }, '交给 AI')),
-                  delegation && delegation.taskId === selectedTask.id ? h('div', { className: 'wp-delegation' },
+                : null)),
+        h('div', { className: 'wp-detail-workbar', ref: workbarRef, role: 'group', 'aria-label': '任务底部工作条' },
+          h('div', { className: 'wp-detail-project-picker' },
+          h('span', { className: 'wp-detail-project-icon', 'aria-hidden': true }, h(ProjectIcon)),
+          h('select', {
+            className: 'wp-detail-project-select', 'aria-label': '所属项目',
+            title: '所属项目：' + ((projects.find((project) => project.id === selectedTask.projectId) || {}).name || (selectedTask.projectId ? '项目不可用' : '未归属项目')),
+            value: selectedTask.projectId || '',
+            onChange: (event) => {
+              const id = event.target.value;
+              if (id && !projects.some((project) => project.id === id && project.status !== 'archived')) return;
+              flushDrafts(); closeWorkSheet(false);
+              updateTask(selectedTask.id, { projectId: id });
+            },
+          }, h('option', { value: '' }, '未归属项目'),
+          projects.filter((project) => project.status !== 'archived' || project.id === selectedTask.projectId)
+            .map((project) => h('option', { key: project.id, value: project.id, disabled: project.status === 'archived' }, project.name + (project.status === 'archived' ? '（已归档）' : ''))),
+          selectedTask.projectId && !projects.some((project) => project.id === selectedTask.projectId)
+            ? h('option', { value: selectedTask.projectId, disabled: true }, '项目不可用') : null)),
+          h('div', { className: 'wp-detail-work-actions' },
+          [['advice', 'AI 建议'], ['assistant', '工作助手'], ['delegate', '交给 AI']].map(([key, label]) => h('button', {
+            className: 'wp-btn wp-btn-text wp-act-btn',
+            key, type: 'button', 'aria-controls': 'wp-detail-work-sheet', 'aria-expanded': workSheet === key ? 'true' : 'false',
+            onClick: (event) => {
+              if (workSheet === key) { closeWorkSheet(); return; }
+              workOpenerRef.current = event.currentTarget;
+              assistantConfirmationRef.current += 1; setAssistantConfirm(null);
+              setWorkSheet(key); setAssistantExpanded(key === 'assistant');
+              setStyleMenu(null); setDescPicker(null); setDetailMoreOpen(false);
+              if (key === 'advice' && !aiResult && !aiLoading) analyzeTask(selectedTask);
+              if (key === 'delegate' && (!delegation || delegation.taskId !== selectedTask.id)) prepareDelegation(selectedTask);
+            },
+          }, label)))),
+        workSheet ? h('section', { className: 'wp-detail-sheet', id: 'wp-detail-work-sheet', ref: workSheetRef,
+          role: 'dialog', 'aria-modal': 'false', 'aria-labelledby': 'wp-detail-work-sheet-title', tabIndex: -1 },
+          h('div', { className: 'wp-detail-sheet-head' },
+            h('h3', { id: 'wp-detail-work-sheet-title' }, workSheet === 'advice' ? 'AI 建议' : workSheet === 'assistant' ? '工作助手' : '交给 AI'),
+            h('button', { className: 'wp-ai-close', type: 'button', 'aria-label': '关闭工作面板', onClick: () => closeWorkSheet() }, '×')),
+          h('div', { className: 'wp-detail-sheet-body' },
+                   workSheet === 'delegate' && delegation && delegation.taskId === selectedTask.id ? h('div', { className: 'wp-delegation' },
                     h('div', { className: 'wp-data-section-title' }, '执行指令 · 尚未发送'),
+                    !delegation.prompt ? h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', disabled: delegation.loading || undefined, onClick: () => prepareDelegation(selectedTask) }, '重新准备指令') : null,
                     delegation.loading ? h('p', { className: 'wp-data-hint' }, '正在读取最新任务上下文…') : null,
                     delegation.error ? h('p', { className: 'wp-report-notice wp-report-notice-err' }, delegation.error) : null,
                     delegation.prompt ? h('textarea', { className: 'wp-delegation-prompt', rows: 8, value: delegation.prompt,
@@ -9147,8 +9300,10 @@ window.__ModuleLoader__.load({
                     delegation.prompt ? h('div', { className: 'wp-data-actions' },
                       h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', onClick: openDelegationDraft }, '打开执行草稿'),
                       h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => copyText(delegation.prompt) }, '复制指令')) : null) : null,
-                  detailAiPanel,
-                  assistantExpanded && assistantContext ? h('section', { className: 'wp-detail-section', 'aria-label': '工作助手' },
+                  workSheet === 'advice' ? h(React.Fragment, null,
+                     h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', disabled: aiLoading || undefined, onClick: () => analyzeTask(selectedTask) }, '重新分析'),
+                     detailAiPanel) : null,
+                  workSheet === 'assistant' && assistantContext ? h('section', { className: 'wp-detail-section', 'aria-label': '工作助手' },
                     h('div', { className: 'wp-detail-section-head' }, h('span', { className: 'wp-detail-section-title' }, '工作助手 · 按需整理')),
                     h('p', { className: 'wp-detail-empty' }, '点击生成后，将当前任务的标题、描述、预期、下一步、阻塞、状态、优先级和期限，以及最近最多 10 条记录、5 条相关成果摘要和 5 条匹配的待验收回执发送给已配置模型。每个字段最多取 1000 字；不发送独立文件/链接字段，但正文里包含的路径和网址仍会发送。'),
                     h('p', { className: 'wp-detail-empty' }, '本次可用：' + assistantContext.logs.length + ' 条记录、' + assistantContext.relatedArtifacts.length
@@ -9194,7 +9349,7 @@ window.__ModuleLoader__.load({
                             h('button', { className: 'wp-btn wp-btn-primary wp-act-btn', type: 'button', disabled: assistantIsStale || undefined,
                               onClick: () => confirmAssistantStep(option) }, '确认写入下一步'),
                             h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setAssistantConfirm(null) }, '取消')) : null)))
-                        : h('p', { className: 'wp-detail-empty' }, '暂无可用下一步建议；可以补充记录后重试。')) : null) : null))))) : null;
+                        : h('p', { className: 'wp-detail-empty' }, '暂无可用下一步建议；可以补充记录后重试。')) : null) : null)) : null) : null;
       const trashDetailPanel = (selectedTask && selectedTask.deletedAt) ? h('aside', { className: 'wp-detail' },
         h('div', { className: 'wp-detail-body' },
           h('div', { className: 'wp-detail-trash' },
@@ -9284,7 +9439,7 @@ window.__ModuleLoader__.load({
                 onClick: () => hostSyncRef.current && hostSyncRef.current.resume() }, '把本页数据同步到主存')
             : h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => hostSyncRef.current && hostSyncRef.current.retry() }, '重试同步'),
           h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportBackup }, '导出本页备份'),
-          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setActiveView('data') }, '数据恢复'),
+          h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => { setSettingsSection('data'); setActiveView('settings'); setSelectedId(null); } }, '数据恢复'),
           ['conflict', 'error', 'local'].includes(hostSyncStatus.phase)
             ? reloadHostConfirm ? h('span', null,
               '将本页数据留安全副本后，以主存内容替换当前页面；未同步修改不会自动合并。',
@@ -9295,7 +9450,7 @@ window.__ModuleLoader__.load({
               : h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: () => setReloadHostConfirm(true) }, '备份后加载主存') : null) : null,
         h('div', { className: 'wp-workbench' },
           sidenav,
-          h('fieldset', { className: 'wp-sync-guard', disabled: !hostSyncStatus.canEdit && !(isDataView && hostSyncStatus.phase !== 'loading') },
+          h('fieldset', { className: 'wp-sync-guard', disabled: !hostSyncStatus.canEdit && !(isSettingsView && hostSyncStatus.phase !== 'loading') },
           h('section', { className: 'wp-mid' },
             storageIssue ? h('div', { className: 'wp-storage-warning', role: 'alert' },
               h('span', null, storageIssue),
@@ -9307,7 +9462,7 @@ window.__ModuleLoader__.load({
               h('button', { className: 'wp-btn wp-btn-text wp-act-btn', type: 'button', onClick: exportRawStorage }, '导出原始数据')) : null,
             inboxIssue ? h('p', { className: 'wp-report-notice wp-report-notice-warn', role: 'status' }, inboxIssue) : null,
             middleHeader, middleBody),
-          isReportsView ? evidencePanel : (isInboxView || isDataView || isRadarView || isGlobalSearchView) ? null : (trashDetailPanel || detailPanel))),
+          isReportsView ? evidencePanel : (isInboxView || isSettingsView || isRadarView || isGlobalSearchView) ? null : (trashDetailPanel || detailPanel))),
         toastNode,
         rowMenuNode,
         deleteConfirmNode,

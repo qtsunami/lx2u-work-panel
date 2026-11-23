@@ -7,7 +7,7 @@ const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 function backup(state = workspace()) { return { app: 'work-panel', schema: 1, version: '1.3.2', exportedAt: NOW, ...state }; }
 function storedWorkspace(ui) { return { ...ui.storage.json(KEY['workspace-extras'], {}), tasks: ui.storage.json(KEY.tasks, []), projects: ui.storage.json(KEY.projects, []), logs: ui.storage.json(KEY.logs, []), artifacts: ui.storage.json(KEY.artifacts, []), reports: ui.storage.json(KEY.reports, []), inboxAck: ui.storage.json(KEY['inbox-ack'], []), reportEdits: ui.storage.json(KEY['report-edits'], {}) }; }
-function data(ui) { ui.click('数据'); }
+function data(ui) { ui.click('设置'); ui.click('数据管理'); }
 function clear(ui) { ui.click('清空本地数据'); ui.click('确认清空'); }
 async function chat(ui, actions) {
   if (!ui.nodes().some(n => hasClass(n, 'wp-drawer'))) ui.click('AI 助手');

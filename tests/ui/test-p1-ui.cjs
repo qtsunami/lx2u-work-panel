@@ -24,7 +24,7 @@ const { harness, workspace, task, KEY, NOW } = require('../helpers/ui-harness.cj
     assert.ok(firstRow); ui.fire(firstRow, 'onClick');
     ui.fire(ui.one(n => String(n.props && n.props.className || '').includes('wp-detail-tab') && (n.children || []).some(c => typeof c === 'string' && c.startsWith('成果')), '成果 tab'), 'onClick');
     assert.ok(ui.text().includes('相关历史成果') && ui.text().includes('关键词成果') && ui.text().includes('同一项目'));
-    ui.click('数据');
+    ui.click('设置');
     const format = ui.one(n => n.type === 'select' && n.props.id === 'wp-pref-format');
     assert.equal(format.props.value, '', 'preferences are opt-in');
     ui.fire(format, 'onChange', { target: { value: 'list' } }); await ui.settle();
@@ -38,7 +38,7 @@ const { harness, workspace, task, KEY, NOW } = require('../helpers/ui-harness.cj
     ui.click('统一检索');
     ui.fire(ui.one(n => n.type === 'input' && n.props.id === 'wp-global-search'), 'onChange', { target: { value: '独特报告' } });
     assert.ok(ui.text().includes('未保存的报告编辑'), 'search finds the buffered report separately');
-    ui.click('数据'); ui.click('清除报告偏好'); await ui.settle();
+    ui.click('设置'); ui.click('清除报告偏好'); await ui.settle();
     assert.equal(ui.storage.json(KEY['workspace-extras']).reportPreferences, null);
   } finally { ui.close(); }
   console.log('P1 UI integration passed');

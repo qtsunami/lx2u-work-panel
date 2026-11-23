@@ -119,7 +119,7 @@ function assert(condition, message) {
 // ---- 1. sidebar lists project entities, including an empty and an archived one ----
 const sidebar = render();
 assert(sidebar.has('wp-nav-section'), 'sidebar should render the project section');
-assert(sidebar.text.indexOf('项目') !== -1, 'project section label missing');
+assert(sidebar.text.indexOf('清单') !== -1, 'list section label missing');
 ['工作台', '客户交付', '空项目'].forEach((name) => {
   assert(sidebar.navLabels.some((label) => label.indexOf(name) !== -1), 'missing project nav item: ' + name);
 });
@@ -132,7 +132,7 @@ assert(sidebar.navLabels.indexOf('无项目任务') === -1, 'tasks without a pro
 const sectionLabels = sidebar.nodes
   .filter((n) => n.props && n.props.className === 'wp-nav-section-label')
   .map(textOf);
-['任务', '项目', '报告', '管理'].forEach((title) => {
+['任务', '清单', '报告', '管理'].forEach((title) => {
   assert(sectionLabels.indexOf(title) !== -1, 'missing nav group: ' + title + ' (got ' + JSON.stringify(sectionLabels) + ')');
 });
 const groupCount = sidebar.classes.filter((c) => c.split(' ').includes('wp-nav-group')).length;
@@ -148,12 +148,20 @@ assert(projectView.text.indexOf('无项目任务') === -1, 'project view must no
 const emptyProject = render({ 4: 'proj:p-3' });
 assert(emptyProject.has('wp-empty'), 'empty project should show the empty state');
 
-// ---- 4. the task detail no longer carries a project binding ----
-// Project assignment moved to the task row's right-click menu, so the detail
-// panel must not offer one (this replaces the earlier selector assertion).
+// ---- 4. the task detail footer offers active project assignment ----
 const detail = render({ 7: 't-1' });
-assert(!detail.has('wp-detail-project-select'), 'task detail should not render a project selector');
+const projectSelector = detail.nodes.find((n) => n.props && n.props.className === 'wp-detail-project-select');
+assert(projectSelector && projectSelector.type === 'select', 'task detail should render a native project selector');
+assert(projectSelector.props.value === 'p-1', 'the footer selects the current project id');
+assert(projectSelector.props['aria-label'] === '所属项目', 'the project control has an accessible label');
+const projectOptions = flatten(projectSelector.children);
+assert(projectOptions[0].props.value === '' && textOf(projectOptions[0]) === '未归属项目', 'unassignment is the first option');
+assert(projectOptions.map((n) => n.props.value).join('|') === '|p-1|p-3', 'only active projects are offered when the current project is active');
 assert(detail.has('wp-detail-title-input'), 'the rest of the detail panel still renders');
+const archivedDetail = render({ 7: 't-3' });
+const archivedSelector = archivedDetail.nodes.find((n) => n.props && n.props.className === 'wp-detail-project-select');
+const currentArchived = flatten(archivedSelector.children).find((n) => n.props.value === 'p-2');
+assert(archivedSelector.props.value === 'p-2' && currentArchived.props.disabled, 'the current archived project remains visible but cannot be newly assigned');
 
 // ---- 5. project creation lives in the sidebar, not the task detail ----
 const creating = render({ 7: 't-1', 49: { mode: 'task', name: '新项目' } });

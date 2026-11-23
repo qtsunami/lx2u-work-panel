@@ -63,8 +63,8 @@ const classes = [];
 const want = [
   'wp-detail', 'wp-detail-body', 'wp-detail-head', 'wp-detail-meta', 'wp-detail-check', 'wp-detail-date', 'wp-detail-flag',
   'wp-row', 'wp-row-time', 'wp-row-desc',
-  'wp-detail-desc', 'wp-md-toolbar', 'wp-md-blocks', 'wp-md-block', 'wp-detail-lower', 'wp-detail-tabs', 'wp-detail-tab', 'wp-detail-pane',
-  'wp-detail-field',
+  'wp-detail-desc', 'wp-md-blocks', 'wp-md-block', 'wp-detail-tabs', 'wp-detail-tab', 'wp-detail-pane',
+  'wp-detail-workbar', 'wp-detail-project-select', 'wp-detail-work-actions',
 ];
 const tabs = [];
 (function collect(node) {
@@ -75,8 +75,11 @@ const tabs = [];
   (node.children || []).forEach(collect);
 })(tree);
 const labels = tabs.map((node) => (node.children || []).filter((c) => typeof c === 'string').join(''));
-if (labels.join('|') !== '执行|记录|成果|助手') throw new Error('unexpected detail tabs: ' + labels.join('|'));
-if (tabs[0].props['aria-selected'] !== 'true') throw new Error('执行 tab should be selected by default');
+if (labels.join('|') !== '描述|执行|记录|成果') throw new Error('unexpected detail tabs: ' + labels.join('|'));
+if (tabs[0].props['aria-selected'] !== 'true') throw new Error('描述 tab should be selected by default');
+for (const removed of ['wp-detail-desc-head', 'wp-md-toolbar', 'wp-md-editor-hint']) {
+  if (classes.some((value) => value.split(' ').includes(removed))) throw new Error('removed helper row still rendered: ' + removed);
+}
 const missing = want.filter((c) => !classes.some((x) => x.split(' ').includes(c)));
 if (missing.length) throw new Error('missing classes: ' + missing.join(','));
 console.log('DETAIL RENDER OK · ' + classes.filter((c) => c.indexOf('wp-detail') === 0).join(', '));

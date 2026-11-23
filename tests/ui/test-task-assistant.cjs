@@ -16,7 +16,7 @@ const openTab = (ui, label) => ui.fire(ui.one(n => has(n, 'wp-detail-tab') && te
 async function open(options = {}) {
   const ui = harness(state(), undefined, { inboxItems: receipts, ...options }); await ui.settle();
   const row = ui.one(n => has(n, 'wp-row') && text(n).includes('客户方案') && !text(n).includes('历史客户方案'));
-  ui.fire(row, 'onClick'); openTab(ui, '助手'); ui.click('工作助手'); return ui;
+  ui.fire(row, 'onClick'); ui.click('工作助手'); return ui;
 }
 (async () => {
   {
@@ -62,10 +62,13 @@ async function open(options = {}) {
   {
     const ui = await open(); try {
       ui.click('生成工作建议'); await ui.settle(); const old = ui.nextRequest('task');
-      ui.click('工作助手'); ui.click('工作助手'); ui.click('生成工作建议'); await ui.settle(); const newer = ui.nextRequest('task');
-      await ui.respond(old, reply);
-      assert.ok(!ui.text().includes('与客户核对范围'), 'closed-panel old response must be ignored');
-      await ui.respond(newer, reply); assert.ok(ui.text().includes('与客户核对范围'));
+      ui.click('工作助手'); ui.click('工作助手');
+      assert.equal(ui.button('正在整理…').props.disabled, true, 'reopen reuses the in-flight request');
+      assert.equal(ui.requests.length, 1, 'reopening does not implicitly call the model');
+      await ui.respond(old, reply); assert.ok(ui.text().includes('与客户核对范围'));
+      ui.click('工作助手'); ui.click('工作助手');
+      assert.ok(ui.text().includes('与客户核对范围'), 'completed result survives sheet close/reopen');
+      assert.equal(ui.requests.length, 1);
     } finally { ui.close(); }
   }
   {
@@ -75,8 +78,10 @@ async function open(options = {}) {
       openTab(ui, '执行');
       const nextStep = ui.one(n => n.type === 'textarea' && n.props.value === '原下一步');
       ui.fire(nextStep, 'onChange', { target: { value: '用户新写的下一步' } }); await ui.settle();
-      openTab(ui, '助手');
-      assert.equal(ui.button('确认写入下一步').props.disabled, true);
+      assert.ok(!ui.nodes().some(n => has(n, 'wp-detail-sheet')), 'tab change closes sheet and cancels its confirmation');
+      ui.click('工作助手');
+      assert.ok(!ui.nodes().some(n => n.type === 'button' && text(n) === '确认写入下一步'));
+      assert.equal(ui.button('选择作为下一步').props.disabled, true, 'reopened stale result cannot be adopted');
       assert.equal(ui.storage.json(KEY.tasks).find(t => t.id === 'a').nextStep, '用户新写的下一步');
       assert.ok(ui.text().includes('建议可能过期'));
     } finally { ui.close(); }
@@ -108,5 +113,15 @@ async function open(options = {}) {
       assert.ok(ui.text().includes('请先恢复连接'));
     } finally { ui.close(); }
   }
-  console.log('TASK ASSISTANT: 8 interaction scenarios passed');
+  {
+    const ui = await open(); try {
+      ui.click('生成工作建议'); await ui.settle(); const request = ui.nextRequest('task'); await ui.respond(request, reply);
+      ui.click('选择作为下一步'); ui.click('关闭工作面板'); ui.click('工作助手');
+      assert.ok(ui.text().includes('与客户核对范围'), 'closing retains completed suggestions');
+      assert.ok(!ui.nodes().some(n => n.type === 'button' && text(n) === '确认写入下一步'), 'closing dismisses the uncommitted confirmation');
+      assert.equal(ui.storage.json(KEY.tasks).find(t => t.id === 'a').nextStep, '原下一步');
+      assert.equal(ui.requests.length, 1);
+    } finally { ui.close(); }
+  }
+  console.log('TASK ASSISTANT: 9 interaction scenarios passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
